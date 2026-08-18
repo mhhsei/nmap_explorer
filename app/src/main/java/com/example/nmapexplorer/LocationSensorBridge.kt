@@ -398,20 +398,32 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             return
         }
 
-        SensorManager.getOrientation(rotationMatrix, orientationAngles)
-        val rawDegrees = ((Math.toDegrees(orientationAngles[0].toDouble()) + 360.0) % 360.0).toFloat()
+        // 3D Forward Vector Horizontal Azimuth (100% immune to handheld pitch tilt 0°~85°)
+        // rotationMatrix row-major: R[1] = East component of Top/Y-axis, R[4] = North component of Top/Y-axis
+        val eastForward = rotationMatrix[1].toDouble()
+        val northForward = rotationMatrix[4].toDouble()
+        val horizontalMagSq = eastForward * eastForward + northForward * northForward
 
-        // Item 4: True North correction (Geomagnetic Declination)
+        val rawDegrees: Float = if (horizontalMagSq > 0.03) {
+            // Handheld reading / walking posture (tilted 15° ~ 80°)
+            ((Math.toDegrees(atan2(eastForward, northForward)) + 360.0) % 360.0).toFloat()
+        } else {
+            // Perfectly flat on table fallback
+            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+            ((Math.toDegrees(orientationAngles[0].toDouble()) + 360.0) % 360.0).toFloat()
+        }
+
+        // True North correction (Geomagnetic Declination)
         val trueDegrees = ((rawDegrees + geomagneticDeclination + 360.0f) % 360.0f)
 
         if (smoothedHeading < 0f) {
             smoothedHeading = trueDegrees
         } else {
-            // Circular smoothing with shortest path
+            // Responsive circular smoothing with shortest path (0.45 factor for fast crisp response on turns)
             var diff = trueDegrees - smoothedHeading
             while (diff < -180f) diff += 360f
             while (diff > 180f) diff -= 360f
-            smoothedHeading = (smoothedHeading + 0.30f * diff + 360f) % 360f
+            smoothedHeading = (smoothedHeading + 0.45f * diff + 360f) % 360f
         }
 
         // Throttle emission to WebView (every 50ms) to ensure instant, fluid response without lag

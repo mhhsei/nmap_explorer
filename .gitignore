@@ -16,3 +16,6 @@ __pycache__/
 *log*.txt
 *.apk
 *.zip
+
+*.ipa
+ios_build_output/

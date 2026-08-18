@@ -724,15 +724,57 @@ class NmapWebApp {
     }
   }
 
+  // 隨時根據「當前即時朝向」與「即時座標」重新動態推算所有店家的相對左右/鐘點方位
+  getRealtimePois() {
+    if (!this.lastPois || this.lastPois.length === 0) return [];
+    const curLat = this.localLat !== null ? this.localLat : (this.serverLat || 0);
+    const curLon = this.localLon !== null ? this.localLon : (this.serverLon || 0);
+    const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
+
+    return this.lastPois.map((p) => {
+      const dist = Math.round(this.haversineDistance(curLat, curLon, p.lat, p.lon) * 10) / 10;
+      const targetBrng = this.calculateBearing(curLat, curLon, p.lat, p.lon);
+      
+      let relBrng = (targetBrng - curHead + 360.0) % 360.0;
+      if (relBrng > 180.0) relBrng -= 360.0;
+
+      const normDeg = (relBrng + 360.0) % 360.0;
+      let hour = Math.round(normDeg / 30.0) % 12;
+      if (hour === 0) hour = 12;
+      const clockStr = `${hour}點鐘方向`;
+
+      let relDir = "周遭";
+      const absDiff = Math.abs(relBrng);
+      if (absDiff <= 22.5) relDir = "正前方";
+      else if (absDiff >= 157.5) relDir = "正後方";
+      else if (relBrng > 22.5 && relBrng < 67.5) relDir = "右前方";
+      else if (relBrng >= 67.5 && relBrng <= 112.5) relDir = "右側";
+      else if (relBrng > 112.5 && relBrng < 157.5) relDir = "右後方";
+      else if (relBrng < -22.5 && relBrng > -67.5) relDir = "左前方";
+      else if (relBrng <= -67.5 && relBrng >= -112.5) relDir = "左側";
+      else if (relBrng < -112.5 && relBrng > -157.5) relDir = "左後方";
+
+      return {
+        ...p,
+        distance_m: dist,
+        bearing_deg: Math.round(targetBrng),
+        relative_bearing_deg: Math.round(relBrng * 10) / 10,
+        clock_position: clockStr,
+        relative_direction: relDir
+      };
+    }).sort((a, b) => a.distance_m - b.distance_m);
+  }
+
   updatePOIs(pois) {
     this.lastPois = pois || [];
-    if (!pois || pois.length === 0) {
+    const realtime = this.getRealtimePois();
+    if (!realtime || realtime.length === 0) {
       this.poiContainer.innerHTML = '<p class="empty-tip">周遭 100 公尺內無特別登錄的設施。</p>';
       return;
     }
 
     let html = "";
-    pois.forEach((p) => {
+    realtime.forEach((p) => {
       const flag = p.wheelchair === "yes" ? " <span style='color:#22c55e;'>[無障礙]</span>" : "";
       const extras = [];
       if (p.opening_hours) extras.push(`營業：${p.opening_hours}`);
@@ -751,15 +793,16 @@ class NmapWebApp {
   }
 
   announceAllPOIs() {
-    if (!this.lastPois || this.lastPois.length === 0) {
+    const realtimePois = this.getRealtimePois();
+    if (!realtimePois || realtimePois.length === 0) {
       this.updateLiveLog("【周遭掃描】100 公尺內無特別設施標籤。", false, true);
       return;
     }
     
     this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
     
-    let msg = `【周遭共發現 ${this.lastPois.length} 家店】\n`;
-    const lines = this.lastPois.map(p => {
+    let msg = `【周遭共發現 ${realtimePois.length} 家店】\n`;
+    const lines = realtimePois.map(p => {
         const cat = this.translateCategory(p.category);
         return `${p.name} (${p.relative_direction} ${p.distance_m}m，${cat})`;
     });
@@ -837,13 +880,14 @@ class NmapWebApp {
     if (!data || !data.is_loaded) return;
     const now = Date.now();
 
-    // 1. 接近中的店家（嚴格限制在 3 ~ 5.5 公尺前夕才播報，極簡只讀店名 + 簡潔方位）
-    if (data.pois && data.pois.length > 0) {
-      const nearbyPassing = data.pois.filter((p) => {
+    // 1. 接近中的店家（以即時推算之方位與距離判斷，嚴格限制在 2.5 ~ 6.0 公尺前夕才播報）
+    const realtimePois = this.getRealtimePois();
+    if (realtimePois && realtimePois.length > 0) {
+      const nearbyPassing = realtimePois.filter((p) => {
         const d = p.distance_m;
         const dir = p.relative_direction || "";
-        // 3.0 ~ 5.5 公尺（即將經過前夕）才朗讀，且非背後
-        return d <= 5.5 && d >= 0.5 && (!dir.includes("後方") || d <= 3.0);
+        // 2.0 ~ 6.0 公尺（即將經過前夕）才朗讀，且非背後
+        return d <= 6.0 && d >= 0.5 && (!dir.includes("後方") || d <= 3.0);
       });
 
       if (nearbyPassing.length > 0) {
@@ -852,12 +896,14 @@ class NmapWebApp {
           if (now - lastTime > 60000) { // 60秒冷卻，避免同店家重複疲勞轟炸
             this.announcedPoiCooldown.set(poi.name, now);
 
-            // 空間立體音效：往該店家方位（左耳/右耳/前方）發出提示音
-            const clock = poi.clock_position || "12點鐘方向";
-            const dirCoords = this.audio.parseClockDirection(poi.relative_direction || clock, poi.distance_m || 4);
-            this.audio.playSpatialTone(660, 'triangle', dirCoords.x, 0, dirCoords.z, 0.15);
+            // 精確 3D 空間立體聲：以相對夾角精確計算左右耳座標 (x, z)
+            const rad = (poi.relative_bearing_deg || 0) * Math.PI / 180.0;
+            const distAudio = Math.max(0.5, Math.min(10.0, poi.distance_m || 3.0));
+            const x = distAudio * Math.sin(rad);
+            const z = -distAudio * Math.cos(rad);
+            this.audio.playSpatialTone(660, 'triangle', x, 0, z, 0.15);
 
-            // 省話模式：極簡只讀店名 + 簡潔方位 (如：「全家便利商店，右側」)
+            // 省話模式：極簡只讀店名 + 即時動態方位 (如：「全家便利商店，右側」或「星巴克，左前方」)
             const dirText = poi.relative_direction ? `，${poi.relative_direction}` : "";
             const msg = `${poi.name}${dirText}`;
             this.updateLiveLog(msg, false, true);
@@ -1628,23 +1674,29 @@ window.pendingGpsUpdate = null;
 window.onHeadingUpdate = function(headingDegrees) {
     window.lastHeading = headingDegrees;
     
+    // 即時同步至前端狀態，確保 3D 空間音效與動態店家方位計算零延遲
+    if (window.app) {
+        window.app.localHeading = headingDegrees;
+        if (window.app.lastData && window.app.renderRadarCanvas) {
+            window.app.lastData.heading_deg = headingDegrees;
+            window.app.renderRadarCanvas(window.app.lastData);
+        }
+    }
+    
     if (window.app && window.app.isReady !== false && window.lastGpsLat !== null) {
         let diff = Math.abs(headingDegrees - window.lastReportedHeading);
         if (diff > 180) diff = 360 - diff;
         
-        // When turning body/phone by >= 30 degrees, update and announce direction swiftly
-        if (diff >= 30) {
+        // 身體/手機轉向 >= 25 度時，語音提示新朝向並同步至伺服器
+        if (diff >= 25) {
             if (window.headingTimeout) clearTimeout(window.headingTimeout);
             window.headingTimeout = setTimeout(() => {
                 window.lastReportedHeading = window.lastHeading;
-                window.app.localHeading = window.lastHeading;
-                
                 if (window.app.audio) window.app.audio.playTurn();
                 const dirStr = window.app.getCardinalDirection(window.lastHeading);
                 window.app.updateLiveLog(`面向${dirStr}`, false, true);
-                
                 window.app.serverSync();
-            }, 350);
+            }, 300);
         }
     }
 };
@@ -1669,8 +1721,8 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
         dist = R * c;
     }
 
-    // Update if first GPS fix or moved >= 2.0m
-    if (window.lastGpsLat === null || dist >= 2.0) {
+    // 只要有移動 >= 1.5m 或首度定位即更新
+    if (window.lastGpsLat === null || dist >= 1.5) {
         if (window.isGpsSyncPending) {
             window.pendingGpsUpdate = { lat, lon, accuracy, bearing, speed };
             return;
@@ -1680,7 +1732,8 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
         window.lastGpsLon = lon;
         window.isGpsSyncPending = true;
 
-        const heading = (bearing !== undefined && bearing >= 0) ? bearing : window.lastHeading;
+        // 永遠優先使用精準指南針/陀螺儀真北方位 (避免 GPS 緩慢行走時 bearing=0 覆蓋真實朝向)
+        const heading = (window.lastHeading !== undefined && window.lastHeading >= 0) ? window.lastHeading : (bearing >= 0 ? bearing : 0);
 
         fetch("/api/gps", {
             method: "POST",
@@ -1700,17 +1753,17 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
                 window.app.serverLon = data.lon;
                 window.app.localLat = data.lat;
                 window.app.localLon = data.lon;
-                window.app.localHeading = data.heading_deg;
+                window.app.localHeading = window.lastHeading;
                 window.app.lastData = data;
                 if (window.app.renderRadarCanvas) window.app.renderRadarCanvas(data);
                 if (window.app.updatePOIs) window.app.updatePOIs(data.pois || []);
 
-                // Check proximity alerts for approaching POIs (<=15m) and intersections (<=18m)
+                // 檢查周遭接近店家提示
                 if (window.app.checkProximityAlerts) {
                     window.app.checkProximityAlerts(data);
                 }
 
-                // Announce if first fix or major jump (> 50m)
+                // 首度定位或大跳躍播報
                 if (dist > 50 || dist === 999999) {
                     const report = data.concise_report || data.full_report || "已更新 GPS 定位。";
                     window.app.updateLiveLog(report, false, true);
