@@ -1,0 +1,55 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: |
+          cd ios
+          xcodegen generate
+
+      - name: Build and Archive iOS App
+        run: |
+          cd ios
+          xcodebuild clean archive \
+            -project NMapExplorer.xcodeproj \
+            -scheme NMapExplorer \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/NMapExplorer.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package into IPA
+        run: |
+          cd ios
+          mkdir -p Payload
+          cp -R build/NMapExplorer.xcarchive/Products/Applications/NMapExplorer.app Payload/
+          zip -r NMapExplorer.ipa Payload
+          mv NMapExplorer.ipa ../NMapExplorer.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NMapExplorer-iOS-IPA
+          path: NMapExplorer.ipa
+          retention-days: 30

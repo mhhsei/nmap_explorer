@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="nmap - 視障者與明眼人協同真實地圖數位分身探索器 (含雙視角 2D 幾何雷達與動態街景視覺)">
+  <title>nmap 視障者真實地圖世界探索器 (行動導航版)</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { font-family: sans-serif; background: #0f172a; color: #f8fafc; padding: 10px; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+    h1 { color: #38bdf8; font-size: 1.5em; text-align: center; margin: 10px 0; }
+    .controls { display: flex; gap: 10px; margin-bottom: 10px; }
+    .btn { flex: 1; padding: 15px; font-size: 1.2em; border-radius: 8px; border: none; background: #38bdf8; color: #0f172a; font-weight: bold; }
+    .btn:active { background: #0284c7; }
+    .history-container { flex: 1; overflow-y: auto; background: #1e293b; border-radius: 8px; padding: 10px; border: 1px solid #334155; }
+    .history-list { list-style: none; padding: 0; margin: 0; }
+    .history-item { padding: 12px; border-bottom: 1px solid #334155; font-size: 1.2em; }
+    .history-item:last-child { border-bottom: none; }
+    /* Invisible live region for immediate speech */
+    #nvda-live-log { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+  </style>
+</head>
+<body>
+
+  <h1>nmap 行動導航版</h1>
+
+  <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+    <button id="ui-btn-scan" class="btn" aria-label="掃描前方店家">掃描前方 (L)</button>
+    <button id="ui-btn-around" class="btn" aria-label="掃描周遭所有店家">周遭所有 (P)</button>
+    <button id="ui-btn-intersection" class="btn" aria-label="查詢前方路口走向與分支">前方路口 (I)</button>
+    <button id="ui-btn-loc" class="btn" aria-label="播報當前定位">目前位置 (R)</button>
+    <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌 (Share Logs)</button>
+  </div>
+
+  <div class="history-container" aria-label="歷史訊息列表，可上下滑動逐條讀取">
+    <ul id="history-list" class="history-list">
+      <li class="history-item" tabindex="0">歡迎使用 nmap！定位系統啟動中...</li>
+    </ul>
+  </div>
+
+  <!-- Dedicated invisible live region for immediate speech -->
+  <div id="nvda-live-log" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Hidden elements to keep app.js happy -->
+  <div style="display:none;" aria-hidden="true">
+    <canvas id="radar-canvas" width="300" height="300"></canvas>
+    <div id="status-badge"></div>
+    <div id="poi-list-container"></div>
+    <button id="sound-toggle-btn"></button>
+    <button id="visual-mode-btn"></button>
+    <div id="visual-section"></div>
+    <button id="help-btn"></button>
+    <div id="help-modal"></div>
+    <button id="close-modal-btn"></button>
+    <button id="modal-ok-btn"></button>
+    <input id="location-input" />
+    <input id="query-input" />
+    <button id="btn-forward"></button>
+    <button id="btn-back"></button>
+    <button id="btn-turn-left"></button>
+    <button id="btn-turn-right"></button>
+    <button id="btn-look"></button>
+    <div id="street-scene-summary"></div>
+    <div id="street-tags-container"></div>
+    <button id="export-log-btn"></button>
+    <form id="teleport-form"></form>
+    <form id="nlp-form"></form>
+    <form id="query-form"></form>
+  </div>
+
+  <script src="spatial_engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
