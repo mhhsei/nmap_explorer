@@ -2247,11 +2247,25 @@ window.onDatabaseDownloadComplete = (dbSize) => {
   const pBar = document.getElementById("map-db-progress-bar");
   if (pText) pText.innerText = `圖資下載完成 (${dbSize})！`;
   if (pBar) pBar.style.width = "100%";
+  
+  // 向後端請求立即重新載入本地 SQLite 資料庫地標
+  fetch("/api/refresh_pois", { method: "POST" })
+    .then(res => res.json())
+    .then(data => {
+      if (data && data.success && window.app) {
+        window.app.updateLiveLog(`🎉 全台離線資料庫載入就緒！周遭已成功載入 ${data.poi_count} 間店家與地標。`, true, true);
+        if (window.app.syncStatus) window.app.syncStatus();
+      }
+    })
+    .catch(() => {
+      if (window.app) window.app.updateLiveLog(`全台離線店家圖資已下載完成 (${dbSize})！`);
+    });
+
   if (window.app) {
-    window.app.updateLiveLog(`全台離線店家圖資已下載完成 (${dbSize})！`);
     window.app.showMapDatabaseModal();
   }
 };
+
 
 window.onDatabaseDownloadError = (errMsg) => {
   const pText = document.getElementById("map-db-progress-text");

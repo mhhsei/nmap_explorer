@@ -277,7 +277,35 @@ class WorldModel:
         # 即時釋放 JVM/Python 暫存記憶體
         gc.collect()
 
+    def reload_real_pois(self, lat: float, lon: float, radius_deg: float = 0.008) -> int:
+        """
+        【手動或下載完成後即時重新載入全台離線資料庫地標】
+        作用：在使用者下載完離線資料庫或主動刷新時，立即將數千間真實店家注入 R-Tree 空間索引。
+        """
+        try:
+            external_pois = self.poi_fetcher.fetch_real_pois(lat, lon, pages=3, radius_deg=radius_deg)
+            existing_names = {p.name for p in self.pois if hasattr(p, 'name')}
+            added_count = 0
+            
+            with self.rtree_lock:
+                for p in external_pois:
+                    name = p.get('name')
+                    if name and name not in existing_names:
+                        existing_names.add(name)
+                        sp = SpatialPOI(p)
+                        self.pois.append(sp)
+                        self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
+                        self.next_external_poi_id += 1
+                        added_count += 1
+                        
+            print(f"[WorldModel] Injected {added_count} new offline POIs into spatial index. Total: {len(self.pois)}")
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to reload real pois: {e}")
+        return len(self.pois)
+
     def find_nearest_road(self, lat: float, lon: float) -> Tuple[Optional[Dict[str, Any]], float]:
+
         """
         【搜尋距離座標最近的道路折線】
         作用：透過空間網格索引快速過濾方圓 150 公尺內的道路折線，計算精確垂直距離。

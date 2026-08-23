@@ -545,3 +545,12 @@ class ExplorerAgent:
             
         return f"\n【導航提示】{insts[0]['text']}"
 
+    def reload_real_pois(self, radius_deg: float = 0.008) -> int:
+        """
+        【手動重新載入離線資料庫地標】
+        """
+        if not self.is_loaded:
+            return 0
+        return self.world_model.reload_real_pois(self.lat, self.lon, radius_deg=radius_deg)
+
+

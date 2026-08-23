@@ -43,8 +43,42 @@ class RealPoiFetcher:
             self.db_path = db_path
             self.gov_db_path = db_path.replace("overture_places", "gov_places")
 
+    def _resolve_db_paths(self):
+        """動態偵測並鎖定本機/手機內有效存在的離線資料庫路徑"""
+        # 1. 優先檢查目前 db_path
+        if self.db_path and os.path.exists(self.db_path):
+            return self.db_path, self.gov_db_path
+
+        # 2. 檢查 NMAP_DATA_DIR 環境變數
+        data_dir = os.environ.get("NMAP_DATA_DIR")
+        if data_dir:
+            cand = os.path.join(data_dir, "overture_places.db")
+            if os.path.exists(cand):
+                self.db_path = cand
+                self.gov_db_path = os.path.join(data_dir, "gov_places.db")
+                return self.db_path, self.gov_db_path
+
+        # 3. 搜尋 Android 內部/外部儲存區與專案目錄
+        candidates = [
+            "/sdcard/Android/data/com.example.nmapexplorer/files/data/overture_places.db",
+            "/storage/emulated/0/Android/data/com.example.nmapexplorer/files/data/overture_places.db",
+            "/data/user/0/com.example.nmapexplorer/files/data/overture_places.db",
+            "/data/data/com.example.nmapexplorer/files/data/overture_places.db",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "database_assets", "overture_places.db"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "overture_places.db"),
+            "database_assets/overture_places.db",
+            "data/overture_places.db"
+        ]
+        for cand in candidates:
+            if os.path.exists(cand):
+                self.db_path = cand
+                self.gov_db_path = cand.replace("overture_places", "gov_places")
+                return self.db_path, self.gov_db_path
+
+        return None, None
 
     def _fetch_ifoodie_page(self, lat: float, lon: float, page: int) -> List[Dict[str, Any]]:
+
         """
         單一頁面的爬取工作函數。
         為什麼抓愛食記 (iFoodie)？
@@ -93,17 +127,18 @@ class RealPoiFetcher:
             print(f"iFoodie fetch error page {page}: {e}")
             return []
 
-    def _fetch_overture_local(self, lat: float, lon: float, radius_deg: float = 0.005) -> List[Dict[str, Any]]:
+    def _fetch_overture_local(self, lat: float, lon: float, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
         從我們在地端建置的 Overture Maps 資料庫 (SQLite) 瞬間拉取大量真實店家。
         查詢速度不到 0.01 秒，且資料量驚人。
         """
         results = []
-        if not os.path.exists(self.db_path):
+        db_path, _ = self._resolve_db_paths()
+        if not db_path or not os.path.exists(db_path):
             return results
             
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(db_path)
             c = conn.cursor()
             
             min_lat = lat - radius_deg
@@ -132,21 +167,23 @@ class RealPoiFetcher:
                     }
                 })
             conn.close()
+            print(f"[RealPoiFetcher] Successfully loaded {len(results)} POIs from {db_path}")
         except Exception as e:
             print(f"Overture DB error: {e}")
             
         return results
 
-    def _fetch_gov_local(self, lat: float, lon: float, radius_deg: float = 0.005) -> List[Dict[str, Any]]:
+    def _fetch_gov_local(self, lat: float, lon: float, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
         從我們在地端建置的政府開放資料庫 (SQLite) 拉取資料。
         """
         results = []
-        if not os.path.exists(self.gov_db_path):
+        _, gov_path = self._resolve_db_paths()
+        if not gov_path or not os.path.exists(gov_path):
             return results
             
         try:
-            conn = sqlite3.connect(self.gov_db_path)
+            conn = sqlite3.connect(gov_path)
             c = conn.cursor()
             
             min_lat, max_lat = lat - radius_deg, lat + radius_deg
@@ -158,17 +195,18 @@ class RealPoiFetcher:
                 WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
             ''', (min_lat, max_lat, min_lon, max_lon))
             
-            for r in c.fetchall():
+            rows = c.fetchall()
+            for r in rows:
                 results.append({
-                    "id": r[0],
+                    "id": f"gov_{r[0]}",
                     "name": r[1],
-                    "category": r[2] or "poi",
+                    "category": r[2],
                     "lat": float(r[3]),
                     "lon": float(r[4]),
                     "tags": {
-                        "amenity": r[2] or "place",
+                        "amenity": r[2],
                         "name": r[1],
-                        "source": f"gov_{r[5]}"
+                        "source": r[5] or "gov"
                     }
                 })
             conn.close()
@@ -177,7 +215,7 @@ class RealPoiFetcher:
             
         return results
 
-    def fetch_real_pois(self, lat: float, lon: float, pages: int = 2) -> List[Dict[str, Any]]:
+    def fetch_real_pois(self, lat: float, lon: float, pages: int = 2, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
         多執行緒並發爬取 (Multithreaded Fetching)
         
@@ -190,15 +228,15 @@ class RealPoiFetcher:
         all_pois = []
         seen_names = set()
         
-        # 1. 瞬間從本地 Overture 資料庫抓取 (0.01 秒)
-        overture_pois = self._fetch_overture_local(lat, lon, 0.003)
+        # 1. 瞬間從本地 Overture 資料庫抓取 (0.01 秒，半徑 ~880 公尺)
+        overture_pois = self._fetch_overture_local(lat, lon, radius_deg)
         for p in overture_pois:
             if p['name'] not in seen_names:
                 seen_names.add(p['name'])
                 all_pois.append(p)
 
         # 2. 瞬間從本地政府開放資料庫抓取 (TDX / 財政部)
-        gov_pois = self._fetch_gov_local(lat, lon, 0.003)
+        gov_pois = self._fetch_gov_local(lat, lon, radius_deg)
         for p in gov_pois:
             if p['name'] not in seen_names:
                 seen_names.add(p['name'])

@@ -564,13 +564,50 @@ def check_update():
             "current_version": current_version,
             "message": f"GitHub API 回應錯誤 ({he.code})"
         })
-    except Exception as e:
         return json_response({
             "success": False,
             "has_update": False,
             "current_version": "1.0.0",
             "message": f"檢查更新失敗: {str(e)}"
         })
+
+
+@app.route("/api/refresh_pois", method=["GET", "POST"])
+def refresh_pois():
+    """
+    【即時重新載入並注入離線資料庫 POI】
+    作用：當使用者下載好離線圖資包後，前端發送請求，後端立即在 0.01 秒內將數百至上千筆店家載入 R-Tree 空間模型。
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+
+    total_pois = agent.reload_real_pois(radius_deg=0.008)
+    return json_response({
+        "success": True,
+        "poi_count": total_pois,
+        "message": f"已成功載入離線店家圖資！目前周遭地標總數：{total_pois} 間。"
+    })
+
+
+@app.route("/api/db_status", method=["GET"])
+def db_status():
+    """
+    【查詢本地圖資資料庫狀態】
+    """
+    db_path, _ = agent.world_model.poi_fetcher._resolve_db_paths()
+    exists = db_path is not None and os.path.exists(db_path)
+    size_mb = 0.0
+    if exists:
+        size_mb = round(os.path.getsize(db_path) / (1024.0 * 1024.0), 1)
+
+    return json_response({
+        "success": True,
+        "has_database": exists,
+        "db_path": db_path or "",
+        "size_mb": size_mb,
+        "current_poi_count": len(agent.world_model.pois) if agent.is_loaded else 0
+    })
+
 
 
 
