@@ -1,3 +1,15 @@
+"""
+定向行動模擬核心總指揮引擎 (Simulation Engine Core)
+
+作用：
+協調整個模擬系統的子模組運作：
+1. 區域分類 (AreaClassifier)
+2. 虛擬 NPC 路人更新 (WorldState)
+3. 突發事件生成 (EventGenerator)
+4. 白手杖前向探測 (WhiteCaneSimulator)
+5. 環境聲景音效 (SoundscapeGenerator)
+6. 風險等級評估與 NVDA 報讀報告產出 (SimulationReporter)
+"""
 from typing import Dict, Any
 from .world_state import WorldState
 from .events import EventGenerator
@@ -7,8 +19,11 @@ from .white_cane import WhiteCaneSimulator
 from .soundscape import SoundscapeGenerator
 from .reporter import SimulationReporter
 
+
 class SimulationEngine:
-    """主模擬引擎，協調整個系統運作。"""
+    """
+    主模擬引擎
+    """
 
     def __init__(self) -> None:
         self.enabled: bool = False
@@ -21,19 +36,27 @@ class SimulationEngine:
         self.reporter: SimulationReporter = SimulationReporter()
 
     def start(self, difficulty: str = 'normal') -> None:
-        """啟動模擬。"""
+        """
+        【啟動定向模擬訓練】
+        """
         self.difficulty.set_difficulty(difficulty)
         self.enabled = True
         self.world_state = WorldState()
 
     def stop(self) -> None:
-        """停止模擬。"""
+        """
+        【關閉定向模擬訓練】
+        """
         self.enabled = False
 
     def process_step(self, agent: Any) -> Dict[str, Any]:
-        """處理玩家的每一步。"""
+        """
+        【處理探索者移動的每一步】
+        作用：推演區域特性、更新 NPC、生成路況事件、模擬白手杖敲擊、播放環境音與評估風險。
+        """
         if not self.enabled:
             return {}
+
 
         self.world_state.step_count += 1
         

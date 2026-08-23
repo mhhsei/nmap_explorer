@@ -1,13 +1,19 @@
+"""
+生活感店家動態補完引擎 (Procedural POI Enricher)
+
+作用：
+在偏鄉或開放街圖 (OSM) 標註較稀疏的街道上，利用程序化生成 (Procedural Generation)
+沿著道路兩側（左右側門牌法則：左單右雙）生成真實生活常見的台灣店家（如早餐店、飲料店、超商、便當店）。
+空間一致性保證：以 road_id 作為隨機種子 (Random Seed)，確保每次走到同一條街時，店名與位置完全一致，不會隨機變換。
+"""
 import random
 from typing import Dict, Any, List
 from nmap.spatial.geometry import haversine_distance, destination_point
 
+
 class PoiEnricher:
     """
     動態店家補完引擎 (Dynamic POI Enricher)
-    負責在 OSM 資料稀疏的街道上，利用真實世界的台灣店家命名分佈，
-    以程序化 (Procedural Generation) 的方式注入具有空間一致性的虛擬真實店家，
-    讓視障者能體驗到充滿生活感的「逛街」體驗。
     """
     
     CATEGORIES = {
@@ -34,6 +40,7 @@ class PoiEnricher:
         self.enriched_roads = set()
 
     def generate_random_name(self, category: str, rand: random.Random) -> str:
+        """根據店家類別隨機挑選或格式化產生接地氣的台灣店名"""
         if category != "local_random":
             return rand.choice(self.CATEGORIES[category])
         
@@ -45,7 +52,7 @@ class PoiEnricher:
         )
 
     def determine_density(self, highway_type: str) -> int:
-        """決定每100公尺應該有多少店家"""
+        """決定每100公尺應該有多少店家密度"""
         if highway_type in ["pedestrian", "footway", "living_street"]:
             return 30  # 夜市/徒步區密度極高
         elif highway_type in ["primary", "secondary"]:
@@ -56,12 +63,13 @@ class PoiEnricher:
 
     def enrich_road(self, road_id: str, road_name: str, highway_type: str, coords: List[tuple], world_model_rtree, next_poi_id: int) -> int:
         """
-        對指定道路進行店家補完。
-        為了確保空間記憶的一致性，使用 road_id 作為 Random Seed。
+        【對指定道路進行店家補完】
+        作用：使用 road_id 作為隨機種子，沿線生成店家並插入空間索引。
         """
         if road_id in self.enriched_roads or not road_name:
             return next_poi_id
         self.enriched_roads.add(road_id)
+
 
         # Use the road ID (or name) to seed the random generator so it's consistent
         seed_str = f"enrich_{road_name}_{road_id}"

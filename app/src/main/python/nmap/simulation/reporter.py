@@ -1,13 +1,31 @@
+"""
+定向模擬資訊播報轉換器 (Simulation NVDA Reporter)
+
+作用：
+將複雜的多維度模擬數據（天氣、地質、障礙、NPC、白手杖、聲景）整理為最適合 NVDA 螢幕報讀軟體朗讀的文字串。
+黃金播報優先級設計（無障礙最高原則）：
+1. ⚠️ 緊急狀況與致命危險最優先（車道邊緣、深坑）
+2. 🦯 白手杖觸覺反饋（導盲磚紋理、牆壁敲擊聲）
+3. ❗ 周遭動態突發事件（行人擦肩、機車靠近）
+4. 📍 腳下路況與地面材質（碎石、積水、台階）
+5. 🔊 環境聲景方位（便利商店開門聲、公車進站聲）
+6. 🌤️ 大環境宏觀資訊（區域型態、天候）
+"""
 from typing import Dict, Any, List
 
+
 class SimulationReporter:
-    """將模擬資料轉換為 NVDA 友善的報表。"""
+    """
+    模擬數據 NVDA 報表產生器
+    """
 
     def __init__(self) -> None:
         pass
 
     def generate_step_report(self, events: List[Dict[str, Any]], ambient_sounds: List[Dict[str, Any]], cane_result: Dict[str, Any], risk_level: str, weather: Dict[str, Any], ground: Dict[str, str], area_info: Dict[str, Any], difficulty_settings: Dict[str, Any], player_memory: str) -> str:
-        """產生單步播報內容。"""
+        """
+        【產生每一步的 NVDA 語音報讀文字】
+        """
         
         area_desc = area_info.get('description', '未知區域')
         weather_desc = weather.get('condition', '晴天')
@@ -21,6 +39,7 @@ class SimulationReporter:
 
         # 重構播報順序：以重度視障者需求為核心，將最重要/最危險的資訊排在最前面
         report = ""
+
         
         # 1. ⚠️緊急/危險最優先 (安全第一)
         if risk_level in ['high', 'critical'] or risk_desc != '安全':

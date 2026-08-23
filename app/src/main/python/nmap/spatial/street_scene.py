@@ -1,18 +1,28 @@
+"""
+真實街景風貌與公共基礎設施分析引擎 (Street Scene & Infrastructure Engine)
+
+作用：
+1. 街景型態判別：結合道路屬性分析目前是「行人徒步商圈」、「寬敞幹道大馬路」還是「清靜生活巷弄」。
+2. 公共基礎設施掃描：統計行道樹 (tree)、路燈 (lamp)、休憩座椅 (bench) 與騎樓 (arcade)。
+3. 建築天際線高度分析：估算周遭大樓平均樓層（摩天商辦、現代公寓、傳統騎樓），描繪立體的真實街景。
+"""
 import math
 from typing import Dict, Any, List
 
+
 class StreetSceneEngine:
     """
-    Real-World Physical Street Scene Engine.
-    Analyzes physical road geometry, building architecture, street infrastructure (trees, lamps, arcades, benches),
-    and environmental atmosphere to paint a 100% realistic street scene picture.
+    街道場景風貌分析引擎
     """
 
     def analyze_scene(self, lat: float, lon: float, heading_deg: float, world_model: Any) -> Dict[str, Any]:
+        """
+        【分析當前位置的街道風貌與周遭環境氛圍】
+        """
         pois = world_model.pois
         buildings = world_model.buildings
 
-        # 1. Classify Physical Street Layout
+        # 1. 判定道路型態與氛圍
         road_info = world_model.get_road_info(lat, lon, heading_deg)
         highway_type = road_info.get("highway_type", "unclassified")
         street_name = road_info.get("street_name", "街道")
@@ -30,11 +40,12 @@ class StreetSceneEngine:
             scene_type = "繁華都市街道"
             atmosphere = "典型都市街景，車流與行人交織"
 
-        # 2. Extract Street Physical Infrastructure (Trees, Lamps, Benches, Arcades)
+        # 2. 提取街道公共設施 (行道樹、路燈、長椅、騎樓)
         tree_count = 0
         lamp_count = 0
         bench_count = 0
         arcade_found = False
+
 
         for raw_p in pois:
             tags = getattr(raw_p, "tags", {})

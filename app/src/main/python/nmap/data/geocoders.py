@@ -1,3 +1,14 @@
+"""
+高精度地理編碼與地址解析器 (Geocoding & Reverse Geocoding)
+
+作用：
+1. 正向地理編碼 (geocode)：將使用者輸入的中文地址（如「淡水區北新路177號」）或地標名（如「台北101」）轉成精確經緯度。
+   - 第一優先：ArcGIS World Geocoder（門牌定位極精準，命中率高）。
+   - 第二備援：OSM Nominatim。
+   - 門牌補強：若找不到特定門牌，使用 Overpass API 沿路搜尋最近的門牌節點。
+2. 反向地理編碼 (reverse_geocode)：給予經緯度座標，反查出人類看得懂的完整地址與大樓社區名稱。
+3. 萬能輸入解析 (parse_input)：無論使用者輸入「純座標 (25.03, 121.56)」、「Google 地圖短網址」或「地址文字」，都能一秒解析。
+"""
 import requests
 import re
 import urllib.parse
@@ -11,9 +22,7 @@ DEFAULT_USER_AGENT = "nmap-blind-world-explorer/1.0 (accessibility-gis-engine)"
 
 class NominatimClient:
     """
-    OpenStreetMap Nominatim Client with fallback Overpass House Number resolution.
-    Converts addresses, coordinates, and Google Maps links into precise GPS positions.
-    Fast execution (< 0.2s) with SQLite caching.
+    地理編碼服務客戶端（整合 ArcGIS、Nominatim、Overpass 門牌補全）
     """
 
     def __init__(self, cache_manager: Optional[CacheManager] = None):
@@ -23,8 +32,7 @@ class NominatimClient:
 
     def geocode(self, query: str) -> Optional[Dict[str, Any]]:
         """
-        Geocode location query string.
-        Attempts exact Nominatim lookup first for speed (<0.2s), then Overpass house number resolution if needed.
+        【正向地理編碼：地址文字 -> GPS 經緯度】
         """
         query_clean = query.strip()
         cache_key = f"geo:{query_clean}"
@@ -87,7 +95,7 @@ class NominatimClient:
         except Exception as e:
             pass
 
-        # 2. If query contains house numbers (e.g. "北新路177號"), try Overpass resolution
+        # 3. 若地址包含門牌號（例如「北新路177號」），嘗試用 Overpass 搜尋沿線門牌
         street_match = re.search(r"([^\d\s]+(?:路|街|大道|段|巷|弄))\s*(\d+)號?", query_clean)
         if street_match:
             street_name = street_match.group(1)
@@ -97,7 +105,23 @@ class NominatimClient:
                 self.cache.set_geocode(cache_key, res)
                 return res
 
-        # 3. Fallback: If query contains house numbers like '177號', strip house number and retry
+        # 4. 回退機制：若找不到精確門牌號，移除門牌號後以路名再次搜尋
+        fallback_query = re.sub(r"\d+號", "", query_clean).strip()
+        if fallback_query and fallback_query != query_clean:
+            return self.geocode(fallback_query)
+
+        return None
+
+    def _search_overpass_housenumber(self, street_name: str, housenumber: str) -> Optional[Dict[str, Any]]:
+        """
+        【使用 Overpass API 沿街搜尋門牌號碼】
+        作用：在 OSM 道路上搜尋具有 addr:housenumber 標籤的節點，找出最靠近目標號碼的座標。
+        """
+        cache_key = f"housenum:{street_name}:{housenumber}"
+        cached = self.cache.get_geocode(cache_key)
+        if cached:
+            return cached
+
         fallback_query = re.sub(r"\d+號", "", query_clean).strip()
         if fallback_query and fallback_query != query_clean:
             return self.geocode(fallback_query)
@@ -189,7 +213,8 @@ class NominatimClient:
 
     def reverse_geocode(self, lat: float, lon: float) -> Optional[Dict[str, Any]]:
         """
-        Reverse geocode latitude & longitude to address details.
+        【反向地理編碼：GPS 經緯度 -> 中文詳細地址】
+        作用：在使用者透過 GPS 定位時，查詢目前位於哪一個縣市、行政區、路名、門牌或社區大樓名稱。
         """
         cache_key = f"rev:{round(lat, 5)},{round(lon, 5)}"
         cached = self.cache.get_geocode(cache_key)
@@ -261,11 +286,16 @@ class NominatimClient:
 
     def parse_input(self, input_str: str) -> Tuple[Optional[float], Optional[float], str]:
         """
-        Parse input string (GPS coords, Google Maps URL, or Address) to (lat, lon, label).
+        【萬能輸入解析器】
+        作用：支援三種輸入格式：
+        1. 純經緯度數字（例如："25.0601, 121.5332"）。
+        2. Google Maps 網址（例如：包含 "@25.033,121.565" 的連結）。
+        3. 中文地址或地標名稱（例如："台北市信義區市府路1號" 或 "台北車站"）。
         """
         input_str = input_str.strip()
 
         # Direct Lat,Lon regex e.g. "25.0601, 121.5332"
+
         coord_match = re.match(r"^([+-]?\d+\.?\d*)[,\s]+([+-]?\d+\.?\d*)$", input_str)
         if coord_match:
             lat = float(coord_match.group(1))

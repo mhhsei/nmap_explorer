@@ -1,23 +1,28 @@
+"""
+非視覺街景感知合成器 (Non-Visual Street View Synthesizer)
+
+作用：
+為視障者將空間圖資轉譯為生動的街景意象（例如：「面向正北的北新路街景：兩側店家林立，道路寬敞，設有劃設人行道」）。
+"""
 from typing import Dict, Any
 from nmap.spatial.geometry import bearing_to_cardinal
 
 
 class StreetViewAnalyzer:
     """
-    Visual Street View Synthesizer & Spatial Scene Analyzer.
-    Generates non-visual scene descriptions for NVDA and visual street scene metadata for sighted users.
+    非視覺街景合成器
     """
 
     def analyze_scene(self, lat: float, lon: float, heading_deg: float, world_model) -> Dict[str, Any]:
         """
-        Synthesize visual street view environment details based on WorldModel spatial graphs.
+        【合成目前朝向的非視覺街景摘要】
         """
         road_info = world_model.get_road_info(lat, lon, heading_deg)
         pois = world_model.get_nearby_pois(lat, lon, heading_deg, radius_m=50.0)
         buildings = world_model.get_nearby_buildings(lat, lon, heading_deg, radius_m=40.0)
         cardinal = bearing_to_cardinal(heading_deg)
 
-        # Classify street scene environment
+        # 街景特徵分類（店家、樹木、騎樓）
         has_stores = len([p for p in pois if p['category'] in ['convenience', 'restaurant', 'shop', 'cafe']]) > 0
         has_trees = len([p for p in pois if 'park' in p['category'] or 'tree' in p['category']]) > 0
         has_arcade = "騎樓" in road_info.get("sidewalk_desc", "") or "騎樓" in road_info.get("surface", "")
@@ -44,3 +49,4 @@ class StreetViewAnalyzer:
             "has_stores": has_stores,
             "has_arcade": has_arcade
         }
+

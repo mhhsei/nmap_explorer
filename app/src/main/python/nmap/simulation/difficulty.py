@@ -1,7 +1,17 @@
+"""
+定向行動模擬訓練難度管理器 (Simulation Difficulty Manager)
+
+作用：
+1. 提供「初學模式（高提示、人車少、自動白手杖）」、「一般模式」與「專家模式（高突發事件、複雜障礙）」。
+2. 支援自訂人潮倍率、車流倍率、障礙物頻率與路人主動協助機率。
+"""
 from typing import Dict, Any
 
+
 class DifficultyManager:
-    """管理模擬難度設定。"""
+    """
+    模擬難度管理器
+    """
     
     PRESETS = {
         'beginner': {
@@ -51,11 +61,12 @@ class DifficultyManager:
         self.settings: Dict[str, Any] = self.PRESETS.get(preset_name, self.PRESETS['normal']).copy()
 
     def get_settings(self) -> Dict[str, Any]:
-        """取得當前難度設定。"""
+        """取得當前難度設定參數字典"""
         return self.settings
 
     def set_difficulty(self, name: str) -> None:
-        """設定難度為預設模式。"""
+        """切換難度預設模式（beginner / normal / expert / custom）"""
+
         if name in self.PRESETS:
             self.current_preset = name
             self.settings = self.PRESETS[name].copy()

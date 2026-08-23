@@ -108,6 +108,44 @@ class WebAudioEngine {
     this.playSpatialTone(520, 'sine', 0, 0, -1, 0.08);
   }
 
+  playTick(isLeft = false) {
+    // 轉向時左右耳立體聲刻度音
+    this.playSpatialTone(720, 'sine', isLeft ? -0.8 : 0.8, 0, -0.5, 0.03);
+  }
+
+  playSettledChime() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      this.playSpatialTone(523, 'sine', 0, 0, -1, 0.09);
+      setTimeout(() => {
+        this.playSpatialTone(784, 'sine', 0, 0, -1, 0.14);
+      }, 90);
+    } catch (e) {}
+  }
+
+  playVirtualPanChime() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      this.playSpatialTone(440, 'triangle', 0, 0, -1, 0.08);
+      setTimeout(() => {
+        this.playSpatialTone(659, 'sine', 0, 0, -1, 0.12);
+      }, 80);
+    } catch (e) {}
+  }
+
+  playBeacon(relBearing = 0, distM = 5) {
+    if (!this.enabled) return;
+    const rad = relBearing * Math.PI / 180.0;
+    const distAudio = Math.max(0.5, Math.min(10.0, distM));
+    const x = distAudio * Math.sin(rad);
+    const z = -distAudio * Math.cos(rad);
+    this.playSpatialTone(880, 'sine', x, 0, z, 0.15);
+  }
+
   playArrival() {
     if (!this.enabled) return;
     this.initContext();
@@ -207,7 +245,8 @@ class WebAudioEngine {
   }
 }
 
-// Item 4.2: Client-side IndexedDB Offline Storage Manager
+// IndexedDB 離線快取管理器 (IndexedDB Offline Storage Manager)
+// 作用：將地圖圖資、POI 與使用者歷史紀錄儲存在瀏覽器本機端，離線也能快速讀取。
 class IndexedDBStorageManager {
   constructor() {
     this.dbName = "nmap_offline_db";
@@ -258,7 +297,8 @@ class IndexedDBStorageManager {
   }
 }
 
-// App Logic Controller
+// NMap Web 前端主控器 (NMap Web Application Main Controller)
+// 作用：處理使用者的鍵盤與觸控輸入、發送 API 請求、同步客戶端預測座標、控制 3D 空間音效與 NVDA 語音輸出。
 class NmapWebApp {
   constructor() {
     this.audio = new WebAudioEngine();
@@ -270,6 +310,7 @@ class NmapWebApp {
     this.lastSpokenText = '';
     this.simulationMode = false;
     this.simDifficulty = 'normal';
+
     
     // RPG Game Loop State
     this.keysDown = {};
@@ -284,6 +325,20 @@ class NmapWebApp {
     this.lastSpeechTime = Date.now();
     this.currentStreetName = null;
     this.passedIntersectionTracking = false;
+
+    // Diagnostic & Trajectory Session Logs (AI-Optimized)
+    this.sessionStartTime = Date.now();
+    this.traceCounter = 0;
+    this.currentTraceId = 0;
+    this.sessionCausalityTrace = [];
+    this.sessionSpeechHistory = [];
+    this.sessionDetectedPois = new Map();
+    this.sessionInteractions = [];
+    this.sessionAnomalies = [];
+    this.currentRoadName = "";
+    this.lastSpokenDoor = "";
+    this.lastSpokenIntersection = "";
+
     this.initElements();
     this.bindEvents();
     this.isReady = true;
@@ -295,6 +350,34 @@ class NmapWebApp {
         this.checkStatus();
     }
     this.startRAFGameLoop();
+  }
+
+  recordTrace(type, payload = {}) {
+    if (!this.sessionCausalityTrace) this.sessionCausalityTrace = [];
+    const timeStr = new Date().toISOString();
+    const traceId = payload.trace_id || this.currentTraceId || ++this.traceCounter;
+    this.sessionCausalityTrace.push({
+      trace_id: traceId,
+      t: timeStr,
+      type: type,
+      ...payload
+    });
+    if (this.sessionCausalityTrace.length > 1500) {
+      this.sessionCausalityTrace.shift();
+    }
+  }
+
+  recordInteraction(action, detail = "") {
+    if (!this.sessionInteractions) this.sessionInteractions = [];
+    const timeStr = new Date().toISOString();
+    this.sessionInteractions.push({
+      time: timeStr,
+      action: action,
+      detail: detail
+    });
+    if (this.sessionInteractions.length > 500) {
+      this.sessionInteractions.shift();
+    }
   }
 
   initElements() {
@@ -381,33 +464,150 @@ class NmapWebApp {
     // New Accessible UI Buttons
     const uiBtnScan = document.getElementById("ui-btn-scan");
     if (uiBtnScan) {
-        uiBtnScan.addEventListener("click", () => this.announceLeftRightSweep());
+        uiBtnScan.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "左右兩側掃描 (F)");
+            this.announceLeftRightSweep();
+        });
     }
 
     const uiBtnAround = document.getElementById("ui-btn-around");
     if (uiBtnAround) {
-        uiBtnAround.addEventListener("click", () => this.announceAllPOIs());
+        uiBtnAround.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "周遭設施探索 (Enter)");
+            this.announceAllPOIs();
+        });
     }
 
     const uiBtnIntersection = document.getElementById("ui-btn-intersection");
     if (uiBtnIntersection) {
-        uiBtnIntersection.addEventListener("click", () => this.announceUpcomingIntersection());
+        uiBtnIntersection.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "前方路口狀況 (I)");
+            this.announceUpcomingIntersection();
+        });
     }
 
     const uiBtnLoc = document.getElementById("ui-btn-loc");
     if (uiBtnLoc) {
-        uiBtnLoc.addEventListener("click", () => this.announceRoadAndDoorNumbers());
+        uiBtnLoc.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "目前位置與門牌 (R)");
+            this.announceRoadAndDoorNumbers();
+        });
     }
+
+    const uiBtnCheckUpdate = document.getElementById("ui-btn-check-update");
+    if (uiBtnCheckUpdate) {
+        uiBtnCheckUpdate.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "手動檢查 App 更新");
+            this.checkForAppUpdates(false);
+        });
+    }
+
 
     const uiBtnExportLog = document.getElementById("ui-btn-export-log");
     if (uiBtnExportLog) {
         uiBtnExportLog.addEventListener("click", () => {
-            if (window.AndroidBridge && window.AndroidBridge.shareAppLogs) {
+
+            this.recordInteraction("點擊按鈕", "匯出 AI 結構化診斷日誌壓縮包");
+            const detectedList = Array.from(this.sessionDetectedPois ? this.sessionDetectedPois.values() : []);
+            const sessionDurationSec = Math.round((Date.now() - (this.sessionStartTime || Date.now())) / 1000);
+            const exportPayload = {
+                exportTime: new Date().toISOString(),
+                sessionDurationSec: sessionDurationSec,
+                sessionMetrics: {
+                    duration_s: sessionDurationSec,
+                    total_speech_count: this.sessionSpeechHistory ? this.sessionSpeechHistory.length : 0,
+                    total_pois_detected: detectedList.length,
+                    total_interactions: this.sessionInteractions ? this.sessionInteractions.length : 0,
+                    total_traces: this.sessionCausalityTrace ? this.sessionCausalityTrace.length : 0
+                },
+                currentRoad: this.currentRoadName || (this.currentStreetName || "未知道路"),
+                lastDoor: this.lastSpokenDoor || "",
+                lastIntersection: this.lastSpokenIntersection || "",
+                lastHeading: window.lastHeading || 0,
+                lastGps: {
+                    lat: window.lastGpsLat,
+                    lon: window.lastGpsLon
+                },
+                speechHistory: this.sessionSpeechHistory || [],
+                detectedPois: detectedList,
+                causalityTrace: this.sessionCausalityTrace || [],
+                interactions: this.sessionInteractions || [],
+                anomalies: this.sessionAnomalies || []
+            };
+
+            const jsonStr = JSON.stringify(exportPayload);
+            if (window.AndroidBridge && window.AndroidBridge.shareAppLogsWithData) {
+                window.AndroidBridge.shareAppLogsWithData(jsonStr);
+            } else if (window.AndroidBridge && window.AndroidBridge.shareAppLogs) {
                 window.AndroidBridge.shareAppLogs();
             } else {
                 alert("目前未在 Android 原生環境中執行，無法直接分享系統日誌。");
             }
         });
+    }
+
+    // Permission Banner & Manual Search Wiring
+    const permBanner = document.getElementById("permission-banner");
+    const openSettingsBtn = document.getElementById("open-settings-btn");
+    const manualSearchBtn = document.getElementById("manual-search-btn");
+    const searchGoBtn = document.getElementById("search-go-btn");
+    const searchInputVis = document.getElementById("location-input-visible");
+
+    if (openSettingsBtn) {
+      openSettingsBtn.addEventListener("click", () => {
+        if (window.AndroidBridge && window.AndroidBridge.openAppSettings) {
+          window.AndroidBridge.openAppSettings();
+        } else {
+          alert("請前往手機系統設定開啟定位權限。");
+        }
+      });
+    }
+
+    if (manualSearchBtn && searchInputVis) {
+      manualSearchBtn.addEventListener("click", () => {
+        searchInputVis.focus();
+        this.updateLiveLog("請輸入探索地址或地標名稱。", false, true);
+      });
+    }
+
+    if (searchGoBtn && searchInputVis) {
+      searchGoBtn.addEventListener("click", () => {
+        const query = searchInputVis.value.trim();
+        if (query) this.teleport(query);
+      });
+      searchInputVis.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const query = searchInputVis.value.trim();
+          if (query) this.teleport(query);
+        }
+      });
+    }
+
+    // Modal Actions Wiring
+    const poiCloseBtn = document.getElementById("poi-modal-close-btn");
+    const poiDismissBtn = document.getElementById("poi-modal-dismiss");
+    const poiNavNmapBtn = document.getElementById("poi-modal-nav-nmap");
+    const poiNavGmapsBtn = document.getElementById("poi-modal-nav-gmaps");
+
+    if (poiCloseBtn) poiCloseBtn.addEventListener("click", () => this.closePoiModal());
+    if (poiDismissBtn) poiDismissBtn.addEventListener("click", () => this.closePoiModal());
+    if (poiNavNmapBtn) poiNavNmapBtn.addEventListener("click", () => this.startBeaconToTarget());
+    if (poiNavGmapsBtn) poiNavGmapsBtn.addEventListener("click", () => this.launchGoogleMapsNavigation());
+
+    // ESC key closes modal
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        this.closePoiModal();
+      }
+    });
+
+    // Check location permission on cold start
+    if (window.AndroidBridge && window.AndroidBridge.hasLocationPermission) {
+      if (!window.AndroidBridge.hasLocationPermission()) {
+        if (permBanner) permBanner.style.display = "block";
+        this.updateLiveLog("📍 定位權限未開啟，已進入手動探索模式。請直接輸入地址開始探索，或點擊開啟系統設定。", false, true);
+      }
     }
 
     // NLP Query Form
@@ -671,23 +871,56 @@ class NmapWebApp {
   }
 
   updateLiveLog(text, isError = false, isForce = false) {
-    if (text === this.lastSpokenText && !isError && !isForce) {
+    if (!text || (text === this.lastSpokenText && !isError && !isForce)) {
       return;
-    }
-
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
     }
 
     this.lastSpokenText = text;
     this.lastSpeechTime = Date.now();
 
+    // Diagnostic Speech History Collection
+    if (!this.sessionSpeechHistory) this.sessionSpeechHistory = [];
+    const timeStr = new Date().toISOString();
+    const speechType = isError ? "ALERT" : (isForce ? "HEADING_OR_MANUAL" : "PROXIMITY_POI");
+    this.sessionSpeechHistory.push({
+      time: timeStr,
+      text: text.trim(),
+      type: speechType
+    });
+    if (this.sessionSpeechHistory.length > 500) {
+      this.sessionSpeechHistory.shift();
+    }
+
+    if (this.recordTrace) {
+      this.recordTrace("TTS_SPEECH", {
+        text: text.trim(),
+        type: speechType,
+        is_error: isError
+      });
+    }
+
+    // 1. Android 原生 TalkBack 輔助功能廣播 (announceForAccessibility) 與 TTS 引擎
+    if (window.AndroidBridge && window.AndroidBridge.speak) {
+      window.AndroidBridge.speak(text, true);
+    }
+
+    // 2. PC 瀏覽器 / NVDA Web Speech API 備援
+    if (!window.AndroidBridge && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'zh-TW';
+        u.rate = 1.15;
+        window.speechSynthesis.speak(u);
+      } catch (e) {}
+    }
+
+    // 3. ARIA Live Region 即時注入 (供 NVDA / 螢幕閱讀器捕捉)
     if (this.liveLog) {
-      // Small timeout forces aria-live to trigger even if text hasn't changed or if it changed rapidly
       this.liveLog.textContent = "";
       setTimeout(() => {
-        this.liveLog.textContent = text;
-      }, 50);
+        if (this.liveLog) this.liveLog.textContent = text;
+      }, 20);
     }
 
     const historyList = document.getElementById("history-list");
@@ -767,6 +1000,35 @@ class NmapWebApp {
 
   updatePOIs(pois) {
     this.lastPois = pois || [];
+
+    // Diagnostic Detected POIs Collection
+    if (pois && Array.isArray(pois)) {
+      if (!this.sessionDetectedPois) this.sessionDetectedPois = new Map();
+      const timeStr = new Date().toLocaleTimeString();
+      pois.forEach(p => {
+        if (!p || !p.name) return;
+        const key = `${p.name}_${p.lat}_${p.lon}`;
+        if (!this.sessionDetectedPois.has(key)) {
+          this.sessionDetectedPois.set(key, {
+            firstSeenTime: timeStr,
+            name: p.name,
+            category: this.translateCategory(p.category),
+            rawCategory: p.category || "",
+            clockPosition: p.clock_position || "",
+            distanceM: p.distance_m || 0,
+            relativeDirection: p.relative_direction || "",
+            lat: p.lat,
+            lon: p.lon,
+            phone: p.phone || "",
+            opening_hours: p.opening_hours || "",
+            wheelchair: p.wheelchair || "",
+            cuisine: p.cuisine || "",
+            brand: p.brand || ""
+          });
+        }
+      });
+    }
+
     const realtime = this.getRealtimePois();
     if (!realtime || realtime.length === 0) {
       this.poiContainer.innerHTML = '<p class="empty-tip">周遭 100 公尺內無特別登錄的設施。</p>';
@@ -774,22 +1036,148 @@ class NmapWebApp {
     }
 
     let html = "";
-    realtime.forEach((p) => {
-      const flag = p.wheelchair === "yes" ? " <span style='color:#22c55e;'>[無障礙]</span>" : "";
+    realtime.forEach((p, idx) => {
+      const flag = p.wheelchair === "yes" ? " <span style='color:#22c55e;'>[♿無障礙]</span>" : "";
       const extras = [];
       if (p.opening_hours) extras.push(`營業：${p.opening_hours}`);
       if (p.cuisine) extras.push(`料理：${p.cuisine}`);
       if (p.phone) extras.push(`電話：${p.phone}`);
-      const extraStr = extras.length > 0 ? `<br>${extras.join(" | ")}` : "";
+      const extraStr = extras.length > 0 ? `<br><small style="color:#94a3b8;">${extras.join(" | ")}</small>` : "";
 
       html += `
-        <div class="poi-card" tabindex="0" aria-label="${p.name}，距離 ${p.distance_m} 公尺，位於 ${p.clock_position}，${p.category}">
+        <div class="poi-card" tabindex="0" data-idx="${idx}" aria-label="${p.name}，距離 ${p.distance_m} 公尺，位於 ${p.clock_position}，點擊查看詳細資訊與導航">
           <h4>${p.name}${flag}</h4>
-          <p>類別：${p.category} | 方位：${p.clock_position} (${p.relative_direction}) | 距離：${p.distance_m} 公尺${extraStr}</p>
+          <p>類別：${this.translateCategory(p.category)} | 方位：${p.clock_position} (${p.relative_direction}) | 距離：${p.distance_m} 公尺${extraStr}</p>
         </div>
       `;
     });
     this.poiContainer.innerHTML = html;
+
+    // Bind click events to open POI detail modal
+    const cards = this.poiContainer.querySelectorAll(".poi-card");
+    cards.forEach((card) => {
+      const idx = parseInt(card.getAttribute("data-idx"), 10);
+      const poi = realtime[idx];
+      card.addEventListener("click", () => this.showPoiDetail(poi));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this.showPoiDetail(poi);
+        }
+      });
+    });
+  }
+
+  showPoiDetail(poi) {
+    if (!poi) return;
+    this.activePoiTarget = poi;
+    const modal = document.getElementById("poi-detail-modal");
+    const title = document.getElementById("poi-modal-title");
+    const body = document.getElementById("poi-modal-body");
+    if (!modal || !title || !body) return;
+
+    title.textContent = poi.name;
+    const cat = this.translateCategory(poi.category);
+    const wheelchair = poi.wheelchair === "yes" ? "♿ 具備無障礙通行" : (poi.wheelchair === "no" ? "⚠️ 無無障礙設施" : "無障礙狀態未知");
+    
+    let infoRows = [
+      `<div><strong>📍 類別：</strong>${cat}</div>`,
+      `<div><strong>🧭 方位：</strong>${poi.clock_position || '正前方'} (${poi.relative_direction || '前方'})</div>`,
+      `<div><strong>📏 距離：</strong>約 ${poi.distance_m} 公尺 (座標: ${poi.lat.toFixed(5)}, ${poi.lon.toFixed(5)})</div>`,
+      `<div><strong>♿ 無障礙：</strong>${wheelchair}</div>`
+    ];
+
+    if (poi.opening_hours) {
+      infoRows.push(`<div><strong>⏰ 營業時間：</strong>${poi.opening_hours}</div>`);
+    }
+    if (poi.phone) {
+      infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${poi.phone}" style="color:#38bdf8; text-decoration:underline;">${poi.phone}</a></div>`);
+    }
+    if (poi.cuisine) {
+      infoRows.push(`<div><strong>🍽️ 料理風味：</strong>${poi.cuisine}</div>`);
+    }
+
+    body.innerHTML = infoRows.join("");
+    modal.style.display = "flex";
+    body.focus();
+
+    if (this.audio) this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.1);
+    this.updateLiveLog(`開啟地標詳情：${poi.name}，距離 ${poi.distance_m} 公尺，位於 ${poi.clock_position}`, false, true);
+  }
+
+  closePoiModal() {
+    const modal = document.getElementById("poi-detail-modal");
+    if (modal) modal.style.display = "none";
+    this.updateLiveLog("已關閉地標詳情對話框。", false, true);
+  }
+
+  startBeaconToTarget() {
+    if (!this.activePoiTarget) return;
+    const target = this.activePoiTarget;
+    this.updateLiveLog(`已設定【${target.name}】為目標。開始 3D 空間聲音導引。`, false, true);
+    this.closePoiModal();
+
+    if (this.beaconInterval) clearInterval(this.beaconInterval);
+    
+    // Play beacon step every 3 seconds
+    const playBeaconStep = () => {
+      if (!this.activePoiTarget || !this.localLat || !this.localLon) return;
+      const targetBrng = NMapGeometry.calculateBearing(this.localLat, this.localLon, target.lat, target.lon);
+      const relBrng = NMapGeometry.relativeBearing(this.localHeading || 0, targetBrng);
+      const dist = NMapGeometry.haversineDistance(this.localLat, this.localLon, target.lat, target.lon);
+      
+      if (dist <= 3.0) {
+        if (this.audio) this.audio.playArrival();
+        this.updateLiveLog(`🎉 已抵達目標：${target.name}！`, false, true);
+        clearInterval(this.beaconInterval);
+        this.beaconInterval = null;
+        return;
+      }
+      
+      if (this.audio) this.audio.playBeacon(relBrng, dist);
+    };
+
+    playBeaconStep();
+    this.beaconInterval = setInterval(playBeaconStep, 3000);
+  }
+
+  launchGoogleMapsNavigation() {
+    if (!this.activePoiTarget) return;
+    const t = this.activePoiTarget;
+    this.updateLiveLog(`正在開啟 Google 地圖步行導航至 ${t.name}...`, false, true);
+    this.closePoiModal();
+    if (window.AndroidBridge && window.AndroidBridge.openGoogleMaps) {
+      window.AndroidBridge.openGoogleMaps(t.lat, t.lon, t.name);
+    } else {
+      window.open(`https://www.google.com/maps/dir/?api=1&destination=${t.lat},${t.lon}&travelmode=walking`, "_blank");
+    }
+  }
+
+  virtualPan(forwardM = 30.0, sideM = 0.0) {
+    if (this.audio) this.audio.playVirtualPanChime();
+    this.updateLiveLog(`正在向前平移探索...`, false, true);
+
+    fetch("/api/virtual_pan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ forward_m: forwardM, side_m: sideM })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success && data.pan_data) {
+        const pd = data.pan_data;
+        const msg = data.action_message || `探索視角平移至【${pd.road_name}】`;
+        this.updateLiveLog(msg, false, true);
+        if (pd.pois && pd.pois.length > 0) {
+          this.updatePOIs(pd.pois);
+        }
+      } else {
+        this.updateLiveLog(data.action_message || "平移探索無回應。", false, true);
+      }
+    })
+    .catch(err => {
+      console.error("Virtual pan error:", err);
+    });
   }
 
   announceAllPOIs() {
@@ -817,25 +1205,38 @@ class NmapWebApp {
       .then((data) => {
         if (!data.success) return;
         
-        let street = data.road_info && data.road_info.street_name ? data.road_info.street_name : "未知道路";
+        let street = data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路" 
+          ? data.road_info.street_name 
+          : (data.location_label && !data.location_label.includes("GPS") ? data.location_label : "目前道路");
+        
         let doors = data.door_estimates || {};
         let doorStr = "";
         
-        const leftValid = doors.left && doors.left !== "無門牌資料";
-        const rightValid = doors.right && doors.right !== "無門牌資料";
+        const leftVal = (doors.left || doors.left_side_estimate || "").trim();
+        const rightVal = (doors.right || doors.right_side_estimate || "").trim();
+        const concise = (doors.concise_door || "").trim();
         
-        if (leftValid && rightValid) {
-          doorStr = `左側門牌約為 ${doors.left}，右側約為 ${doors.right}`;
-        } else if (leftValid) {
-          doorStr = `左側門牌約為 ${doors.left}`;
-        } else if (rightValid) {
-          doorStr = `右側門牌約為 ${doors.right}`;
+        if (leftVal && rightVal) {
+          doorStr = `，左側${leftVal}，右側${rightVal}`;
+        } else if (leftVal) {
+          doorStr = `，左側${leftVal}`;
+        } else if (rightVal) {
+          doorStr = `，右側${rightVal}`;
+        } else if (concise) {
+          doorStr = `，${concise}`;
         } else {
-          doorStr = "附近無門牌資料";
+          doorStr = "";
         }
         
-        let gpsStr = `GPS座標：${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}`;
-        const txt = `目前在 ${street}。${doorStr}。${gpsStr}。`;
+        this.currentRoadName = street;
+        this.lastSpokenDoor = doorStr;
+
+        const headingDeg = (data.heading_deg !== undefined && data.heading_deg !== null) ? data.heading_deg : (this.localHeading || 0);
+        const dirStr = this.getCardinalDirection(headingDeg);
+        const exactDeg = Math.round(((headingDeg % 360.0) + 360.0) % 360.0);
+        const gpsStr = `GPS座標：${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}`;
+        
+        const txt = `走在【${street}】${doorStr}。面向${dirStr} (${exactDeg}°)。${gpsStr}。`;
         
         this.audio.playSpatialTone(480, 'triangle', 0, 0, -0.8, 0.12);
         this.updateLiveLog(`【目前位置】\n${txt}`, false, true);
@@ -864,6 +1265,7 @@ class NmapWebApp {
       .then((res) => res.json())
       .then((data) => {
         if (data.success && data.report) {
+          this.lastSpokenIntersection = data.report;
           this.audio.playArrival();
           this.updateLiveLog(data.report, false, true);
         } else {
@@ -927,8 +1329,10 @@ class NmapWebApp {
           this.audio.playSpatialTone(550, 'sine', 0, 0, -1, 0.2);
 
           let roads = "";
-          if (data.intersection.intersecting_roads && data.intersection.intersecting_roads.length > 0) {
-            roads = `，即將交會 ${data.intersection.intersecting_roads.join("、")}`;
+          const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "";
+          const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路");
+          if (filteredRoads.length > 0) {
+            roads = `，即將交會 ${filteredRoads.join("、")}`;
           }
           const msg = `📍 接近【${juncType}】（約 ${Math.round(juncDist)} 公尺）${roads}。`;
           this.updateLiveLog(msg, false, true);
@@ -1098,41 +1502,77 @@ class NmapWebApp {
     }, 150);
   }
 
-  // ========== 類別中文翻譯器 ==========
+  // ========== 類別中文翻譯器 (全方位 Overture / OSM 中文映射) ==========
   translateCategory(category) {
     const map = {
-      "convenience": "便利商店", "supermarket": "超市", "restaurant": "餐廳",
-      "fast_food": "速食店", "cafe": "咖啡店", "bank": "銀行",
-      "atm": "ATM提款機", "pharmacy": "藥局", "hospital": "醫院",
-      "clinic": "診所", "dentist": "牙醫診所", "police": "警察局",
-      "post_office": "郵局", "school": "學校", "park": "公園",
-      "library": "圖書館", "bar": "酒吧", "pub": "酒吧",
-      "bakery": "烘焙坊", "butcher": "肉舖", "clothes": "服飾店",
-      "shoes": "鞋店", "electronics": "3C電子", "mobile_phone": "手機通訊行",
-      "hairdresser": "美髮店", "beauty": "美容院", "laundry": "洗衣店",
-      "optician": "眼鏡行", "jewelry": "珠寶飾品", "books": "書店",
-      "stationery": "文具店", "pet": "寵物店", "florist": "花店",
-      "car_repair": "汽車修理", "bicycle": "自行車店", "sports": "運動用品",
-      "fuel": "加油站", "car_rental": "租車", "parking": "停車場",
-      "kindergarten": "幼兒園", "university": "大學", "college": "學院",
-      "place_of_worship": "宗教場所", "theatre": "劇場", "cinema": "電影院",
-      "nightclub": "夜店", "marketplace": "市場", "department_store": "百貨公司",
-      "mall": "購物中心", "chemist": "藥妝店", "cosmetics": "化妝品店",
-      "tattoo": "刺青店", "massage": "按摩店", "dry_cleaning": "乾洗店",
-      "travel_agency": "旅行社", "insurance": "保險公司", "lawyer": "律師事務所",
-      "estate_agent": "房仲", "company": "公司行號",
-      "doctor": "診所", "hotel": "旅館", "museum": "博物館",
-      "attraction": "觀光景點", "fitness_centre": "健身房",
-      "ice_cream": "冰淇淋店", "tea": "茶飲店", "bubble_tea": "手搖飲",
-      "copyshop": "影印店", "variety_store": "生活百貨", "hardware": "五金行",
-      "furniture": "傢俱店", "bed": "寢具店", "gift": "禮品店",
-      "food": "食品店", "seafood": "海鮮店", "greengrocer": "蔬果店",
-      "deli": "熟食店", "confectionery": "糖果甜點店",
-      "poi": "地標"
+      // 宗教與歷史地標
+      "buddhist_temple": "寺廟", "temple": "寺廟", "place_of_worship": "宗教場所",
+      "church": "教堂", "mosque": "清真寺", "shrine": "神社/神壇",
+      "landmark_and_historical_building": "歷史建築/地標", "landmark": "地標",
+      "monument": "紀念碑", "historic": "古蹟", "viewpoint": "景觀點", "attraction": "觀光景點",
+      
+      // 美容美髮與個人照護
+      "beauty_salon": "美容美睫", "beauty": "美容院", "hairdresser": "美髮店",
+      "hair_salon": "美髮沙龍", "barber_shop": "理髮廳", "barber": "理髮店",
+      "nail_salon": "美甲店", "spa": "養生水療SPA", "massage": "按摩店", "tattoo": "刺青店",
+
+      // 餐廳、飲食、異國料理
+      "restaurant": "餐廳", "fast_food": "速食店", "cafe": "咖啡店",
+      "bakery": "烘焙坊", "french_restaurant": "法式餐廳", "korean_restaurant": "韓式料理",
+      "japanese_restaurant": "日式料理", "chinese_restaurant": "中式餐廳",
+      "taiwanese_restaurant": "台灣小吃", "italian_restaurant": "義大利餐廳",
+      "breakfast_and_brunch_restaurant": "早餐店", "breakfast_restaurant": "早餐店",
+      "diner": "小吃店", "food_court": "美食街", "buffet": "吃到飽餐廳",
+      "barbecue": "燒肉/烤肉店", "hotpot": "火鍋店", "seafood_restaurant": "海鮮餐廳",
+      "ice_cream": "冰品甜點店", "tea": "茶飲店", "bubble_tea": "手搖飲料店",
+      "bar": "酒吧", "pub": "酒吧", "food": "餐飲小吃", "deli": "熟食小吃",
+      "confectionery": "甜點店", "dessert": "甜品店",
+
+      // 商店、購物、專賣店
+      "convenience": "便利商店", "convenience_store": "便利商店",
+      "supermarket": "超市", "discount_store": "生活百貨", "department_store": "百貨公司",
+      "mall": "購物中心", "marketplace": "傳統市場", "variety_store": "生活五金百貨",
+      "grocery": "生鮮雜貨", "general_store": "雜貨店", "butcher": "肉舖", "seafood": "海鮮店",
+      "greengrocer": "蔬果行", "musical_instrument_store": "樂器行/音樂教室",
+      "music_school": "音樂教室", "clothes": "服飾店", "clothing_store": "服飾店",
+      "shoes": "鞋店", "shoe_store": "鞋店", "optician": "眼鏡行",
+      "jewelry": "珠寶飾品", "books": "書店", "book_store": "書店",
+      "stationery": "文具店", "pet": "寵物店", "pet_store": "寵物用品店",
+      "florist": "花店", "electronics": "3C電子", "mobile_phone": "手機通訊行",
+      "hardware": "五金行", "furniture": "傢俱行", "bed": "寢具店", "gift": "禮品店",
+      "laundry": "洗衣店", "dry_cleaning": "乾洗店", "dry_cleaner": "乾洗店",
+      "chemist": "藥妝店", "cosmetics": "化妝品店", "copyshop": "影印店",
+      "locksmith": "開鎖刻印店", "shoe_repair": "修鞋店",
+
+      // 醫療、健康與緊急設施
+      "pharmacy": "藥局", "hospital": "醫院", "clinic": "診所",
+      "dentist": "牙醫診所", "doctor": "診所", "veterinary_care": "動物醫院",
+      "veterinary": "獸醫診所", "ambulance_station": "救護站",
+
+      // 公共設施、交通與生活服務
+      "bank": "銀行", "atm": "ATM提款機", "post_office": "郵局", "police": "警察局",
+      "fire_station": "消防局", "school": "學校", "kindergarten": "幼兒園",
+      "university": "大學", "college": "學院", "library": "圖書館", "park": "公園",
+      "museum": "博物館", "theatre": "劇場", "cinema": "電影院", "nightclub": "夜店",
+      "fitness_centre": "健身房", "gym": "健身房", "sports_centre": "體育場館",
+      "fuel": "加油站", "gas_station": "加油站", "car_repair": "汽車修理廠",
+      "car_rental": "租車行", "parking": "停車場", "bicycle": "自行車行",
+      "bus_station": "公車站", "bus_stop": "公車站牌", "subway_station": "捷運站",
+      "train_station": "火車站", "travel_agency": "旅行社", "insurance": "保險公司",
+      "lawyer": "律師事務所", "estate_agent": "房屋仲介", "real_estate_agency": "房屋仲介",
+      "company": "公司行號", "hotel": "旅館", "motel": "汽車旅館", "hostel": "青年旅館",
+      "poi": "地標", "building": "建築物"
     };
-    const raw = category || "";
-    // Try exact match, then strip prefix ("shop:clothes" → "clothes")
-    return map[raw] || map[raw.split(":").pop()] || raw;
+
+    const raw = (category || "").trim().toLowerCase();
+    if (!raw) return "地標";
+
+    if (map[raw]) return map[raw];
+
+    const cleanKey = raw.split(":").pop();
+    if (map[cleanKey]) return map[cleanKey];
+
+    return cleanKey.replace(/_/g, " ");
   }
 
   checkStatus(forceFocus = false) {
@@ -1159,7 +1599,7 @@ class NmapWebApp {
           this.updatePOIs(data.pois);
           this.renderRadarCanvas(data);
         } else {
-          this.updateLiveLog("地圖尚未初始化。請在上方輸入框輸入地址（如：淡水區北新路177號）並點擊【開始定位】。", false, forceFocus);
+          this.updateLiveLog("正在等待 GPS 衛星定位中...", false, forceFocus);
         }
       })
       .catch(() => {
@@ -1278,9 +1718,15 @@ class NmapWebApp {
   }
 
   getCardinalDirection(heading) {
-      const dirs = ["正北", "東北", "正東", "東南", "正南", "西南", "正西", "西北"];
-      const index = Math.round(heading / 45) % 8;
-      return dirs[index];
+      const dirs16 = [
+        "正北", "北北東", "東北", "東北東",
+        "正東", "東南東", "東南", "南南東",
+        "正南", "南南西", "西南", "西南西",
+        "正西", "西北西", "西北", "北北西"
+      ];
+      const normalized = ((heading % 360.0) + 360.0) % 360.0;
+      const index = Math.round(normalized / 22.5) % 16;
+      return dirs16[index];
   }
 
   updateGameLogic(dt, time) {
@@ -1497,7 +1943,7 @@ class NmapWebApp {
       this.audio.playTurn();
       
       const dirStr = this.getCardinalDirection(this.localHeading);
-      this.updateLiveLog(`面向${dirStr}`, false, true);
+      this.updateLiveLog(dirStr, false, true);
       
       this.serverSync();
   }
@@ -1605,12 +2051,103 @@ class NmapWebApp {
       this.streetTagsContainer.innerHTML = tagsHtml;
     }
   }
+
+  // 檢查 App 更新 (Check App Updates via GitHub Releases)
+  checkForAppUpdates(silent = false) {
+    if (window.AndroidBridge && window.AndroidBridge.checkForUpdates) {
+      window.AndroidBridge.checkForUpdates(silent);
+    } else {
+      fetch("/api/system/check_update")
+        .then(res => res.json())
+        .then(data => {
+          if (data.has_update) {
+            this.showUpdateDialog(data.latest_version, data.release_title, data.download_url, data.release_notes);
+          } else if (!silent) {
+            this.updateLiveLog(`目前已是最新版本 (v${data.current_version})。`);
+          }
+        })
+        .catch(() => {
+          if (!silent) this.updateLiveLog("檢查更新失敗，請檢查網路連線。");
+        });
+    }
+  }
+
+  // 顯示無障礙更新對話框 (Show Accessible Update Dialog)
+  showUpdateDialog(latestVer, title, downloadUrl, notes) {
+    const modal = document.getElementById("update-modal");
+    const body = document.getElementById("update-modal-body");
+    const confirmBtn = document.getElementById("update-btn-confirm");
+    const cancelBtn = document.getElementById("update-btn-cancel");
+    const progContainer = document.getElementById("update-progress-container");
+    if (!modal || !body) return;
+
+    body.innerHTML = `<p><strong>最新版本：v${latestVer}</strong></p><p><strong>${title || '新版本發布'}</strong></p><div style="max-height:120px;overflow-y:auto;color:#cbd5e1;font-size:0.95em;margin-top:6px;white-space:pre-line;">${notes || "無更新日誌說明"}</div>`;
+    modal.style.display = "flex";
+    if (progContainer) progContainer.style.display = "none";
+
+    if (confirmBtn) {
+      confirmBtn.onclick = () => {
+        if (progContainer) progContainer.style.display = "block";
+        if (window.AndroidBridge && window.AndroidBridge.downloadAndInstallUpdate) {
+          window.AndroidBridge.downloadAndInstallUpdate(downloadUrl);
+        } else {
+          window.open(downloadUrl, "_blank");
+        }
+      };
+    }
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        modal.style.display = "none";
+      };
+    }
+  }
 }
+
+// 全域 AndroidBridge 回調綁定
+window.onUpdateAvailable = (latestVer, title, downloadUrl, fileSize, notes) => {
+  if (window.app) {
+    window.app.showUpdateDialog(latestVer, title, downloadUrl, notes);
+  }
+};
+
+window.onDownloadProgress = (percent) => {
+  const pText = document.getElementById("update-progress-text");
+  const pBar = document.getElementById("update-progress-bar");
+  if (pText) pText.innerText = `下載進度：${percent}%`;
+  if (pBar) pBar.style.width = `${percent}%`;
+};
+
+window.onDownloadComplete = () => {
+  const pText = document.getElementById("update-progress-text");
+  if (pText) pText.innerText = "下載完成，正在啟動安裝...";
+};
+
+window.onUpdateError = (errMsg) => {
+  if (window.app) {
+    window.app.updateLiveLog(`更新失敗：${errMsg}`);
+  }
+};
+
+window.onUpdateCheckResult = (status, info) => {
+  if (status === 'latest' && window.app) {
+    window.app.updateLiveLog(`目前已是最新版本 (v${info})。`);
+  }
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new NmapWebApp();
   window.touchCtrl = new TouchGestureController(window.app);
+  // 開啟 App 2 秒後在背景靜默檢查更新
+  setTimeout(() => {
+    if (window.app) window.app.checkForAppUpdates(true);
+  }, 2000);
 });
+
+
+// 手勢觸控控制器 (Touch Gesture Controller for Visually Impaired)
+// 作用：
+// 1. 單指雙擊 (Double Tap)：即時報讀當前道路名稱與門牌區間。
+// 2. 雙指滑動 (Two-Finger Swipe)：執行虛擬平移 (Virtual Pan)，讓手指能在地圖上左右探索鄰近巷弄與店家。
 class TouchGestureController {
   constructor(app) {
     this.app = app;
@@ -1618,16 +2155,24 @@ class TouchGestureController {
     this.touchStartY = 0;
     this.touchEndX = 0;
     this.touchEndY = 0;
+    this.touchCount = 1;
+    this.lastTapTime = 0;
     
     // Add touch listener to the whole body
     document.body.addEventListener('touchstart', (e) => {
-      this.touchStartX = e.changedTouches[0].screenX;
-      this.touchStartY = e.changedTouches[0].screenY;
+      this.touchCount = e.touches ? e.touches.length : 1;
+      if (e.changedTouches && e.changedTouches.length > 0) {
+        this.touchStartX = e.changedTouches[0].screenX;
+        this.touchStartY = e.changedTouches[0].screenY;
+      }
     }, {passive: true});
 
+
     document.body.addEventListener('touchend', (e) => {
-      this.touchEndX = e.changedTouches[0].screenX;
-      this.touchEndY = e.changedTouches[0].screenY;
+      if (e.changedTouches && e.changedTouches.length > 0) {
+        this.touchEndX = e.changedTouches[0].screenX;
+        this.touchEndY = e.changedTouches[0].screenY;
+      }
       this.handleGesture();
     }, {passive: true});
   }
@@ -1635,33 +2180,69 @@ class TouchGestureController {
   handleGesture() {
     const deltaX = this.touchEndX - this.touchStartX;
     const deltaY = this.touchEndY - this.touchStartY;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
     
-    // Ignore small taps or jitters (if it's a tap, NVDA might consume it, but just in case)
-    if (Math.abs(deltaX) < 50 && Math.abs(deltaY) < 50) return;
+    // Tap or Double-tap detection
+    if (absX < 30 && absY < 30) {
+      const now = Date.now();
+      if (now - this.lastTapTime < 350) {
+        // Double Tap: announce road & door numbers
+        this.app.announceRoadAndDoorNumbers();
+        this.lastTapTime = 0;
+      } else {
+        this.lastTapTime = now;
+      }
+      return;
+    }
 
-    if (Math.abs(deltaX) > Math.abs(deltaY)) {
+    // Two-finger gestures (手指探索地圖 / 虛擬平移)
+    if (this.touchCount >= 2) {
+      if (absX > absY) {
+        if (deltaX > 0) {
+          // Two-finger Swipe Right -> Pan right side alley
+          this.app.virtualPan(0, 20.0);
+        } else {
+          // Two-finger Swipe Left -> Pan left side alley
+          this.app.virtualPan(0, -20.0);
+        }
+      } else {
+        if (deltaY > 0) {
+          // Two-finger Swipe Down -> Pan backward 30m
+          this.app.virtualPan(-30.0, 0);
+        } else {
+          // Two-finger Swipe Up -> Pan forward 30m
+          this.app.virtualPan(30.0, 0);
+        }
+      }
+      return;
+    }
+
+    // Single-finger gestures (常規踏步與轉向)
+    if (absX > absY) {
       // Horizontal swipe
       if (deltaX > 0) {
-        // Swipe Right
+        // Swipe Right -> Turn right 45°
         this.app.turn(45);
       } else {
-        // Swipe Left
+        // Swipe Left -> Turn left 45°
         this.app.turn(-45);
       }
     } else {
       // Vertical swipe
       if (deltaY > 0) {
-        // Swipe Down (Backward)
+        // Swipe Down -> Backward
         this.app.velocity = 4.0;
         this.app.moveDir = -1;
       } else {
-        // Swipe Up (Forward)
+        // Swipe Up -> Forward
         this.app.velocity = 4.0;
         this.app.moveDir = 1;
       }
     }
   }
 }
+
 // Android Sensor Bridge Callbacks
 window.lastHeading = 0;
 window.lastReportedHeading = 0;
@@ -1670,11 +2251,14 @@ window.lastGpsLat = null;
 window.lastGpsLon = null;
 window.isGpsSyncPending = false;
 window.pendingGpsUpdate = null;
+window.lastTickHeading = 0;
+window.lastHapticCardinal = -1;
+window.lastReportedCardinal = "";
 
 window.onHeadingUpdate = function(headingDegrees) {
     window.lastHeading = headingDegrees;
     
-    // 即時同步至前端狀態，確保 3D 空間音效與動態店家方位計算零延遲
+    // 1. 即時同步至前端狀態，確保 3D 空間音效與動態店家方位計算零延遲
     if (window.app) {
         window.app.localHeading = headingDegrees;
         if (window.app.lastData && window.app.renderRadarCanvas) {
@@ -1682,21 +2266,79 @@ window.onHeadingUpdate = function(headingDegrees) {
             window.app.renderRadarCanvas(window.app.lastData);
         }
     }
+
+    // 2. 轉向中立體聲刻度音 (Stereo Tick) 與觸覺震動 (Haptic Tick)
+    let tickDiff = headingDegrees - window.lastTickHeading;
+    while (tickDiff < -180) tickDiff += 360;
+    while (tickDiff > 180) tickDiff -= 360;
+
+    if (Math.abs(tickDiff) >= 15.0) {
+        const isLeft = tickDiff < 0;
+        window.lastTickHeading = headingDegrees;
+        if (window.app && window.app.audio) {
+            window.app.audio.playTick(isLeft);
+        }
+        if (window.AndroidBridge && window.AndroidBridge.vibrateTick) {
+            window.AndroidBridge.vibrateTick();
+        }
+    }
+
+    // 3. 16 方位齒輪刻度觸覺 (0° 正北雙重重震，其餘 15 個方位單點輕震)
+    const cardinalAngles16 = [
+        0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5,
+        180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5
+    ];
+    let matchedCardinal = -1;
+    for (let i = 0; i < cardinalAngles16.length; i++) {
+        let cardDiff = Math.abs(headingDegrees - cardinalAngles16[i]);
+        if (cardDiff > 180) cardDiff = 360 - cardDiff;
+        if (cardDiff <= 2.2) {
+            matchedCardinal = i;
+            break;
+        }
+    }
+
+    if (matchedCardinal !== -1 && matchedCardinal !== window.lastHapticCardinal) {
+        window.lastHapticCardinal = matchedCardinal;
+        if (window.AndroidBridge) {
+            if (matchedCardinal === 0) { // 正北 0°
+                if (window.AndroidBridge.vibrateHeavy) window.AndroidBridge.vibrateHeavy();
+            } else {
+                if (window.AndroidBridge.vibrateClick) window.AndroidBridge.vibrateClick();
+            }
+        }
+    } else if (matchedCardinal === -1) {
+        window.lastHapticCardinal = -1;
+    }
     
-    if (window.app && window.app.isReady !== false && window.lastGpsLat !== null) {
-        let diff = Math.abs(headingDegrees - window.lastReportedHeading);
-        if (diff > 180) diff = 360 - diff;
+    // 4. 即時極簡 16 方位語音回報 (省話模式：只報方位，如「北北東」、「正東」)
+    if (window.app && window.app.isReady !== false) {
+        const now = Date.now();
+        const isWalking = (now - (window.lastMoveTime || 0) < 3000) && ((window.lastWalkSpeed || 0) >= 0.4);
+        const dirStr = window.app.getCardinalDirection(headingDegrees);
         
-        // 身體/手機轉向 >= 25 度時，語音提示新朝向並同步至伺服器
-        if (diff >= 25) {
+        if (dirStr !== window.lastReportedCardinal) {
             if (window.headingTimeout) clearTimeout(window.headingTimeout);
+            const debounceMs = isWalking ? 550 : 200;
+            
             window.headingTimeout = setTimeout(() => {
+                const speechInterval = Date.now() - (window.app.lastSpeechTime || 0);
+                
+                // 行走中若 2 秒內剛朗讀過店家/路口，不打斷語音
+                if (isWalking && speechInterval < 2000) {
+                    window.lastReportedCardinal = dirStr;
+                    window.lastReportedHeading = window.lastHeading;
+                    return;
+                }
+
+                window.lastReportedCardinal = dirStr;
                 window.lastReportedHeading = window.lastHeading;
-                if (window.app.audio) window.app.audio.playTurn();
-                const dirStr = window.app.getCardinalDirection(window.lastHeading);
-                window.app.updateLiveLog(`面向${dirStr}`, false, true);
-                window.app.serverSync();
-            }, 300);
+                
+                if (window.app.audio) window.app.audio.playSettledChime();
+                
+                // 極簡省話：只報方位本身 (例如：「正北」、「北北東」、「東南」)
+                window.app.updateLiveLog(dirStr, false, true);
+            }, debounceMs);
         }
     }
 };
@@ -1705,6 +2347,12 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
     if (!window.app || window.app.isReady === false) {
         window.pendingGpsUpdate = { lat, lon, accuracy, bearing, speed };
         return;
+    }
+
+    // 記錄步行狀態 (供轉向防打斷演算法使用)
+    if ((speed !== undefined && speed > 0.35)) {
+        window.lastWalkSpeed = speed;
+        window.lastMoveTime = Date.now();
     }
 
     let dist = 999999;
@@ -1735,6 +2383,20 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
         // 永遠優先使用精準指南針/陀螺儀真北方位 (避免 GPS 緩慢行走時 bearing=0 覆蓋真實朝向)
         const heading = (window.lastHeading !== undefined && window.lastHeading >= 0) ? window.lastHeading : (bearing >= 0 ? bearing : 0);
 
+        const currentTraceId = ++window.app.traceCounter;
+        window.app.currentTraceId = currentTraceId;
+        if (window.app.recordTrace) {
+            window.app.recordTrace("GPS_INPUT", {
+                trace_id: currentTraceId,
+                lat: lat,
+                lon: lon,
+                accuracy_m: accuracy || 10.0,
+                bearing: bearing,
+                speed_mps: speed,
+                heading_deg: heading
+            });
+        }
+
         fetch("/api/gps", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1749,6 +2411,15 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
         .then(data => {
             window.isGpsSyncPending = false;
             if (data && data.is_loaded) {
+                if (window.app.recordTrace) {
+                    window.app.recordTrace("WORLD_MODEL_SYNC", {
+                        trace_id: currentTraceId,
+                        snapped_lat: data.lat,
+                        snapped_lon: data.lon,
+                        road: data.road_info ? data.road_info.street_name : null,
+                        poi_count: data.pois ? data.pois.length : 0
+                    });
+                }
                 window.app.serverLat = data.lat;
                 window.app.serverLon = data.lon;
                 window.app.localLat = data.lat;
@@ -1765,9 +2436,10 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
 
                 // 首度定位或大跳躍播報
                 if (dist > 50 || dist === 999999) {
-                    const report = data.concise_report || data.full_report || "已更新 GPS 定位。";
+                    const overseasMsg = data.is_overseas ? "【⚠️ 偵測到海外地區：已啟用全球線上圖資模式】" : "";
+                    const report = `${overseasMsg}${data.concise_report || data.full_report || "已更新 GPS 定位。"}`;
                     window.app.updateLiveLog(report, false, true);
-                    window.app.audio.playArrival();
+                    if (window.app.audio) window.app.audio.playArrival();
                 }
             }
 

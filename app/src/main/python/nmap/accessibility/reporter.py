@@ -23,8 +23,11 @@ class NVDAReporter:
 
     def generate_concise_report(self, agent: ExplorerAgent) -> str:
         """
-        Generate an ultra-concise VoiceVista-style spatial announcement for fast stepping.
-        Focuses on clear clock-face directions and passing landmarks without spamming.
+        【產生極簡「省話模式」即時播報 (VoiceVista-Style Concise Announcement)】
+        
+        作用：在視障者快速連續踏步前進時使用。
+        1. 避免冗長廢話（例如不重複唸「你現在走在...」）。
+        2. 只在「換了一條新路」、「即將經過路口」或「前方有新店家接近」時，用 1 秒內能唸完的極簡語句提醒。
         """
         if not agent.is_loaded:
             return "提示：尚未載入起點。"
@@ -40,12 +43,12 @@ class NVDAReporter:
         
         parts = []
 
-        # 1. Street changes
+        # 1. 道路變更提醒（走進新路時報讀）
         if street_name != self.last_street:
             parts.append(f"進入【{street_name}】。")
             self.last_street = street_name
 
-        # 2. Intersections
+        # 2. 路口動態接近與經過提醒
         is_intersection = intersection['junction_type'] not in ["直行道路"]
         has_junc_alert = False
         if is_intersection:
@@ -57,8 +60,8 @@ class NVDAReporter:
                 parts.append(f"前方 {dist} 公尺有路口。")
                 has_junc_alert = True
 
-        # 3. Approaching POIs (Filter out passed ones)
-        # Passed POIs have "後方" in relative_direction (e.g. 左後方, 右後方, 正後方)
+        # 3. 前方接近中店家提醒（過濾掉已經走過、位於後方的店家）
+        # 只要相對方位包含「後方」即視為已路過
         approaching_pois = [p for p in pois if p["distance_m"] <= 50.0 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
@@ -69,18 +72,26 @@ class NVDAReporter:
             has_poi_alert = True
 
         if not has_junc_alert and not has_poi_alert and street_name == self.last_street:
-            pass # Removed unnecessary street description per user request
+            pass # 靜默保持安靜，留給使用者聽環境音的空間
 
 
         return " ".join(parts).strip()
 
     def generate_full_report(self, agent: ExplorerAgent) -> str:
         """
-        Generate a complete spatial exploration report of current position, surroundings,
-        road conditions, crosswalk safety, and nearby POIs (up to 150m radius).
+        【產生 360 度周遭全景探索報告 (Full Spatial Exploration Report)】
+        
+        作用：當使用者按下【空白鍵】或輸入 look 時觸發。
+        完整梳理 150 公尺內的所有環境細節：
+        1. 當前 GPS 座標、方位角與街道風貌。
+        2. 道路車道數、人行道鋪面與單行道屬性。
+        3. 左右兩側門牌號碼估算與相鄰巷弄。
+        4. 前方路口分支、鐘點方位與過馬路安全性。
+        5. 分門別類（餐飲、超商、交通、醫療）列出周遭店家與大樓。
         """
         if not agent.is_loaded:
             return "提示：尚未載入地圖起點。請先使用 start 指令定位起點。"
+
 
         cardinal = bearing_to_cardinal(agent.heading_deg)
         road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)

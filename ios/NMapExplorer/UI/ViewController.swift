@@ -1,3 +1,13 @@
+/**
+ * iOS 主視圖控制器 (iOS Main ViewController & Hybrid Bridge)
+ * 
+ * 作用：
+ * 1. 託管 WKWebView 渲染 NMap 前端無障礙地圖介面。
+ * 2. 注入 JavaScript 相容性墊片 (JS Compatibility Polyfill)：
+ *    自動攔截前端原先呼叫的 `window.AndroidBridge` (如 vibrate 震動、shareAppLogs)，
+ *    無縫轉發給 iOS 的 `window.webkit.messageHandlers.iOSBridge` 原生處理。
+ * 3. 處理離線 HTML/CSS/JS 載入與檔案存取權限。
+ */
 import UIKit
 import WebKit
 
@@ -15,6 +25,7 @@ class ViewController: UIViewController, WKScriptMessageHandler, WKNavigationDele
         loadWebContent()
     }
 
+    // 初始化 WKWebView 並注入跨平台相容橋接腳本
     private func setupWebView() {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
@@ -22,7 +33,7 @@ class ViewController: UIViewController, WKScriptMessageHandler, WKNavigationDele
 
         let userContentController = WKUserContentController()
 
-        // JS Compatibility Bridge: intercept AndroidBridge calls and forward to iOS native handler
+        // JS 相容性橋接器：攔截 window.AndroidBridge 呼叫並轉發至 iOS 原生處理程序
         let bridgeScriptSource = """
         window.AndroidBridge = {
             vibrate: function(ms) {
@@ -53,6 +64,7 @@ class ViewController: UIViewController, WKScriptMessageHandler, WKNavigationDele
             webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         ])
     }
+
 
     private func loadWebContent() {
         if let wwwURL = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "www") {

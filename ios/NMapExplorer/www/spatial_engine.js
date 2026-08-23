@@ -1,9 +1,16 @@
 /**
- * NMap Client-Side Spatial Engine (純 JavaScript 空間拓撲與幾何運算大腦)
- * 專為 iOS、PWA 與無伺服器環境設計，提供 100% 離線/本地端空間計算能力。
+ * NMap 客戶端純 JavaScript 空間拓撲與幾何運算引擎 (Client-Side Spatial Engine)
+ * 
+ * 作用：
+ * 專為 iOS (WebKit)、PWA 與離線環境設計，提供 100% 離線本地端空間計算能力：
+ * 1. NMapGeometry: 半正矢大圓距離、真方位角、時鐘方位、自適應道路吸附 (Adaptive Road Snapping)。
+ * 2. TaiwanBrandSanitizer: 台灣 50+ 熱門品牌清洗字典 (O(1) 雜湊查找)。
+ * 3. IntersectionAnalyzerJS: 前方 60 公尺路口結構與斑馬線分析。
+ * 4. ClientWorldModel: 輕量級空間模型與 POI 方位計算。
+ * 5. NMapCacheDB: 本地 SQLite (iOS 原生橋接) 與 IndexedDB 快取橋接。
  */
 
-// 1. 幾何運算核心 (Pure Geometry)
+// 1. 幾何運算核心 (Pure Geometry & Spherical Geodesy)
 const NMapGeometry = {
   haversineDistance(lat1, lon1, lat2, lon2) {
     const R = 6371000.0;
@@ -15,6 +22,7 @@ const NMapGeometry = {
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   },
+
 
   calculateBearing(lat1, lon1, lat2, lon2) {
     const lat1Rad = lat1 * Math.PI / 180.0;
@@ -54,9 +62,15 @@ const NMapGeometry = {
   },
 
   bearingToCardinal(bearing) {
-    const dirs = ["正北", "東北", "正東", "東南", "正南", "西南", "正西", "西北"];
-    const idx = Math.round(bearing / 45.0) % 8;
-    return dirs[idx];
+    const dirs16 = [
+      "正北", "北北東", "東北", "東北東",
+      "正東", "東南東", "東南", "南南東",
+      "正南", "南南西", "西南", "西南西",
+      "正西", "西北西", "西北", "北北西"
+    ];
+    const normalized = ((bearing % 360.0) + 360.0) % 360.0;
+    const idx = Math.round(normalized / 22.5) % 16;
+    return dirs16[idx];
   },
 
   destinationPoint(lat, lon, distanceM, bearingDeg) {

@@ -1,3 +1,8 @@
+/**
+ * 主畫面 ViewModel 單元測試 (Unit Test)
+ * 
+ * 作用：驗證 MainScreenViewModel 在初始載入狀態時的 UI State 是否正確為 Loading。
+ */
 package com.example.nmapexplorer.ui.main
 
 import com.example.nmapexplorer.data.DataRepository
@@ -22,6 +27,8 @@ class MainScreenViewModelTest {
   }
 }
 
+// 測試用假資料倉庫 (Fake Repository for Testing)
 private class FakeMyModelRepository : DataRepository {
   override val data: Flow<List<String>> = flow { emit(listOf("Sample")) }
 }
+

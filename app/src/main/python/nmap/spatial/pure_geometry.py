@@ -1,3 +1,9 @@
+"""
+純 Python 高效空間幾何運算庫 (Pure Geometry Engine)
+
+作用：完全不依賴 Shapely 或 GEOS 等大型 C++ 函式庫，在行動裝置（Android Chaquopy / iOS）上
+以純數學（向量投影、外積、法向量偏移）實現毫秒級的空間拓撲計算與「自適應行人道路吸附」。
+"""
 import math
 import re
 from typing import Tuple, List, Optional
@@ -5,8 +11,9 @@ from nmap.spatial.geometry import haversine_distance
 
 def point_to_segment_distance_squared(px: float, py: float, vx: float, vy: float, wx: float, wy: float) -> Tuple[float, float, float]:
     """
-    Return minimum distance squared between point (px,py) and segment (vx,vy)-(wx,wy),
-    and the closest point on the segment.
+    【點到線段的最小平方距離與垂足投影點計算】
+    作用：利用向量內積找出點 (px, py) 落在線段 (vx, vy)-(wx, wy) 上的垂直投影點。
+    若垂足超出線段兩端，則自動截斷至端點。
     """
     l2 = (wx - vx)**2 + (wy - vy)**2
     if l2 == 0:
@@ -19,14 +26,14 @@ def point_to_segment_distance_squared(px: float, py: float, vx: float, vy: float
 
 def find_closest_point_on_line(lat: float, lon: float, geom: List[Tuple[float, float]]) -> Tuple[float, float, float]:
     """
-    Given a point (lat, lon) and a line geometry (list of [lat, lon]), 
-    returns the minimum distance in meters and the closest (lat, lon) on the line.
+    【尋找折線上距離目標點最近的座標點】
+    作用：給予一個經緯度點與一條道路折線 (geometry)，遍歷所有線段找出距離最近的垂足投影點與距離公尺數。
     """
     min_dist = float('inf')
     best_lat = lat
     best_lon = lon
 
-    # geom is list of (lat, lon)
+    # geom 為折線頂點列表 [(lat, lon), ...]
     for i in range(len(geom) - 1):
         lat1, lon1 = geom[i]
         lat2, lon2 = geom[i+1]
@@ -52,9 +59,14 @@ def find_closest_point_on_line(lat: float, lon: float, geom: List[Tuple[float, f
             
     return min_dist, best_lat, best_lon
 
+
 def estimate_road_width_m(road: dict) -> float:
     """
-    Estimate road width in meters based on OSM attributes.
+    【估算道路總寬度（公尺）】
+    作用：
+    1. 優先讀取 OSM 的 width 標籤。
+    2. 若無，則依據車道數 (lanes * 3.5m) 估算。
+    3. 若皆無，則依道路等級估算（幹道 16m、次要幹道 12m、一般巷道 6m、人行步道 4m）。
     """
     if not isinstance(road, dict):
         return 6.0
@@ -96,13 +108,17 @@ def snap_pedestrian_to_road(
     last_side: Optional[str] = None
 ) -> Tuple[float, float, float, str]:
     """
-    Adaptive Pedestrian Snapping:
-    - Narrow Street (width < 8m, e.g. alleys, small lanes): Snap directly to Centerline.
-    - Wide Road (width >= 8m, e.g. multi-lane avenues): Snap to Sidewalk / Arcade on corresponding Left or Right side.
-    Returns: (distance_m, snapped_lat, snapped_lon, side)
+    【自適應行人道路吸附演算法 (Adaptive Pedestrian Road Snapping)】
+    
+    為什麼要特別區分寬路與小巷？
+    1. 小巷弄（寬度 < 8m）：視障者走在巷子裡本來就偏向路中間或隨意走動，若強行區分左右會造成左右亂跳，因此直接吸附至「道路中心線 (Centerline)」。
+    2. 大馬路（寬度 >= 8m，如敦化南路、中山北路）：行人絕對是走在兩側人行道或騎樓上，絕不能走在馬路正中央被車撞！
+       系統利用「向量外積 (Cross Product)」判斷使用者偏向道路的左側還是右側，並沿法向量向路側偏移至人行道。
+    3. 遲滯保護 (Hysteresis)：當在道路中線附近 1.5m 內徘徊時，保持上一次的左/右側狀態，避免視障語音頻繁左右跳動。
     """
     if not geom or len(geom) < 2:
         return 0.0, lat, lon, "center"
+
 
     min_dist = float('inf')
     best_proj_lat = lat

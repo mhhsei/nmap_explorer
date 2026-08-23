@@ -1,11 +1,11 @@
 """
-Google Places API Client for enriching POI data with real-world
-ratings, reviews, opening hours, and business status.
+Google Places API 地標評價與營業資訊擴充客戶端 (Google Places Client)
 
-Requires environment variable: GOOGLE_PLACES_API_KEY
-Free tier: $200/month credit (~5000 queries).
+作用：當設定了 GOOGLE_PLACES_API_KEY 時，線上查詢店家的真實評價、最新評論、即時營業狀態與電話。
+設計原則：
+1. 優雅降級 (Graceful Degradation)：若未設定 API Key 或連線超時，系統不會崩潰，而是平順返回基本 OSM 圖資。
+2. 記憶體快取 (In-Memory Cache)：避免在短時間內重複扣款查詢同一間店家。
 """
-
 import os
 import requests
 from typing import Optional, Dict, Any
@@ -27,8 +27,7 @@ BUSINESS_STATUS_MAP = {
 
 class GooglePlacesClient:
     """
-    Google Places API client.
-    Gracefully degrades if no API key is set.
+    Google Places API 客戶端
     """
 
     BASE_URL = "https://maps.googleapis.com/maps/api/place"
@@ -39,19 +38,20 @@ class GooglePlacesClient:
         self.session.headers.update({
             "User-Agent": "nmap-blind-world-explorer/1.0"
         })
-        # In-memory cache to avoid redundant API calls
+        # 記憶體快取字典，避免重複發送付費 API
         self._cache: Dict[str, Dict] = {}
 
     @property
     def is_available(self) -> bool:
+        """檢查是否具備可用的 Google API Key"""
         return bool(self.api_key)
 
     def search_place(self, name: str, lat: float, lon: float,
                      radius_m: int = 80) -> Optional[Dict[str, Any]]:
         """
-        Find a place by name near GPS coordinates.
-        Returns basic info (place_id, rating, open_now) of the best match.
+        【以地標名稱與座標搜尋 Google 地點 ID (Place ID)】
         """
+
         if not self.is_available:
             return None
 

@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 檔案共享路徑設定
+  作用：允許應用程式將下載至本機快取的 APK 檔案安全共享給系統安裝器 (PackageInstaller) 進行自動更新。
+-->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="cache_logs" path="logs/" />
+    <cache-path name="apk_cache" path="updates/" />
+    <cache-path name="all_cache" path="." />
     <external-cache-path name="external_cache_logs" path="logs/" />
+    <external-cache-path name="ext_apk_cache" path="updates/" />
+    <external-files-path name="ext_files" path="." />
+    <files-path name="internal_files" path="." />
 </paths>
+

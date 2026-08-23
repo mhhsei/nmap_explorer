@@ -52,8 +52,12 @@ def show_help():
 
 def read_user_input(prompt: str = "nmap> ") -> str:
     """
-    Read user input supporting both Keyboard Arrow Keys (Up/Down/Left/Right/Space)
-    and regular typed text commands for NVDA accessibility.
+    【讀取終端機使用者輸入（支援無障礙方向鍵與單鍵即時行走）】
+    
+    作用：
+    1. 在 Windows 終端機下使用 msvcrt 攔截實體鍵盤的「方向鍵（上/下/左/右）」與「空白鍵」。
+    2. 視障者只要按一下【↑ 上鍵】就能直接向前走一步，完全不用按 Enter，操作像玩遊戲一樣直覺。
+    3. 若輸入一般文字，則累積為字串並於按下 Enter 時回傳。
     """
     if not HAS_MSVCRT or not sys.stdin.isatty():
         return input(prompt).strip()
@@ -64,48 +68,48 @@ def read_user_input(prompt: str = "nmap> ") -> str:
     while True:
         ch = msvcrt.getch()
 
-        # Handle Extended Keys (Arrow Keys, PageUp/Down, etc.)
+        # 攔截方向鍵與延伸功能鍵
         if ch in (b'\x00', b'\xe0'):
             ch2 = msvcrt.getch()
-            if ch2 == b'H':  # Up Arrow
+            if ch2 == b'H':  # ↑ 上方向鍵：前進 1 公尺
                 print("↑ [前進 1m]")
                 return "forward 1"
-            elif ch2 == b'P':  # Down Arrow
+            elif ch2 == b'P':  # ↓ 下方向鍵：後退 1 公尺
                 print("↓ [後退 1m]")
                 return "back 1"
-            elif ch2 == b'K':  # Left Arrow
+            elif ch2 == b'K':  # ← 左方向鍵：左轉 90 度
                 print("← [左轉 90°]")
                 return "turn left"
-            elif ch2 == b'M':  # Right Arrow
+            elif ch2 == b'M':  # → 右方向鍵：右轉 90 度
                 print("→ [右轉 90°]")
                 return "turn right"
             continue
 
-        # Enter Key
+        # 按下 Enter 鍵送出文字指令
         if ch in (b'\r', b'\n'):
             print()
             return "".join(chars).strip()
 
-        # Backspace
+        # Backspace 退格鍵處理
         if ch == b'\x08':
             if chars:
                 chars.pop()
-                # Erase character on terminal
+                # 在終端機畫面上擦除前一個字元
                 sys.stdout.write('\b \b')
                 sys.stdout.flush()
             continue
 
-        # Space bar when buffer is empty -> Look command
+        # 在緩衝區為空時按空白鍵 -> 重新查看與朗讀周遭環境
         if ch == b' ' and not chars:
             print("[查看周遭]")
             return "look"
 
-        # Ctrl+C or ESC
+        # Ctrl+C 或 ESC 鍵退出程式
         if ch in (b'\x03', b'\x1b'):
             print()
             return "exit"
 
-        # Regular typed characters (ASCII and UTF-8 bytes)
+        # 一般文字字元解碼與即時回顯
         try:
             char_str = ch.decode('utf-8', errors='ignore')
             if char_str:
@@ -117,6 +121,10 @@ def read_user_input(prompt: str = "nmap> ") -> str:
 
 
 def main():
+    """
+    【命令列 CLI 模式主迴圈】
+    作用：初始化地圖探索引擎、自然語言處理器與 NVDA 報讀器，提供終端機介面操作。
+    """
     agent = ExplorerAgent()
     nlp_engine = NLPQueryEngine()
     reporter = NVDAReporter()
@@ -125,13 +133,14 @@ def main():
     print_nvda("提示：可以使用【鍵盤方向鍵 ↑前進 ↓後退 ←左轉 →右轉】或【空白鍵】直接行走探索！")
     print_nvda("輸入 'start <地址/座標>' 定位起點，或輸入 'help' 查看說明。\n")
 
-    # If arguments passed from command line e.g. python run.py "淡水區北新路177號"
+    # 若啟動時附帶命令列參數（例如：python cli.py "台北車站"），自動定位
     if len(sys.argv) > 1:
         initial_loc = " ".join(sys.argv[1:])
         ok, msg = agent.teleport(initial_loc)
         print_nvda(msg)
         if ok:
             print_nvda(reporter.generate_full_report(agent))
+
 
     while True:
         try:

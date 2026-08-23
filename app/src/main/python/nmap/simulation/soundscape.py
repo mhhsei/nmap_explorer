@@ -1,14 +1,26 @@
+"""
+環境聲景聽覺路標生成器 (Ambient Soundscape Generator)
+
+作用：
+模擬台灣日常生活的豐富環境音效（夜市油炸滋滋聲、捷運進站廣播、超商叮咚門鈴、公園蟲鳴），
+並隨機賦予 12 小時鐘點方位與遠近強弱，輔助視障者建立聽覺地圖心智模型。
+"""
 from typing import Dict, Any, List
 import random
 
+
 class SoundscapeGenerator:
-    """產生環境聲景。"""
+    """
+    環境聲景生成器
+    """
 
     def __init__(self) -> None:
         pass
 
     def generate_ambient(self, area_type: str, weather: Dict[str, Any], time_of_day: str, pois: List[Any], lat: float, lon: float, heading_deg: float) -> List[Dict[str, Any]]:
-        """根據區域類型與時間產生環境音效。"""
+        """
+        【根據區域類型、時間與天候生成空間環境音效】
+        """
         sounds = []
         
         base_sounds = {
@@ -20,6 +32,7 @@ class SoundscapeGenerator:
             'school_zone': ['上課鐘聲', '學生嬉鬧聲', '導護志工吹哨聲'],
             'hospital_zone': ['救護車怠速聲', '廣播叫號聲']
         }
+
         
         area_sounds = base_sounds.get(area_type, ['微風聲', '遠處車流聲'])
         

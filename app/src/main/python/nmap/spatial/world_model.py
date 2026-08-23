@@ -155,8 +155,12 @@ class WorldModel:
 
     def build_from_osm(self, parsed_data: Dict[str, Any], ref_lat: Optional[float] = None, ref_lon: Optional[float] = None):
         """
-        Populate the World Model from parsed OSM elements.
-        Clears previous spatial indices to prevent memory leaks and ghost features when relocating.
+        【從 OSM 結構化數據構建數位雙生空間模型】
+        作用：
+        1. 重置 R-Tree 空間索引，防止搬移地點時記憶體洩漏或出現前一個區域的幽靈設施。
+        2. 建立 POI、道路網 (NetworkX Graph)、建築物與斑馬線的空間網格索引。
+        3. 在背景 Daemon 執行緒中非同步拉取 Overture / TDX 政府真實店家資料注入模型。
+        4. 呼叫 gc.collect() 即時釋放暫存 JSON 結構，維護記憶體健康。
         """
         with self.rtree_lock:
             self.poi_rtree = GridSpatialIndex()
@@ -172,7 +176,7 @@ class WorldModel:
         self.buildings = parsed_data.get("buildings", [])
         self.house_numbers = parsed_data.get("house_numbers", [])
 
-        # Build POIs
+        # 構建 POI 列表與空間網格索引
         raw_pois = parsed_data.get("pois", [])
         self.pois = []
         p_idx = 0
@@ -183,7 +187,7 @@ class WorldModel:
                 self.poi_rtree.insert(p_idx, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
             p_idx += 1
 
-        # Build Transit as POIs if not already present
+        # 若公共運輸站點不在 POI 中，追加建置
         for ts in self.transit_stops:
             sp = SpatialPOI({
                 "id": ts["id"],
@@ -198,7 +202,7 @@ class WorldModel:
                 self.poi_rtree.insert(p_idx, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
             p_idx += 1
 
-        # Build Road Graph & Road R-Tree
+        # 構建道路拓撲圖 (NetworkX Graph) 與道路空間索引
         self.road_graph.clear()
         r_idx = 0
         for road in self.roads:
@@ -209,7 +213,7 @@ class WorldModel:
             self.road_rtree.insert(r_idx, bounds, obj=road)
             r_idx += 1
 
-            # Add edges to NetworkX graph
+            # 將道路折線頂點加到 NetworkX 有向拓撲圖中
             node_ids = road.get("node_ids", [])
             for i in range(len(geom) - 1):
                 u_lat, u_lon = geom[i]
@@ -224,11 +228,12 @@ class WorldModel:
                 self.road_graph.add_node(v_id, lat=v_lat, lon=v_lon)
                 self.road_graph.add_edge(u_id, v_id, weight=dist, name=road["name"], bearing=brng, road=road)
                 
+                # 若非單行道，加入反向邊
                 if road.get("oneway") != "yes":
                     rev_brng = (brng + 180.0) % 360.0
                     self.road_graph.add_edge(v_id, u_id, weight=dist, name=road["name"], bearing=rev_brng, road=road)
 
-        # Build Buildings R-Tree
+        # 構建大樓輪廓空間索引
         b_idx = 0
         for b in self.buildings:
             c_lat = b["center_lat"]
@@ -236,7 +241,7 @@ class WorldModel:
             self.building_rtree.insert(b_idx, (c_lon, c_lat, c_lon, c_lat), obj=b)
             b_idx += 1
 
-        # Build Crossings R-Tree
+        # 構建斑馬線空間索引
         c_idx = 0
         for c in self.crossings:
             c_lat = c["lat"]
@@ -244,7 +249,7 @@ class WorldModel:
             self.crossing_rtree.insert(c_idx, (c_lon, c_lat, c_lon, c_lat), obj=c)
             c_idx += 1
 
-        # Determine reference center for real POI fetching
+        # 在背景非同步獲取真實店家數據
         target_ref_lat = ref_lat
         target_ref_lon = ref_lon
         if target_ref_lat is None or target_ref_lon is None:
@@ -266,20 +271,21 @@ class WorldModel:
                     import logging
                     logging.warning(f"Background POI fetch error: {e}")
             
-            # Start Daemon background thread
+            # 啟動背景 Daemon 執行緒
             threading.Thread(target=fetch_and_inject, daemon=True).start()
 
-        # Promptly release temporary deserialized JSON structures from JVM/Python heap
+        # 即時釋放 JVM/Python 暫存記憶體
         gc.collect()
 
     def find_nearest_road(self, lat: float, lon: float) -> Tuple[Optional[Dict[str, Any]], float]:
         """
-        Find the nearest road to (lat, lon) and return (road_dict, distance_m).
+        【搜尋距離座標最近的道路折線】
+        作用：透過空間網格索引快速過濾方圓 150 公尺內的道路折線，計算精確垂直距離。
         """
         if not self.roads:
             return None, 999999.0
 
-        radius_deg = 150.0 / 111000.0 # ~150m
+        radius_deg = 150.0 / 111000.0 # 約 150m
         bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
         min_dist = 999999.0
         best_road = None
@@ -299,7 +305,8 @@ class WorldModel:
 
     def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 80.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Get all POIs within radius_m sorted by distance with relative direction info.
+        【查詢半徑 radius_m 內的所有店家與地標】
+        作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的 POI 列表，並自動去重。
         """
         results = []
         radius_deg = radius_m / 100000.0
@@ -314,7 +321,7 @@ class WorldModel:
 
         results.sort(key=lambda x: x["distance_m"])
         
-        # Deduplicate POIs by name to prevent reading the same store twice
+        # 依店名去重，防止報讀重複店家
         seen_names = set()
         unique_results = []
         for p in results:
@@ -328,8 +335,9 @@ class WorldModel:
 
     def get_road_info(self, lat: float, lon: float, heading_deg: float) -> Dict[str, Any]:
         """
-        Analyze current road, sidewalk availability, lane count, and street orientation.
+        【分析當前腳下道路屬性（路名、車道數、單行道、人行道狀況）】
         """
+
         road, dist_m = self.find_nearest_road(lat, lon)
         if not road:
             return {
@@ -366,7 +374,7 @@ class WorldModel:
 
     def get_nearby_buildings(self, lat: float, lon: float, heading_deg: float, radius_m: float = 50.0) -> List[Dict[str, Any]]:
         """
-        Get nearby buildings with relative direction, height, and levels.
+        【查詢周遭建築物、樓層與距離】
         """
         results = []
         radius_deg = radius_m / 100000.0
@@ -398,7 +406,7 @@ class WorldModel:
 
     def get_nearby_crossings(self, lat: float, lon: float, heading_deg: float, radius_m: float = 50.0) -> List[Dict[str, Any]]:
         """
-        Get nearby crossings (pedestrian, etc.) within radius.
+        【查詢周遭行人斑馬線與導盲磚標記】
         """
         results = []
         radius_deg = radius_m / 100000.0
@@ -427,8 +435,8 @@ class WorldModel:
 
     def get_left_right_side_scan(self, lat: float, lon: float, heading_deg: float, radius_m: float = 60.0) -> Dict[str, Any]:
         """
-        Scan left and right side house numbers, door number ranges, and alley branches
-        relative to the explorer's current heading.
+        【左右兩側門牌號碼與相鄰巷弄掃描】
+        作用：依據使用者朝向，區分左側（相對方位 < 0）與右側（相對方位 >= 0）的門牌與巷弄。
         """
         left_numbers = []
         right_numbers = []
@@ -498,38 +506,61 @@ class WorldModel:
 
     def get_interpolated_door_numbers(self, lat: float, lon: float, heading_deg: float) -> Dict[str, str]:
         """
-        Dynamically interpolate left and right door numbers along current street vector
-        when sparse point tags exist (Item 1.1).
+        【沿街動態門牌號碼內插與估算】
+        作用：當圖資門牌稀疏時，整合 POI 地址與門牌節點，估算左右兩側為「單號」或「雙號」區間，並找出最近的門牌號碼。
         """
+        # 匯總來自專屬門牌節點與 POI 地址標籤的所有門牌
+        all_hn = list(self.house_numbers)
+        for p in self.pois:
+            hn = p.tags.get("addr:housenumber") or ""
+            if hn and not any(h.get("housenumber") == hn for h in all_hn):
+                all_hn.append({
+                    "housenumber": hn,
+                    "street": p.tags.get("addr:street", ""),
+                    "lat": p.lat,
+                    "lon": p.lon
+                })
+
         scan = self.get_left_right_side_scan(lat, lon, heading_deg, radius_m=80.0)
         left_nums = [int(re.search(r"\d+", n).group()) for n in scan["left_side"]["house_numbers"] if re.search(r"\d+", n)]
         right_nums = [int(re.search(r"\d+", n).group()) for n in scan["right_side"]["house_numbers"] if re.search(r"\d+", n)]
 
-        left_desc = f"門牌 {min(left_nums)}~{max(left_nums)}號" if left_nums else "沿街門牌估算中"
-        right_desc = f"門牌 {min(right_nums)}~{max(right_nums)}號" if right_nums else "沿街門牌估算中"
-
         if left_nums:
+            min_l, max_l = min(left_nums), max(left_nums)
+            left_desc = f"門牌 {min_l}號" if min_l == max_l else f"門牌 {min_l}~{max_l}號"
             left_type = "雙號" if all(n % 2 == 0 for n in left_nums) else ("單號" if all(n % 2 != 0 for n in left_nums) else "")
             if left_type:
                 left_desc += f" ({left_type})"
+        else:
+            left_desc = ""
 
         if right_nums:
+            min_r, max_r = min(right_nums), max(right_nums)
+            right_desc = f"門牌 {min_r}號" if min_r == max_r else f"門牌 {min_r}~{max_r}號"
             right_type = "雙號" if all(n % 2 == 0 for n in right_nums) else ("單號" if all(n % 2 != 0 for n in right_nums) else "")
             if right_type:
                 right_desc += f" ({right_type})"
+        else:
+            right_desc = ""
 
-        # Find closest actual house number for concise speech
+        # 尋找距離目前位置最近的實體門牌號碼
         closest_door = None
         closest_dist = 999.0
-        for h in self.house_numbers:
+        for h in all_hn:
             d = haversine_distance(lat, lon, h["lat"], h["lon"])
             if d < closest_dist and h.get("housenumber"):
                 closest_dist = d
                 closest_door = h.get("housenumber")
 
-        concise_door = f"約 {closest_door} 號附近" if (closest_door and closest_dist <= 60.0) else ""
+        if closest_door and closest_dist <= 80.0:
+            clean_door = str(closest_door).strip().rstrip("號")
+            concise_door = f"約 {clean_door} 號附近"
+        else:
+            concise_door = ""
 
         return {
+            "left": left_desc,
+            "right": right_desc,
             "left_side_estimate": left_desc,
             "right_side_estimate": right_desc,
             "concise_door": concise_door
@@ -537,7 +568,8 @@ class WorldModel:
 
     def get_intersection_clock_bearings(self, lat: float, lon: float, heading_deg: float, radius_m: float = 35.0) -> List[Dict[str, Any]]:
         """
-        Detect 3+ multi-way intersections and roundabouts, returning 12-hour clock orientations (Item 1.2).
+        【路口各分支道路之 12 小時鐘點方位分析】
+        作用：在十字路口或圓環，精確列出各個岔路分支的鐘點方向（例如：「2點鐘方向：北新路一段」）。
         """
         branches = []
         seen_roads = set()
@@ -554,7 +586,7 @@ class WorldModel:
             if len(geom) < 2:
                 continue
 
-            # Find closest vertex
+            # 找出折線上最靠近目前位置的頂點
             min_d = min(haversine_distance(lat, lon, pt[0], pt[1]) for pt in geom)
             if min_d <= radius_m:
                 closest_pt = min(geom, key=lambda pt: haversine_distance(lat, lon, pt[0], pt[1]))
@@ -575,4 +607,5 @@ class WorldModel:
 
         branches.sort(key=lambda x: x["distance_m"])
         return branches
+
 

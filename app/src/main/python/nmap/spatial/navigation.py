@@ -1,13 +1,26 @@
+"""
+無障礙步行路徑規劃引擎 (A* Navigation Engine)
+
+作用：
+1. 利用 NetworkX 圖形拓撲結構與 A* 啟發式搜尋演算法 (A-Star Algorithm)。
+2. 計算從當前位置到目標地標的最短步行無障礙路徑。
+3. 產生適合語音逐筆朗讀的「轉向指引清單」（例如：「首先朝右前方沿北新路前進」、「前進 45 公尺後右轉進入新生街」）。
+"""
 import networkx as nx
 import math
 from typing import List, Dict, Any, Optional
 from nmap.spatial.geometry import haversine_distance, calculate_bearing, bearing_to_relative_direction, relative_bearing
 
+
 class Navigator:
+    """
+    步行路徑導航員
+    """
     def __init__(self, road_graph: nx.MultiDiGraph):
         self.graph = road_graph
 
     def _find_nearest_node(self, lat: float, lon: float) -> Optional[str]:
+        """在路網拓撲圖中尋找距離經緯度座標最近的交叉點節點 (Node)"""
         best_node = None
         min_dist = float('inf')
         for node_id, data in self.graph.nodes(data=True):
@@ -18,7 +31,9 @@ class Navigator:
         return best_node
 
     def calculate_route(self, start_lat: float, start_lon: float, start_heading: float, end_lat: float, end_lon: float, destination_name: str) -> Dict[str, Any]:
-        """Calculates A* route and generates turn-by-turn instructions."""
+        """
+        【計算 A* 最佳無障礙路徑並產出 Turn-by-Turn 逐步導航指引】
+        """
         if len(self.graph.nodes) == 0:
             return {"success": False, "message": "目前區域無道路網，無法導航。"}
 
@@ -29,7 +44,7 @@ class Navigator:
             return {"success": False, "message": "無法在地圖上找到合適的起點或終點道路。"}
 
         try:
-            # Calculate A* path using edge weight (distance in meters)
+            # 使用 A* 演算法，邊權重為公尺距離，啟發式函數為半正矢大圓距離
             path = nx.astar_path(
                 self.graph, 
                 start_node, 
@@ -54,6 +69,7 @@ class Navigator:
             "instructions": instructions,
             "total_distance_m": total_dist
         }
+
 
     def _generate_turn_instructions(self, path: List[str], initial_heading: float) -> List[Dict[str, Any]]:
         instructions = []

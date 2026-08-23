@@ -56,6 +56,11 @@ def serve_static(filename):
 
 @app.route("/api/status", method="GET")
 def get_status():
+    """
+    【取得當前地圖全景狀態 (Get Current World Status)】
+    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 100 米有什麼店、前方路口長怎樣、門牌幾號」。
+    回傳完整的綜合資訊 JSON，讓前端畫面與語音朗讀可以一瞬間獲取最新現況。
+    """
     if not agent.is_loaded:
         return json_response({
             "is_loaded": False,
@@ -74,6 +79,7 @@ def get_status():
     return json_response({
         "success": True,
         "is_loaded": True,
+        "is_overseas": getattr(agent, "is_overseas", False),
         "location_label": agent.location_label,
         "lat": agent.lat,
         "lon": agent.lon,
@@ -90,8 +96,56 @@ def get_status():
     })
 
 
+@app.route("/api/poi_detail", method=["GET", "POST"])
+def poi_detail():
+    """
+    【取得單一店家/地標的詳細資訊】
+    作用：當視障者點擊某個地標時，查詢該店家的電話、營業時間、無障礙設施標籤與餐飲類別。
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+    
+    if request.method == "POST":
+        data = request.json or {}
+        poi_id = data.get("id")
+    else:
+        poi_id = request.query.get("id")
+
+    if not poi_id:
+        return json_response({"success": False, "message": "缺少地標 ID。"}, status=400)
+
+    detail = agent.get_poi_detail(poi_id)
+    if not detail:
+        return json_response({"success": False, "message": "查無此地標詳細資訊。"}, status=404)
+
+    return json_response({"success": True, "detail": detail})
+
+
+@app.route("/api/virtual_pan", method="POST")
+def virtual_pan():
+    """
+    【雙指虛擬漫遊推進 (Virtual Pan)】
+    作用：視障者雙指在螢幕上滑時，不需要真的走動，就可以虛擬向前推進 30 公尺，預先探索前方街道的店家與路況。
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+    data = request.json or {}
+    forward_m = float(data.get("forward_m", 30.0))
+    side_m = float(data.get("side_m", 0.0))
+    ok, msg, result = agent.virtual_pan(forward_m, side_m)
+    return json_response({
+        "success": ok,
+        "action_message": msg,
+        "pan_data": result
+    })
+
+
 @app.route("/api/teleport", method="POST")
 def teleport():
+    """
+    【瞬移到指定地址或座標 (Teleport)】
+    作用：在搜尋列輸入地址（如「台北車站」），地圖立即切換到該地點並下載周遭圖資。
+    """
     data = request.json or {}
     location = data.get("location", "").strip()
     if not location:
@@ -102,6 +156,7 @@ def teleport():
         return json_response({"success": False, "message": msg}, status=400)
 
     return get_status()
+
 
 
 @app.route("/api/move", method="POST")
@@ -143,6 +198,10 @@ def move():
     
 @app.route("/api/jump_intersection", method="POST")
 def jump_intersection():
+    """
+    【直接跳到下一個路口 (Jump to Next Intersection)】
+    作用：提供快速鍵（例如 J），讓視障者不用一步一步走，直接將視角瞬移到前方最近的十字路口或轉角。
+    """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
@@ -162,6 +221,10 @@ def jump_intersection():
 
 @app.route("/api/snap_turn", method="POST")
 def snap_turn():
+    """
+    【自動對齊路口分支轉向 (Snap Turn)】
+    作用：站在十字路口時，自動辨識左轉或右轉的道路角度，直接將朝向「吸附」至該道路方向。
+    """
     data = request.json
     direction = data.get("direction", "left")
     ok, msg = agent.snap_to_branch(direction)
@@ -179,6 +242,11 @@ def snap_turn():
 
 @app.route("/api/gps", method="POST")
 def update_gps():
+    """
+    【接收 Android 原生 GPS 與感測器高頻數據】
+    作用：原生層（LocationSensorBridge）將平滑後的經緯度、朝向角度與精度發送給 Python 後端。
+    後端立即更新探索者的真實位置，並在跨區位移超過 100 米時自動載入新圖資。
+    """
     data = request.json or {}
     lat = data.get("lat")
     lon = data.get("lon")
@@ -198,6 +266,10 @@ def update_gps():
 
 @app.route("/api/sync", method="POST")
 def sync():
+    """
+    【通用位置與朝向同步】
+    作用：前端將目前計算好的位置、朝向或移動距離同步至後端 Agent。
+    """
     data = request.json or {}
     lat = data.get("lat")
     lon = data.get("lon")
@@ -230,6 +302,10 @@ def sync():
 
 @app.route("/api/turn", method="POST")
 def turn():
+    """
+    【旋轉探索者朝向 (Turn/Face)】
+    作用：支援左轉、右轉、迴轉，或是直接轉向特定絕對方位（東、南、西、北）。
+    """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
@@ -241,7 +317,7 @@ def turn():
     else:
         ok, msg = agent.turn(target)
 
-    # Simulation mode integration
+    # 模擬引擎步進整合
     sim_data = None
     if simulation.enabled and ok:
         sim_data = simulation.process_step(agent)
@@ -256,6 +332,11 @@ def turn():
 @app.route("/api/query", method="POST")
 @app.route("/api/nlp", method="POST")
 def query():
+    """
+    【自然語言空間問答 (NLP Spatial Query)】
+    作用：視障者可以用自然口語發問（例如：「附近有廁所嗎？」、「最近的便利商店在哪裡？」）。
+    由 NLPQueryEngine 解析語意並查詢周遭實體地標回覆。
+    """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
@@ -270,6 +351,9 @@ def query():
 
 @app.route("/api/history", method="GET")
 def get_history():
+    """
+    【取得探索歷史紀錄】
+    """
     return json_response({
         "success": True,
         "history": agent.history
@@ -278,6 +362,10 @@ def get_history():
 
 @app.route("/api/intersection", method=["GET", "POST"])
 def get_intersection():
+    """
+    【前方路口安全分析 (Intersection Safety Analysis)】
+    作用：詳細分析前方路口的分支走向、道路名稱、是否有行人斑馬線與號誌，產出報讀摘要。
+    """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
@@ -292,7 +380,10 @@ def get_intersection():
 
 @app.route("/api/poi/enrich", method="POST")
 def enrich_poi():
-    """Enrich a POI with Google Places data (rating, reviews, open_now)."""
+    """
+    【Google Places 外部資訊加強】
+    作用：線上即時補充店家的 Google 評價星級、評論數量與即時營業狀態。
+    """
     data = request.json or {}
     name = data.get("name", "").strip()
     lat = data.get("lat", 0)
@@ -307,6 +398,9 @@ def enrich_poi():
 
 @app.route("/api/history/export", method="GET")
 def export_history():
+    """
+    【匯出 Markdown 格式的探索軌跡報告】
+    """
     lines = ["# nmap 視障者地圖世界探索 - 測試履歷與軌跡紀錄\n"]
     lines.append(f"• 定位起點：{agent.location_label}")
     lines.append(f"• 累積總步數：{agent.step_count} 步\n")
@@ -326,6 +420,10 @@ def export_history():
 
 @app.route("/api/navigate", method="POST")
 def navigate():
+    """
+    【目的地步行路徑規劃】
+    作用：規劃從當前位置步行至目標地標的最佳無障礙路徑。
+    """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
@@ -346,6 +444,10 @@ def navigate():
 
 @app.route('/api/simulation/start', method='POST')
 def simulation_start():
+    """
+    【啟動定向行動定向教學模擬 (Simulation Mode)】
+    作用：開啟虛擬路況模擬（障礙物、車輛聲音、天氣與白手杖探測），提供視障者室內擬真訓練。
+    """
     data = request.json or {}
     difficulty = data.get('difficulty', 'normal')
     if not agent.is_loaded:
@@ -357,17 +459,20 @@ def simulation_start():
 
 @app.route('/api/simulation/stop', method='POST')
 def simulation_stop():
+    """關閉定向模擬模式"""
     simulation.stop()
     return json_response({'success': True, 'message': '模擬模式已關閉，回到探索模式。'})
 
 
 @app.route('/api/simulation/status', method='GET')
 def simulation_status():
+    """查詢模擬模式狀態"""
     return json_response(simulation.get_status())
 
 
 @app.route('/api/simulation/action', method='POST')
 def simulation_action():
+    """處理模擬訓練中的互動動作（如揮動白手杖）"""
     if not simulation.enabled:
         return json_response({'success': False, 'message': '模擬模式未啟動。'}, 400)
     data = request.json or {}
@@ -378,12 +483,100 @@ def simulation_action():
 
 @app.route('/api/simulation/settings', method='POST')
 def simulation_settings():
+    """更新模擬訓練難度與環境設定"""
     data = request.json or {}
     simulation.update_settings(data)
     return json_response({'success': True, 'message': '模擬設定已更新。'})
+
+
+@app.route('/api/system/check_update', method=['GET', 'POST'])
+def check_update():
+    """
+    【檢查 GitHub Releases 最新版本 (Check System Update)】
+    作用：直接向 GitHub API 查詢是否有新版本 APK 發布，回傳版本號、更新日誌與下載網址。
+    """
+    import urllib.request
+    import json
+    try:
+        current_version = "1.0.0"
+        api_url = "https://api.github.com/repos/mhhsei/nmap_explorer/releases/latest"
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "User-Agent": "NMapExplorer-Server",
+                "Accept": "application/vnd.github.v3+json"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as response:
+            release_data = json.loads(response.read().decode('utf-8'))
+
+        tag_name = release_data.get("tag_name", "").lstrip("vV").strip()
+        title = release_data.get("name", "新版本發布")
+        body = release_data.get("body", "無詳細說明")
+        
+        apk_url = ""
+        file_size = 0
+        for asset in release_data.get("assets", []):
+            name = asset.get("name", "")
+            if name.endswith(".apk"):
+                apk_url = asset.get("browser_download_url", "")
+                file_size = asset.get("size", 0)
+                if "release" in name.lower():
+                    break
+
+        # 版本比較
+        has_update = False
+        if tag_name and apk_url:
+            curr_parts = [int(p) for p in current_version.split(".") if p.isdigit()]
+            latest_parts = [int(p) for p in tag_name.split(".") if p.isdigit()]
+            for c, l in zip(curr_parts, latest_parts):
+                if l > c:
+                    has_update = True
+                    break
+                elif l < c:
+                    break
+            if not has_update and len(latest_parts) > len(curr_parts):
+                has_update = True
+
+        return json_response({
+            "success": True,
+            "has_update": has_update,
+            "current_version": current_version,
+            "latest_version": tag_name or current_version,
+            "release_title": title,
+            "release_notes": body,
+            "download_url": apk_url,
+            "file_size": file_size
+        })
+    except urllib.error.HTTPError as he:
+        if he.code == 404:
+            return json_response({
+                "success": True,
+                "has_update": False,
+                "current_version": current_version,
+                "latest_version": current_version,
+                "release_title": "已是最新版本",
+                "release_notes": "目前 GitHub 尚未有發布記錄"
+            })
+        return json_response({
+            "success": False,
+            "has_update": False,
+            "current_version": current_version,
+            "message": f"GitHub API 回應錯誤 ({he.code})"
+        })
+    except Exception as e:
+        return json_response({
+            "success": False,
+            "has_update": False,
+            "current_version": "1.0.0",
+            "message": f"檢查更新失敗: {str(e)}"
+        })
+
 
 
 if __name__ == "__main__":
     print("=== nmap WebUI 伺服器啟動中 ===")
     print("請用瀏覽器開啟: http://localhost:8000")
     run(app, host="localhost", port=8000, debug=True)
+
+

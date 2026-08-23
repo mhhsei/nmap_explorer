@@ -1,3 +1,12 @@
+/**
+ * iOS 定位與感測器橋接器 (iOS Location & Sensor Bridge)
+ * 
+ * 作用：
+ * 1. 2D 行人卡爾曼濾波器 (Pedestrian Kalman Filter)：
+ *    濾除高樓大廈多路徑效應造成的 GPS 漂移跳動，並在進入騎樓遮蔽時，無縫切換為 CMPedometer 行人慣性推算 (PDR)。
+ * 2. 磁北與真北即時平滑：透過 20Hz (0.05s) 低通濾波將指北針角度推送給 WebView 前端。
+ * 3. 觸覺震動回饋 (UIImpactFeedbackGenerator)：在撞牆或到達路口時觸發觸覺震動。
+ */
 import Foundation
 import CoreLocation
 import CoreMotion
@@ -5,7 +14,7 @@ import WebKit
 import UIKit
 
 /**
- * 2D Pedestrian Kalman Filter for iOS.
+ * 2D 行人卡爾曼濾波器 (2D Pedestrian Kalman Filter)
  */
 class PedestrianKalmanFilter {
     private var isInitialized = false
@@ -25,6 +34,7 @@ class PedestrianKalmanFilter {
     private var lastTimestamp: TimeInterval = 0
 
     func filter(lat: Double, lon: Double, accuracy: Double, timestamp: TimeInterval) -> (lat: Double, lon: Double) {
+
         if !isInitialized {
             anchorLat = lat
             anchorLon = lon

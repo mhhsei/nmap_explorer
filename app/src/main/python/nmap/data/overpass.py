@@ -1,3 +1,11 @@
+"""
+OpenStreetMap 與 Overpass API 即時空間圖資下載客戶端 (Overpass Client)
+
+作用：
+1. 建立 Overpass QL 語法查詢周遭 100% 真實設施（道路、店家、人行道、斑馬線、紅綠燈、導盲磚、大樓、門牌號）。
+2. 雙重下載機制：優先呼叫官方 OSM Main API (< 1.5s)，失敗時自動由多組 Overpass 鏡像伺服器平行競速下載。
+3. 將 XML/JSON 原始資料解析為結構化地圖元素（道路網、POI、過馬路設施、建物拓撲）。
+"""
 import requests
 from typing import Optional, Dict, Any, List, Tuple
 from nmap.data.cache import CacheManager
@@ -13,9 +21,7 @@ DEFAULT_USER_AGENT = "nmap-blind-world-explorer/1.0 (accessibility-gis-engine)"
 
 class OverpassClient:
     """
-    Overpass API Client for fetching detailed OSM spatial graphs, POIs, sidewalks,
-    crosswalks, traffic signals, and accessibility features within a specified radius.
-    Integrated with local SQLite caching.
+    OSM / Overpass 空間圖資客戶端
     """
 
     def __init__(self, cache_manager: Optional[CacheManager] = None):
@@ -25,8 +31,9 @@ class OverpassClient:
 
     def build_query(self, lat: float, lon: float, radius_m: float) -> str:
         """
-        Build comprehensive Overpass QL query to capture 100% of real-world stores, amenities,
-        crafts, offices, services, healthcare, tourism, and named features.
+        【構建完整的 Overpass QL 空間查詢語法】
+        作用：一次性抓取方圓半徑內的道路 (highway)、店家 (shop)、設施 (amenity)、辦公室 (office)、
+        醫療 (healthcare)、大樓外框 (building)、公車站牌與斑馬線。
         """
         r = int(radius_m)
         query = f"""
@@ -60,8 +67,12 @@ class OverpassClient:
 
     def fetch_area_data(self, lat: float, lon: float, radius_m: float = 200.0) -> Dict[str, Any]:
         """
-        Fetch OSM data from official OpenStreetMap API or Overpass mirror endpoints within < 3 seconds.
-        Guarantees 100% real-world store, restaurant, amenity, and road coverage.
+        【下載指定經緯度周遭的地圖圖資】
+        
+        策略：
+        1. 優先檢查本機 SQLite 快取，命中時 0 秒回傳。
+        2. 第一通道：呼叫官方 OSM XML API（速度最快 < 1.5s）。
+        3. 第二通道：若官方 API 失敗，使用 ThreadPool 同時請求 3 組 Overpass 鏡像，誰先回傳就用誰。
         """
         grid_lat = round(lat, 3)
         grid_lon = round(lon, 3)
@@ -71,7 +82,7 @@ class OverpassClient:
         if cached:
             return cached
 
-        # 1. Primary: Official OpenStreetMap Main Database API (100% store coverage, < 1.5s)
+        # 1. 第一通道：官方 OpenStreetMap 資料庫 API (XML 格式)
         try:
             effective_r = min(radius_m, 180.0)
             d_deg = effective_r / 111000.0
@@ -105,7 +116,7 @@ class OverpassClient:
         except Exception as e:
             pass
 
-        # 2. Secondary Fallback: Parallel Overpass Mirror Endpoints
+        # 2. 第二通道備援：平行多鏡像 Overpass 競速
         query = self.build_query(lat, lon, radius_m)
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -136,15 +147,17 @@ class OverpassClient:
 
     def parse_elements(self, raw_data: Dict[str, Any], center_lat: float, center_lon: float) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Parse raw OSM elements into structured categories:
-        - nodes_dict: id -> {lat, lon, tags}
-        - roads: list of highway ways
-        - pois: list of POIs with lat, lon, tags, category
-        - crossings: list of crossing nodes
-        - traffic_signals: list of traffic signal nodes
-        - transit_stops: list of bus/subway nodes
-        - buildings: list of building ways
+        【解析 OSM 原始元素並分類整理】
+        
+        輸出結構：
+        - roads: 道路列表（含車道數、單行道、人行道鋪面）
+        - pois: 店家與設施列表（含營業時間、電話、輪椅無障礙標籤）
+        - crossings: 行人斑馬線與號誌節點
+        - transit_stops: 公車站牌與捷運站出口
+        - buildings: 建築物幾何輪廓與樓層
+        - house_numbers: 沿街門牌號碼
         """
+
         elements = raw_data.get("elements", [])
         
         nodes_dict: Dict[int, Tuple[float, float, Dict[str, str]]] = {}
@@ -357,24 +370,19 @@ class OverpassClient:
 
     def _translate_category(self, category: str) -> str:
         translations = {
-            "convenience": "便利商店",
-            "supermarket": "超市",
-            "restaurant": "餐廳",
-            "fast_food": "速食店",
-            "cafe": "咖啡店",
-            "bank": "銀行",
-            "atm": "ATM提款機",
-            "pharmacy": "藥局",
-            "hospital": "醫院",
-            "clinic": "診所",
-            "police": "警察局",
-            "post_office": "郵局",
-            "school": "學校",
-            "park": "公園",
-            "library": "圖書館",
-            "bus_station": "公車站",
-            "subway_entrance": "捷運出口",
-            "poi": "地點"
+            "convenience": "便利商店", "supermarket": "超市", "restaurant": "餐廳",
+            "fast_food": "速食店", "cafe": "咖啡店", "bank": "銀行",
+            "atm": "ATM提款機", "pharmacy": "藥局", "hospital": "醫院",
+            "clinic": "診所", "dentist": "牙醫診所", "police": "警察局",
+            "post_office": "郵局", "school": "學校", "park": "公園",
+            "library": "圖書館", "bus_station": "公車站", "bus_stop": "公車站牌",
+            "subway_entrance": "捷運出口", "subway_station": "捷運站", "train_station": "火車站",
+            "buddhist_temple": "寺廟", "temple": "寺廟", "church": "教堂", "place_of_worship": "宗教場所",
+            "beauty_salon": "美容美睫", "beauty": "美容院", "hairdresser": "美髮店",
+            "french_restaurant": "法式餐廳", "korean_restaurant": "韓式料理", "japanese_restaurant": "日式料理",
+            "breakfast_and_brunch_restaurant": "早餐店", "discount_store": "生活百貨",
+            "musical_instrument_store": "樂器行/音樂教室", "landmark_and_historical_building": "歷史建築/地標",
+            "landmark": "地標", "poi": "地點"
         }
-        raw_key = category.split(":")[-1]
-        return translations.get(raw_key, category)
+        raw_key = (category or "").split(":")[-1].lower()
+        return translations.get(raw_key, raw_key.replace("_", " "))

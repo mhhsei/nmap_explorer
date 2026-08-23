@@ -1,18 +1,32 @@
+"""
+白手杖觸覺反饋與前向探測模擬器 (White Cane Simulator)
+
+作用：
+1. 模擬前方 0.5m ~ 1.5m 的白手杖左右擺動掃描 (Two-point touch / Constant contact technique)。
+2. 真實反饋導盲磚直條導引紋路、路口圓點警示磚、牆面硬質叩叩聲、人行道路緣石 (Curb) 高低差危險與違停障礙物碰撞。
+"""
 from typing import Dict, Any, List
 
+
 class WhiteCaneSimulator:
-    """模擬白手杖的使用與回饋。"""
+    """
+    白手杖探測模擬器
+    """
 
     def __init__(self) -> None:
         pass
 
     def tap_ahead(self, lat: float, lon: float, heading_deg: float, world_model: Any, active_obstacles: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """模擬白手杖向前探索 (0.5m - 1.5m)。"""
+        """
+        【模擬白手杖向前探測與材質反饋】
+        優先級排序：導盲磚/斑馬線 > 建築外牆 > 道路材質與路緣 > 違停障礙物。
+        """
         # 1. 檢查周遭真實的 OSM 設施與地面
         pois = getattr(world_model, 'get_nearby_pois', lambda l, ln, h, r_m=80.0: [])(lat, lon, heading_deg, radius_m=5)
         roads = getattr(world_model, 'get_road_info', lambda l, ln, h: [])(lat, lon, heading_deg)
         buildings = getattr(world_model, 'get_nearby_buildings', lambda l, ln, h, r_m=50.0: [])(lat, lon, heading_deg, radius_m=5)
         crossings = getattr(world_model, 'get_nearby_crossings', lambda l, ln, h, r_m=50.0: [])(lat, lon, heading_deg, radius_m=5)
+
 
         detected = False
         object_type = 'none'

@@ -1,19 +1,33 @@
+"""
+情境模擬區域型態自動分類器 (Area Classifier)
+
+作用：
+根據目前座標周圍 50 公尺內的真實店家類型（餐飲、超商、車站、公園、學校、醫院）與道路等級，
+自動判定當前屬於哪種生活場景（住宅區、商業街、夜市、交通樞紐、學區等），動態設定人流密度、車流音量與噪音水平。
+"""
 from typing import Dict, Any, List
 
+
 class AreaClassifier:
-    """根據 OSM 地圖資料對區域進行分類。"""
+    """
+    區域型態分類器
+    """
 
     def __init__(self) -> None:
         pass
 
     def classify(self, world_model: Any, lat: float, lon: float, heading_deg: float) -> Dict[str, Any]:
-        """分類當前區域特徵。"""
+        """
+        【分類當前區域特徵與生活場景型態】
+        作用：計算 POI 類別分佈與道路等級，輸出人潮密度 (crowd_density) 與車流量 (vehicle_traffic)。
+        """
         pois = world_model.get_nearby_pois(lat, lon, heading_deg, radius_m=50) if hasattr(world_model, 'get_nearby_pois') else []
         roads = world_model.get_road_info(lat, lon, heading_deg) if hasattr(world_model, 'get_road_info') else []
         
         counts: Dict[str, int] = {
             'food': 0, 'shop': 0, 'transit': 0, 'leisure': 0, 'health': 0, 'education': 0
         }
+
         
         for poi in pois:
             cat = getattr(poi, 'category', '').lower()

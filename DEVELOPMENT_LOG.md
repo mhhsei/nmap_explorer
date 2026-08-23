@@ -48,6 +48,59 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [2026-08-22] - TalkBack 原生無障礙即時廣播、16 方位極簡省話、L5 雙頻衛星高精度加權與 Weinberg 白手杖自適應步長 PDR
+- **📢 TalkBack 原生無障礙廣播與即時語音插播**:
+  1. 在 `WebAppInterface.kt` 實作 `@JavascriptInterface fun speak(text, interrupt)`，透過 `webView.announceForAccessibility(text)` 直接向 Android Accessibility 核心發送 `TYPE_ANNOUNCEMENT` 原生事件，徹底根除 WebView `aria-live` 在頻繁旋轉時靜音或漏讀的頑疾。
+  2. 整合原生 Android `TextToSpeech` 作為無 TalkBack 環境下的通用語音備援。
+  3. 在 `app.js` 與 `index.html` 將 live region 升級為 `aria-live="assertive"` 並與 `AndroidBridge.speak()` 緊密串接。
+- **🧭 16 方位超精細羅盤與行走防打斷極簡省話**:
+  1. 升級 `bearing_to_cardinal` 與 `getCardinalDirection` 至 16 方位（正北、北北東、東北、東北東...）。
+  2. 轉動手機時實施「極簡省話模式」：僅報方位詞（如「正北」、「北北東」），去除所有多餘贅字，防抖反應時間壓縮至 200ms。
+  3. 實自行走防打斷抑制：步行中（`speed >= 0.4 m/s`）且 2 秒內剛朗讀過店家/路口時，自動抑制轉向插嘴。
+- **🛰️ 戶外 L5 雙頻衛星 (Dual-Frequency L1+L5) 辨識與動態降噪**:
+  1. 在 `LocationSensorBridge.kt` 攔截 `GnssStatus` 載波頻率，識別 L5/E5a 高頻寬衛星（~1176.45 MHz）。
+  2. 當鎖定 $\ge 2$ 顆 L5 衛星時，將 `PedestrianKalmanFilter` 測量協方差 $R$ 縮減 50%，使高精度衛星數據優先收斂，壓低都會峽谷多路徑誤差至 1.5~2.5m。
+- **🦯 Weinberg 模型白手杖步態自適應步長推算 (PDR)**:
+  1. 在加速度計中採集垂直分量極值差 $\Delta a = a_{\max} - a_{\min}$，透過 $SL = 0.43 \times \Delta a^{0.25}$ 動態自適應估算步長（0.45m ~ 0.85m）。
+  2. 在騎樓/雨遮下 GPS 中斷時，以真實步長平滑推算前進，大幅提高戶外最後一哩路的連續定位精準度。
+
+### [2026-08-22] - 後台常駐釋放與降頻節能、冷啟動快取清空、海外邊界防護、無障礙地標詳情、轉向刻度音與八方位齒輪觸覺回饋
+- **🔋 後台常駐與異常耗電徹底修復**:
+  1. 在 `ServerForegroundService.kt` 實作 `onTaskRemoved()`，當使用者將 App 從多工卡片滑掉（Task Removed）時，立即執行 `stopForeground(STOP_FOREGROUND_REMOVE)` 並呼叫 `stopSelf()` 終止服務，杜絕後台偷跑耗電。
+  2. 將 `onStartCommand` 的返回值改為 `START_NOT_STICKY`，並於 `MainActivity.onDestroy()` 中主動調用 `stopService()` 釋放所有背景資源。
+  3. 實作 `LocationSensorBridge.setScreenActive(active: Boolean)` 與 `MainActivity` 螢幕休眠廣播監聽：當螢幕關閉（放入口袋）時，動態註銷高耗電 50Hz 陀螺儀監聽，僅保留低功耗硬體計步器 (`TYPE_STEP_DETECTOR`) 進行 PDR 航位推算，大幅延長續航力。
+- **🔄 冷啟動過期快取過濾與定位防誤報**:
+  1. 強化 `lastLocation` 時效檢查：僅允許 5 秒內且精度 $\le 20\text{m}$ 的即時快取，其餘一律捨棄，杜絕在不同地點重啟 App 時誤報舊地址店家的問題。
+  2. 在 `PedestrianKalmanFilter` 實作大距離（$>60\text{m}$）自動重錨機制，防止在不同城鎮移動重啟時 Kalman 濾波器拉扯飄移。
+- **🌐 海外地區（非台灣）邊界判定與優雅降級**:
+  1. 在 `ExplorerAgent` 實作台灣地理範圍判定 (`21.8 ~ 26.4°N`, `118.0 ~ 122.1°E`)。
+  2. 超出台灣邊界時自動切換為全球線上圖資模式，並以語音與 ARIA-Live 主動提示：「偵測到您位於海外地區。已自動切換為 OpenStreetMap 全球線上圖資模式。」
+- **🔒 權限引導橫幅與手動搜尋備援模式**:
+  1. 前端 `index.html` 與 `app.js` 新增權限狀態偵測，若使用者未授予定位權限，自動顯示醒目高對比橫幅並朗讀說明，引導使用者點擊「開啟系統設定」。
+  2. 提供即時手動地址搜尋列 (`#location-input-visible`)，即使在室內或無 GPS 訊號下也能手動輸入地址開啟「虛擬漫遊探索」。
+- **ℹ️ 無障礙地標詳細資訊對話框 (Accessible POI Detail Modal)**:
+  1. 店家清單支援點擊/Enter展開詳細資訊對話框，完整呈現店名、分類、營業時間、電話（點擊 `tel:` 直接撥號）、無障礙設施狀態與料理風味。
+  2. 整合兩大導航按鈕：
+     - **「🎯 空間聲音導引」**：在 App 內啟動 3D HRTF 空間立體聲 Beacon 導引聲音，隨距離縮減自動調整音訊頻率。
+     - **「🗺️ Google 導航」**：透過 `AndroidBridge.openGoogleMaps()` 一鍵喚醒 Google Maps 步行導航。
+- **📳 轉向立體聲刻度音、八大方位齒輪觸覺回饋與停止和弦報讀**:
+  1. **轉向刻度音與輕震**：手機旋轉每跨越 15°，在左/右耳播放輕微立體聲 Tic 音效，並調用 `AndroidBridge.vibrateTick()` 產生 10ms 輕微刻度感。
+  2. **八大方位齒輪觸覺**：轉向經過正北 (0°) 觸發雙重重震 (`vibrateHeavy`)，其餘七大方位觸發單點點擊震動 (`vibrateClick`)，讓視障者單憑手感精確辨識方位。
+  3. **停止轉向和弦報讀**：轉向穩定超過 550ms 後，播放柔和和弦提示音並簡短報讀：「面向正北，走在【路名】」。
+- **👆 手指探索地圖 (Two-finger Touch-to-Explore / 虛擬平移)**:
+  1. 支援雙指手勢：雙指上滑（視角向前推進 30 公尺）、雙指下滑（後退 30 公尺）、雙指左右滑（切換至相鄰巷弄），並在後端新增 `/api/virtual_pan` 端點計算沿途店家路況進行語音摘要。
+  2. 雙擊雙指即可快速重播當前路段門牌與座標。
+- **🔍 「目前位置 (R)」門牌號碼提取修復與 POI 門牌號整合**:
+  1. 修復 `announceRoadAndDoorNumbers` 讀取後端 `door_estimates` 鍵名不一致問題（原讀取 `doors.left` 但後端為 `left_side_estimate` 與 `concise_door`），徹底解決「有 GPS 卻報無門牌資料」之異常。
+  2. 在 `world_model.py` 將 POI 標籤 (`addr:housenumber`) 一併匯入門牌插值池，大幅提升住家與店家巷弄門牌的覆蓋度。
+- **🧭 16 方位超精細羅盤與極簡「省話模式」即時播報**:
+  1. 全面升級至 16 方位系統（正北、北北東、東北、東北東、正東、東南東、東南、南南東、正南、南南西、西南、西南西、正西、西北西、西北、北北西，每 22.5° 一個刻度）。
+  2. **極致省話（0.3 秒報讀）**：轉動手機時完全去除「面向」、「度數」、「走在某路」等冗長贅字，**只報讀方位本身**（例如：「北北東」、「正東」、「東南」），讓螢幕報讀軟體瞬間播報完畢不延遲。
+  3. **反應時間大幅縮短**：轉向防抖延遲由 450ms 降至 **260ms**，只要跨越 16 方位刻度即瞬間播報。
+  4. 實作**行走防打斷 (Walk Non-Interrupting Policy)**：
+     - 行走狀態下（速度 $\ge 0.4\text{m/s}$ 或步態推算中），手機隨擺手晃動不觸發轉向語音播報（轉向門檻提高至 $60^\circ$），且若 2.5 秒內剛朗讀過店家或路口則完全不插嘴。
+     - 靜止定向時（停下腳步轉身探索），高靈敏度（$15^\circ$ 轉向且停頓 260ms）立即播放和弦音並報讀極簡方位（例如：「北北東」）。
+
 ### [2026-08-14 下午] - 步行高精度定位、9軸方位融合、貼身店家省話播報與路口動態通知
 - **🚶 步行卡爾曼濾波器與靜止防飄 (Pedestrian Kalman Filter & ZUPT)**:
   1. 在 `LocationSensorBridge.kt` 實作二維卡爾曼濾波器，專為視障者步行特徵（0.8 ~ 2.0 m/s）進行座標狀態估計與軌跡平滑。
@@ -74,6 +127,25 @@
   2. 清理 `index.html` 內無效的外部腳本引用（`audio_engine.js`, `idb_storage.js`）。
   3. 新增 `/api/nlp` 路由別名並修復自然語言查詢結果朗讀。
   4. 根目錄自動同步輸出 [`nmap-latest.apk`](./nmap-latest.apk) 並完成多輪 ADB 實機覆蓋安裝驗證。
+
+### [1.2.1] - 2026-08-22
+- **🛠️ 語音體驗與 GIS 空間推算缺陷修復 (Bug Fixes & UX Polish)**:
+  1. **門牌號碼單值格式化修復**：修正 [`world_model.py`](file:///C:/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/world_model.py) 門牌區間單一數字時出現 `205~205號`、`24~24號` 重複字串問題，當 `min == max` 時直接輸出 `門牌 205號`。
+  2. **路口同名自交會過濾**：在 [`intersection.py`](file:///C:/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/intersection.py) 與 [`app.js`](file:///C:/ai%20pro/nmap_apk/app/src/main/python/web/app.js) 中過濾當前所走道路名稱，徹底消除「走在北新路，即將交會北新路」的自我交會錯誤。
+  3. **POI 類別全中文翻譯擴充**：在 [`app.js`](file:///C:/ai%20pro/nmap_apk/app/src/main/python/web/app.js) 與 [`overpass.py`](file:///C:/ai%20pro/nmap_apk/app/src/main/python/nmap/data/overpass.py) 新增 100+ 種 Overture/OSM 分類翻譯（寺廟、歷史建築、美容美睫、法式/韓式餐廳、生活百貨、樂器行等），杜絕 TalkBack 直接唸出英文蛇形單字。
+  4. **冷啟動定位提示詞優化**：App 剛開啟 GPS 尚未鎖定時，提示詞由「地圖尚未初始化...手動輸入」改為「正在等待 GPS 衛星定位中...」，體驗更自然流暢。
+
+### [1.2.0] - 2026-08-22
+- **🤖 AI 可觀測性與結構化日誌全面升級 (AI-First Structured Telemetry & Diagnostics)**:
+  1. **頂部速查摘要 (`0_AI_QUICK_SUMMARY.json`)**：匯出包含手機硬體、系統規格、會話總耗時、步數、GPS/POI 統計、導航最終狀態與異常清單的頂層 JSON，讓 AI Agent 在 1 秒內掌握全局健康度。
+  2. **標準地理軌跡 (`1_trajectory.geojson`)**：將行走軌跡儲存為標準 GeoJSON `FeatureCollection`（含 `LineString` 行走折線、`Point` 店家地標、語音播報錨點），支援 GIS 幾何自動比對與地圖視覺化。
+  3. **因果鏈 Trace ID 追蹤 (`2_causality_trace.ndjson`)**：每次 GPS 輸入、空間推算吸附、語音朗讀輸出皆附帶唯一的 `trace_id`，實現毫秒級因果決策樹還原。
+  4. **結構化 POI 清單 (`3_detected_pois.json`)**：記錄所有掃描到的店家名稱、分類、鐘點方位、距離、經緯度、電話、營業時間與無障礙標籤。
+  5. **結構化語音與感測歷程 (`4_speech_history.ndjson`, `5_sensor_trajectory.ndjson`)**：逐筆記錄 TalkBack 原生廣播文字與高頻 GPS/PDR 步態感測器數據。
+  6. **ZIP 檔案自動命名**：產生的診斷檔名格式化為 `NMap_Logs_[品牌_型號]_[年月日_時分秒].zip`。
+- **🔊 TalkBack 原生無障礙廣播與 16 方位即時指南針**:
+  1. 實作原生 `announceForAccessibility` 廣播通道與 TTS 備援，徹底根除 WebView 朗讀漏字。
+  2. 16 方位極簡省話模式與行走防打斷機制。
 
 ### [Unreleased]
 - **初始建立**: 確立 Android WebView + Chaquopy 混合架構。

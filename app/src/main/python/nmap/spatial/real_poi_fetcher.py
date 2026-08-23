@@ -1,3 +1,11 @@
+"""
+真實地標綜合抓取引擎 (Real POI Multi-Source Fetcher)
+
+作用：
+1. 整合本地離線 SQLite 資料庫（Overture Places DB 與 政府 TDX 開放資料庫），在 0.01 秒內瞬間載入真實店家。
+2. 線上食記補全（iFoodie 多執行緒 SSR 爬取）：補充最新開幕的餐飲店家。
+3. 嚴格去重 (Deduplication)：以店名為鍵值去重，保證同一個地點不會反覆出現相同招牌。
+"""
 import urllib.request
 import urllib.parse
 import json
@@ -11,12 +19,8 @@ from typing import List, Dict, Any
 class RealPoiFetcher:
     """
     真實地標抓取引擎 (RealPoiFetcher)
-    
-    為什麼要寫這個類別？
-    因為開源地圖 (OpenStreetMap) 的台灣圖資在巷弄間經常缺乏店家資料，
-    為了讓視障者在遊戲中有「逛街」的熱鬧感，又必須堅持「真實資料（不捏造）」，
-    我們只能透過爬蟲即時向外部的食記/外送平台索取該經緯度周遭的店家。
     """
+
     
     def __init__(self, db_path=None):
         # 偽裝成一般瀏覽器，避免被伺服器直接阻擋 (Anti-bot)

@@ -1,13 +1,20 @@
+"""
+端側向量語意雷達 (Edge-AI Semantic Radar)
+
+作用：
+1. 採用輕量級高效中文向量模型 (BAAI/bge-small-zh-v1.5，僅約 90MB)，在背景執行緒中非同步載入，完全不阻塞主程式啟動。
+2. 模糊需求語意匹配：將使用者的口語需求（例如：「肚子好餓想吃麵」、「想上廁所」、「口渴」）轉為 512 維語意向量。
+3. 與周遭店家的名稱、設施標籤進行餘弦相似度 (Cosine Similarity) 比對，精準挑選出最適合去處。
+"""
 import numpy as np
 from typing import List, Dict, Any, Tuple
 import threading
 import logging
 
+
 class SemanticRadar:
     """
-    語意嗅覺雷達 (Semantic Olfactory Radar)
-    Uses a highly efficient, edge-compatible embedding model to match vague user intents
-    with physical POIs. Runs entirely locally on CPU.
+    語意嗅覺雷達 (Semantic Olfactory Radar) - 單例模式 (Singleton)
     """
     _instance = None
     _lock = threading.Lock()
@@ -23,8 +30,7 @@ class SemanticRadar:
 
     def initialize(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
         """
-        Loads the embedding model in a background thread so it doesn't block startup.
-        BAAI/bge-small-zh-v1.5 is chosen for its SOTA Chinese retrieval performance and tiny size (~90MB).
+        【在背景 Daemon 執行緒中非同步載入語意模型】
         """
         if self.model is not None or self.is_loading:
             return
@@ -46,12 +52,14 @@ class SemanticRadar:
         threading.Thread(target=load_model, daemon=True).start()
 
     def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """計算兩個向量的餘弦相似度 (Cosine Similarity)"""
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
     def search_intent(self, intent_query: str, nearby_pois: List[Dict[str, Any]], top_k: int = 3, threshold: float = 0.5) -> List[Tuple[Dict[str, Any], float]]:
         """
-        Matches an intent (e.g. "想上廁所", "口渴想喝冷飲") against nearby POIs.
+        【以自然語言需求意圖搜尋周遭最匹配的店家】
         """
+
         if not SemanticRadar.HAS_SENTENCE_TRANSFORMERS or self.model is None:
             return []
 

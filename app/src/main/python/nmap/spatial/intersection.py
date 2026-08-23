@@ -1,3 +1,13 @@
+"""
+路口與行人過馬路安全性分析器 (Intersection & Crossing Safety Analyzer)
+
+作用：
+1. 路口型態辨識：分析路網拓撲圖節點的連接度 (degree)，自動辨別「直行道路」、「T字路口」、「十字路口」、「五岔路」或「圓環」。
+2. 行人無障礙設施評估：
+   - 斑馬線 (Crossings)：回報距離、鐘點方位、是否有行人號誌、是否有導盲磚。
+   - 有聲號誌 (Acoustic Signals)：回報是否有布穀鳥聲、蟋蟀聲等無障礙有聲導引。
+3. 分支走向導覽：精確指出例如「2點鐘方向往北新路一段」、「9點鐘方向往中正路」。
+"""
 from typing import List, Dict, Any, Optional
 from nmap.spatial.geometry import (
     haversine_distance,
@@ -11,17 +21,14 @@ from nmap.spatial.world_model import WorldModel
 
 class IntersectionAnalyzer:
     """
-    Intersection & Pedestrian Crossing Safety Analyzer for Visually Impaired Explorers.
-    Evaluates junction layout (Crossroads, T-junction, Y-junction, Roundabout, Alley),
-    pedestrian signals (acoustic/sound signals), zebra crossings, tactile paving (導盲磚),
-    and safety recommendations.
+    路口與行人穿越安全性分析器
     """
 
     def analyze(self, lat: float, lon: float, heading_deg: float, world_model: WorldModel, max_distance_m: float = 60.0, signal_announce_distance_m: float = 10.0) -> Dict[str, Any]:
         """
-        Analyze intersections and pedestrian crossings ahead within max_distance_m.
+        【分析前方 60 公尺內的路口結構與過馬路安全性】
         """
-        # Find nearby crossing nodes
+        # 搜尋前方附近的斑馬線節點
         nearby_crossings = []
         for cr in world_model.crossings:
             c_lat, c_lon = cr["lat"], cr["lon"]
@@ -30,7 +37,7 @@ class IntersectionAnalyzer:
                 t_brng = calculate_bearing(lat, lon, c_lat, c_lon)
                 rel_brng = relative_bearing(heading_deg, t_brng)
                 
-                # Check if it's generally ahead (within -90 to +90 deg)
+                # 篩選前方視野內（朝向 ±100 度角以內）的設施
                 if abs(rel_brng) <= 100:
                     clock = bearing_to_clock_position(rel_brng)
                     rel_dir = bearing_to_relative_direction(rel_brng)
@@ -47,7 +54,7 @@ class IntersectionAnalyzer:
 
         nearby_crossings.sort(key=lambda x: x["distance_m"])
 
-        # Find nearby traffic signals
+        # 搜尋前方附近的紅綠燈號誌
         nearby_signals = []
         for ts in world_model.traffic_signals:
             s_lat, s_lon = ts["lat"], ts["lon"]
@@ -69,12 +76,16 @@ class IntersectionAnalyzer:
 
         nearby_signals.sort(key=lambda x: x["distance_m"])
 
-        # Determine Junction Type by examining road graph node degrees
+        # 藉由檢查道路拓撲節點的度數 (degree) 來判定路口型態
         junction_type = "直行道路"
         closest_junction_dist = 999.0
 
+
         intersecting_roads = set()
         branches_info = []
+        curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
+        curr_street = curr_road_info.get("street_name", "")
+
         for node_id, degree in world_model.road_graph.degree():
             node_data = world_model.road_graph.nodes[node_id]
             n_lat, n_lon = node_data["lat"], node_data["lon"]
@@ -93,7 +104,8 @@ class IntersectionAnalyzer:
                         edges = world_model.road_graph.out_edges(node_id, data=True)
                         for u, v, data in edges:
                             road_name = data.get("name", "未命名道路")
-                            intersecting_roads.add(road_name)
+                            if road_name and road_name != curr_street and road_name != "未命名道路":
+                                intersecting_roads.add(road_name)
                             
                             v_data = world_model.road_graph.nodes[v]
                             v_lat, v_lon = v_data["lat"], v_data["lon"]

@@ -1,8 +1,19 @@
+"""
+模擬世界持續狀態與記憶追蹤管理器 (Simulation World State)
+
+作用：
+1. 維護虛擬世界中隨機生成的 NPC 路人（動態位置、移動速度、是否願意提供協助）。
+2. 記錄探索過程中的碰撞歷史 (collision_history)、危險地點 (dangerous_spots) 與總步數。
+3. 產生結構化的探索體驗摘要，供定向行動訓練評估。
+"""
 import random
 from typing import Dict, Any, List, Set
 
+
 class WorldState:
-    """維護模擬的持續狀態。"""
+    """
+    模擬世界狀態管理器
+    """
 
     NPC_TYPES = ['pedestrian', 'elderly', 'child', 'runner', 'dog_walker', 'delivery', 'vendor', 'smoker', 'parent_stroller', 'tourist', 'student', 'worker']
     
@@ -32,10 +43,14 @@ class WorldState:
         self.encountered_npcs: List[str] = []
 
     def _generate_chinese_name(self) -> str:
+        """隨機組合台灣常見中文姓名"""
         return random.choice(self.SURNAMES) + random.choice(self.NAMES)
 
     def update_npcs(self, player_lat: float, player_lon: float, area_type: str, difficulty_settings: Dict[str, Any]) -> None:
-        """更新 NPC 狀態。"""
+        """
+        【更新周遭 NPC 路人的位置與生成/移除】
+        """
+
         # 簡單的模擬：每步隨機生成或移除 NPC
         if random.random() < 0.3 * difficulty_settings.get('crowd_multiplier', 1.0):
             npc = {

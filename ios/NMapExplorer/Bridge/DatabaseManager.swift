@@ -1,12 +1,14 @@
+/**
+ * iOS 原生 SQLite 資料庫與 Overture 大數據管理器 (Native Database Manager)
+ * 
+ * 作用：
+ * 1. nmap_cache.db (讀寫快取)：以 SQLite WAL 模式儲存 Overpass API 查詢結果與地理編碼快取，加速二次查詢。
+ * 2. overture_places.db (全台 193 萬筆店家資料庫)：以唯讀模式 (Read-Only) 直接在 Bundle 中掛載，
+ *    搭配經緯度 B-Tree 索引 (idx_lat_lon)，查詢方圓 60 公尺內的店家僅需 1~2 毫秒，零記憶體複製消耗。
+ */
 import Foundation
 import SQLite3
 
-/**
- * Native iOS SQLite Cache & Overture Big Data Manager for NMap.
- * Handles:
- * 1. nmap_cache.db (Read/Write cache in Documents)
- * 2. overture_places.db (221MB / 1.93 Million Taiwan POIs, Read-Only in Bundle with B-Tree Index)
- */
 class DatabaseManager {
 
     static let shared = DatabaseManager()
@@ -24,6 +26,7 @@ class DatabaseManager {
         if overtureDb != nil { sqlite3_close(overtureDb) }
     }
 
+    // 初始化本機 Documents 快取資料庫 (WAL Mode)
     private func setupCacheDatabase() {
         let fileManager = FileManager.default
         guard let docDir = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
@@ -47,6 +50,7 @@ class DatabaseManager {
         }
     }
 
+    // 初始化全台 193 萬筆 Overture 實體店家資料庫 (Read-Only)
     private func setupOvertureDatabase() {
         let fileManager = FileManager.default
         let bundleURL = Bundle.main.url(forResource: "overture_places", withExtension: "db", subdirectory: "Resources") ??
@@ -66,9 +70,11 @@ class DatabaseManager {
     }
 
     /**
-     * Query 1.93 Million Overture POIs using idx_lat_lon bounding box (1~2ms response)
+     * 【極速空間邊界框查詢周遭 Overture 店家】
+     * 作用：利用經緯度 B-Tree 索引在 1~2 毫秒內檢索出半徑內的實體店家。
      */
     func queryNearbyOverturePlaces(lat: Double, lon: Double, radiusM: Double, completion: @escaping ([[String: Any]]) -> Void) {
+
         queue.async {
             guard let db = self.overtureDb else {
                 completion([])

@@ -1,3 +1,9 @@
+"""
+Wikidata 與維基百科開放資料擴充器 (Wikidata & Wikipedia Enricher)
+
+作用：完全免費且不需任何 API Key。
+當探索到知名景點、古蹟或大商場時，自動從維基百科搜尋簡短介紹與歷史背景，豐富導覽內容。
+"""
 import requests
 from typing import Dict, Any, List, Optional
 from nmap.data.cache import CacheManager
@@ -8,9 +14,7 @@ DEFAULT_USER_AGENT = "nmap-blind-world-explorer/1.0 (accessibility-gis-engine)"
 
 class WikidataEnricher:
     """
-    Free Data Enrichment Client querying Wikidata SPARQL and Wikipedia APIs
-    for enhanced store metadata (wheelchair accessibility, official descriptions, 
-    operating brands, and floor details) with zero API key requirement.
+    維基百科與 Wikidata 開放資料擴充客戶端
     """
 
     def __init__(self, cache_manager: Optional[CacheManager] = None):
@@ -23,7 +27,8 @@ class WikidataEnricher:
 
     def enrich_poi(self, name: str, lat: float, lon: float) -> Dict[str, Any]:
         """
-        Enrich POI with Wikidata entity descriptions and Wikipedia summary if available.
+        【透過維基百科搜尋景點簡介】
+        作用：以景點名稱搜尋維基百科摘要（前 120 字元）與條目連結，並寫入本機快取。
         """
         cache_key = f"wikidata:{name}:{round(lat, 3)},{round(lon, 3)}"
         cached = self.cache.get_overpass(cache_key)
@@ -37,7 +42,7 @@ class WikidataEnricher:
         }
 
         try:
-            # Query Wikipedia Search REST API (free, open)
+            # 查詢中文維基百科 REST API
             search_url = f"https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch={name}&format=json"
             resp = self.session.get(search_url, timeout=4)
             if resp.status_code == 200:
@@ -54,3 +59,4 @@ class WikidataEnricher:
             pass
 
         return enrichment
+

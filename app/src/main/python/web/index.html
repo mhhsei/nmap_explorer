@@ -24,22 +24,77 @@
 
   <h1>nmap 行動導航版</h1>
 
+  <!-- 權限不足提示橫幅 -->
+  <div id="permission-banner" class="banner" style="display:none; background:#78350f; border:1px solid #f59e0b; border-radius:8px; padding:12px; margin-bottom:10px;" role="alert">
+    <p id="permission-text" style="color:#fef08a; font-weight:bold; font-size:1.1em; margin-bottom:8px;">📍 定位權限未開啟，已進入手動探索模式。</p>
+    <div style="display:flex; gap:10px;">
+      <button id="open-settings-btn" class="btn" style="background:#eab308; color:#0f172a; padding:10px; font-size:1em;" aria-label="前往系統設定開啟精確定位權限">開啟系統設定</button>
+      <button id="manual-search-btn" class="btn" style="background:#38bdf8; color:#0f172a; padding:10px; font-size:1em;" aria-label="切換至手動輸入地址搜尋">輸入地址探索</button>
+    </div>
+  </div>
+
+  <!-- 手動地址/地標搜尋列 -->
+  <div id="search-section" style="display: flex; gap: 8px; margin-bottom: 10px;">
+    <input id="location-input-visible" type="text" placeholder="輸入地址、地標或座標 (例: 淡水老街)..." style="flex: 1; padding: 12px; font-size: 1.1em; border-radius: 8px; border: 1px solid #38bdf8; background: #1e293b; color: #f8fafc;" aria-label="輸入探索起點地址或地標">
+    <button id="search-go-btn" class="btn" style="width: auto; padding: 12px 18px;" aria-label="立即前往此地點開始探索">前往</button>
+  </div>
+
   <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
     <button id="ui-btn-scan" class="btn" aria-label="掃描前方店家">掃描前方 (L)</button>
     <button id="ui-btn-around" class="btn" aria-label="掃描周遭所有店家">周遭所有 (P)</button>
     <button id="ui-btn-intersection" class="btn" aria-label="查詢前方路口走向與分支">前方路口 (I)</button>
     <button id="ui-btn-loc" class="btn" aria-label="播報當前定位">目前位置 (R)</button>
-    <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌 (Share Logs)</button>
+    <button id="ui-btn-check-update" class="btn" style="background: #0369a1; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="檢查 GitHub 最新發布更新版本">檢查更新 (Update)</button>
+    <button id="ui-btn-export-log" class="btn" style="background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌 (Share Logs)</button>
   </div>
 
-  <div class="history-container" aria-label="歷史訊息列表，可上下滑動逐條讀取">
+  <!-- App 自動更新提示對話框 (App Update Accessible Modal) -->
+  <div id="update-modal" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:9999; justify-content:center; align-items:center;" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
+    <div class="modal-content" style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:16px; max-width:480px; width:90%; margin:auto;">
+      <h2 id="update-modal-title" style="color:#38bdf8; font-size:1.3em; margin:0 0 10px 0;" tabindex="0">🚀 發現新版本</h2>
+      <div id="update-modal-body" style="font-size:1.1em; line-height:1.6; color:#f8fafc; margin-bottom:14px;" tabindex="0">
+        <!-- 動態注入更新說明 -->
+      </div>
+      <div id="update-progress-container" style="display:none; margin-bottom:12px;">
+        <p id="update-progress-text" style="color:#38bdf8; font-size:1em; margin-bottom:4px;">下載進度：0%</p>
+        <div style="width:100%; background:#334155; height:10px; border-radius:5px; overflow:hidden;">
+          <div id="update-progress-bar" style="width:0%; background:#38bdf8; height:100%; transition:width 0.3s;"></div>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <button id="update-btn-confirm" class="btn" style="background:#22c55e; color:#0f172a; padding:10px; font-size:1em;" aria-label="立即下載新版安裝檔並更新">立即更新</button>
+        <button id="update-btn-cancel" class="btn" style="background:#475569; color:#f8fafc; padding:10px; font-size:1em;" aria-label="稍後再更新">稍後再說</button>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="history-container" aria-label="歷史訊息與店家列表，可上下滑動逐條讀取或點擊地標查看詳情">
     <ul id="history-list" class="history-list">
       <li class="history-item" tabindex="0">歡迎使用 nmap！定位系統啟動中...</li>
     </ul>
   </div>
 
-  <!-- Dedicated invisible live region for immediate speech -->
-  <div id="nvda-live-log" aria-live="polite" aria-atomic="true"></div>
+  <!-- 地標詳細資訊無障礙對話框 (POI Detail Accessible Modal) -->
+  <div id="poi-detail-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="poi-modal-title">
+    <div class="modal-content" style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:16px; max-width:500px; width:92%;">
+      <div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:8px; margin-bottom:12px;">
+        <h2 id="poi-modal-title" style="color:#38bdf8; font-size:1.4em; margin:0;" tabindex="0">地標詳細資訊</h2>
+        <button id="poi-modal-close-btn" class="btn-close" style="color:#cbd5e1; font-size:1.8em; background:none; border:none; padding:4px 8px;" aria-label="關閉對話框">×</button>
+      </div>
+      <div id="poi-modal-body" style="font-size:1.15em; line-height:1.7; color:#f8fafc; margin-bottom:16px;" tabindex="0">
+        <!-- 動態注入地標資料 -->
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <button id="poi-modal-nav-nmap" class="btn" style="background:#38bdf8; color:#0f172a; padding:12px; font-size:1.05em;" aria-label="啟動 3D 空間聲音導引前往此地標">🎯 空間聲音導引</button>
+        <button id="poi-modal-nav-gmaps" class="btn" style="background:#22c55e; color:#0f172a; padding:12px; font-size:1.05em;" aria-label="開啟 Google 地圖步行導航">🗺️ Google 導航</button>
+        <button id="poi-modal-dismiss" class="btn" style="grid-column:span 2; background:#475569; color:#f8fafc; padding:10px; font-size:1em;" aria-label="關閉地標詳情對話框">關閉 (Esc)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dedicated live region for immediate speech -->
+  <div id="nvda-live-log" aria-live="assertive" aria-atomic="true"></div>
 
   <!-- Hidden elements to keep app.js happy -->
   <div style="display:none;" aria-hidden="true">

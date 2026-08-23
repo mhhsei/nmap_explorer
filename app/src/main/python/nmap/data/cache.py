@@ -1,3 +1,11 @@
+"""
+本機 SQLite 快取管理器 (Cache Manager)
+
+作用：將網路查詢過的地點（Nominatim）與地圖圖資（Overpass）儲存在手機/電腦本機的 SQLite 資料庫中。
+優點：
+1. 避免重複連網抓資料被伺服器封鎖 (Rate Limiting)。
+2. 下次再去同一個地方時，不需要網路就能「0 毫秒瞬間載入」離線探索。
+"""
 import sqlite3
 import json
 import time
@@ -9,8 +17,7 @@ DEFAULT_CACHE_DB = os.path.join(os.path.dirname(__file__), "..", "..", "nmap_cac
 
 class CacheManager:
     """
-    SQLite-backed local persistent cache for Nominatim and Overpass API requests.
-    Prevents API rate limiting and enables instant offline exploration of cached areas.
+    SQLite 本機持久化快取管理員
     """
 
     def __init__(self, db_path: str = DEFAULT_CACHE_DB):
@@ -18,12 +25,14 @@ class CacheManager:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
+        """建立資料庫連線並啟用 WAL 高效能寫入模式"""
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         return conn
 
     def _init_db(self):
+        """初始化快取資料表結構（地理編碼表與 Overpass 圖資表）"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -43,6 +52,7 @@ class CacheManager:
             conn.commit()
 
     def get_geocode(self, query_key: str, max_age_seconds: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """從快取讀取地址解析結果"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT data_json, timestamp FROM geocode_cache WHERE query_key = ?", (query_key,))
@@ -54,6 +64,7 @@ class CacheManager:
         return None
 
     def set_geocode(self, query_key: str, data: Dict[str, Any]):
+        """將地址解析結果存入快取"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -63,6 +74,7 @@ class CacheManager:
             conn.commit()
 
     def get_overpass(self, query_key: str, max_age_seconds: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """從快取讀取 Overpass 地圖資料"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT data_json, timestamp FROM overpass_cache WHERE query_key = ?", (query_key,))
@@ -74,6 +86,7 @@ class CacheManager:
         return None
 
     def set_overpass(self, query_key: str, data: Dict[str, Any]):
+        """將 Overpass 地圖資料存入快取"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -83,8 +96,10 @@ class CacheManager:
             conn.commit()
 
     def clear(self):
+        """清空所有本機快取資料"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM geocode_cache")
             cursor.execute("DELETE FROM overpass_cache")
             conn.commit()
+
