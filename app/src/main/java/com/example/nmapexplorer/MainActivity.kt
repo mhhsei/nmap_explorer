@@ -64,10 +64,14 @@ class MainActivity : ComponentActivity() {
             Python.start(AndroidPlatform(this))
         }
 
-        // 2. 在背景執行緒啟動 Bottle Web 伺服器 (127.0.0.1:8000)
+        // 2. 在背景執行緒啟動 Bottle Web 伺服器 (127.0.0.1:8000) 並指定圖資儲存目錄
+        val dataDir = getExternalFilesDir(null)?.resolve("data") ?: filesDir.resolve("data")
+        dataDir.mkdirs()
+
         val py = Python.getInstance()
         val serverRunner = py.getModule("server_runner")
-        serverRunner.callAttr("start_server_in_background", "127.0.0.1", 8000)
+        serverRunner.callAttr("start_server_in_background", "127.0.0.1", 8000, dataDir.absolutePath)
+
 
         // 3. 檢查並請求所需權限（GPS、計步器、通知）
         checkAndRequestLocationPermissions()

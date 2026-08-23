@@ -502,6 +502,15 @@ class NmapWebApp {
         });
     }
 
+    const uiBtnMapDb = document.getElementById("ui-btn-map-db");
+    if (uiBtnMapDb) {
+        uiBtnMapDb.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "管理離線圖資");
+            this.showMapDatabaseModal();
+        });
+    }
+
+
 
     const uiBtnExportLog = document.getElementById("ui-btn-export-log");
     if (uiBtnExportLog) {
@@ -2101,7 +2110,71 @@ class NmapWebApp {
       };
     }
   }
+
+  // 顯示離線地圖資料庫管理視窗 (Show Offline Map DB Manager Modal)
+  showMapDatabaseModal() {
+    const modal = document.getElementById("map-db-modal");
+    const body = document.getElementById("map-db-modal-body");
+    const dlBtn = document.getElementById("map-db-btn-download");
+    const delBtn = document.getElementById("map-db-btn-delete");
+    const closeBtn = document.getElementById("map-db-btn-close");
+    const progContainer = document.getElementById("map-db-progress-container");
+    if (!modal || !body) return;
+
+    let dbExists = false;
+    let dbSize = "0 MB";
+
+    if (window.AndroidBridge && window.AndroidBridge.getDatabaseStatusJson) {
+      try {
+        const info = JSON.parse(window.AndroidBridge.getDatabaseStatusJson());
+        dbExists = info.exists;
+        dbSize = info.sizeFormattedMb || "0 MB";
+      } catch (e) {
+        console.error("Failed to parse db status json", e);
+      }
+    }
+
+    if (dbExists) {
+      body.innerHTML = `<p style="color:#2dd4bf;font-weight:bold;">✅ 全台 190 萬筆店家離線圖資已就緒！</p><p>本地圖資大小：<strong>${dbSize}</strong></p><p style="color:#cbd5e1;font-size:0.95em;">您可以在無網路環境下享受 0.01 秒瞬間檢索周遭所有生活地標與店家。</p>`;
+      if (delBtn) delBtn.style.display = "block";
+      if (dlBtn) dlBtn.innerText = "重新下載/更新圖資";
+    } else {
+      body.innerHTML = `<p style="color:#fbbf24;font-weight:bold;">⚠️ 尚未下載全台離線店家圖資</p><p style="color:#cbd5e1;font-size:0.95em;">目前正在使用線上即時查詢（Overpass/Nominatim）。建議在 Wi-Fi 環境下載全台離線圖資包（約 220 MB），下載後可永久離線極速檢索。</p>`;
+      if (delBtn) delBtn.style.display = "none";
+      if (dlBtn) dlBtn.innerText = "立即下載離線圖資 (220 MB)";
+    }
+
+    modal.style.display = "flex";
+    if (progContainer) progContainer.style.display = "none";
+
+    if (dlBtn) {
+      dlBtn.onclick = () => {
+        if (progContainer) progContainer.style.display = "block";
+        if (window.AndroidBridge && window.AndroidBridge.downloadOfflineDatabase) {
+          window.AndroidBridge.downloadOfflineDatabase();
+        } else {
+          window.open("https://github.com/mhhsei/nmap_explorer/releases/download/v1.0.0/overture_places.db", "_blank");
+        }
+      };
+    }
+
+    if (delBtn) {
+      delBtn.onclick = () => {
+        if (window.AndroidBridge && window.AndroidBridge.deleteOfflineDatabase) {
+          window.AndroidBridge.deleteOfflineDatabase();
+          this.showMapDatabaseModal();
+        }
+      };
+    }
+
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        modal.style.display = "none";
+      };
+    }
+  }
 }
+
 
 // 全域 AndroidBridge 回調綁定
 window.onUpdateAvailable = (latestVer, title, downloadUrl, fileSize, notes) => {
@@ -2133,6 +2206,43 @@ window.onUpdateCheckResult = (status, info) => {
     window.app.updateLiveLog(`目前已是最新版本 (v${info})。`);
   }
 };
+
+// 離線圖資下載回調 (Database Download Callbacks)
+window.onDatabaseDownloadStart = () => {
+  const progContainer = document.getElementById("map-db-progress-container");
+  const pText = document.getElementById("map-db-progress-text");
+  const pBar = document.getElementById("map-db-progress-bar");
+  if (progContainer) progContainer.style.display = "block";
+  if (pText) pText.innerText = "正在開始下載離線圖資...";
+  if (pBar) pBar.style.width = "0%";
+};
+
+window.onDatabaseDownloadProgress = (percent) => {
+  const pText = document.getElementById("map-db-progress-text");
+  const pBar = document.getElementById("map-db-progress-bar");
+  if (pText) pText.innerText = `圖資下載進度：${percent}%`;
+  if (pBar) pBar.style.width = `${percent}%`;
+};
+
+window.onDatabaseDownloadComplete = (dbSize) => {
+  const pText = document.getElementById("map-db-progress-text");
+  const pBar = document.getElementById("map-db-progress-bar");
+  if (pText) pText.innerText = `圖資下載完成 (${dbSize})！`;
+  if (pBar) pBar.style.width = "100%";
+  if (window.app) {
+    window.app.updateLiveLog(`全台離線店家圖資已下載完成 (${dbSize})！`);
+    window.app.showMapDatabaseModal();
+  }
+};
+
+window.onDatabaseDownloadError = (errMsg) => {
+  const pText = document.getElementById("map-db-progress-text");
+  if (pText) pText.innerText = `圖資下載失敗：${errMsg}`;
+  if (window.app) {
+    window.app.updateLiveLog(`圖資下載失敗：${errMsg}`);
+  }
+};
+
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new NmapWebApp();

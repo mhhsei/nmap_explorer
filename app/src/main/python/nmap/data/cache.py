@@ -12,7 +12,13 @@ import time
 import os
 from typing import Optional, Any, Dict
 
-DEFAULT_CACHE_DB = os.path.join(os.path.dirname(__file__), "..", "..", "nmap_cache.db")
+def get_default_cache_db():
+    data_dir = os.environ.get("NMAP_DATA_DIR")
+    if data_dir:
+        return os.path.join(data_dir, "nmap_cache.db")
+    return os.path.join(os.path.dirname(__file__), "..", "..", "nmap_cache.db")
+
+DEFAULT_CACHE_DB = get_default_cache_db()
 
 
 class CacheManager:
@@ -20,9 +26,12 @@ class CacheManager:
     SQLite 本機持久化快取管理員
     """
 
-    def __init__(self, db_path: str = DEFAULT_CACHE_DB):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = get_default_cache_db()
         self.db_path = os.path.abspath(db_path)
         self._init_db()
+
 
     def _get_connection(self) -> sqlite3.Connection:
         """建立資料庫連線並啟用 WAL 高效能寫入模式"""

@@ -30,13 +30,19 @@ class RealPoiFetcher:
         }
         
         if db_path is None:
-            # 自動定位到專案根目錄下的 data/overture_places.db
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            self.db_path = os.path.join(base_dir, "data", "overture_places.db")
-            self.gov_db_path = os.path.join(base_dir, "data", "gov_places.db")
+            # 優先讀取自訂資料目錄 (Android App 動態下載儲存目錄)
+            data_dir = os.environ.get("NMAP_DATA_DIR")
+            if data_dir:
+                self.db_path = os.path.join(data_dir, "overture_places.db")
+                self.gov_db_path = os.path.join(data_dir, "gov_places.db")
+            else:
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                self.db_path = os.path.join(base_dir, "data", "overture_places.db")
+                self.gov_db_path = os.path.join(base_dir, "data", "gov_places.db")
         else:
             self.db_path = db_path
             self.gov_db_path = db_path.replace("overture_places", "gov_places")
+
 
     def _fetch_ifoodie_page(self, lat: float, lon: float, page: int) -> List[Dict[str, Any]]:
         """

@@ -4,6 +4,7 @@
 作用：讓 Android 的 Kotlin 原生程式能透過 Chaquopy 在背景執行緒啟動 Python Bottle 伺服器。
 好比在手機背景悄悄架設一個微型網站，專門提供前端網頁各種地圖計算與語音資訊。
 """
+import os
 import threading
 import socket
 from bottle import run
@@ -17,13 +18,21 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
-def start_server_in_background(host="127.0.0.1", port=8000):
+def start_server_in_background(host="127.0.0.1", port=8000, data_dir=None):
     """
     在背景守護執行緒 (Daemon Thread) 啟動 Bottle HTTP 伺服器
     
     @param host 監聽的主機位址（預設 127.0.0.1 本機）
     @param port 監聽的通訊埠（預設 8000）
+    @param data_dir 自訂資料庫儲存目錄（Android 內部/外部儲存空間路徑）
     """
+    if data_dir:
+        os.environ["NMAP_DATA_DIR"] = str(data_dir)
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+        except Exception:
+            pass
+
     # 若該 Port 已經有服務在運作，直接跳過啟動
     if is_port_in_use(port):
         import logging
@@ -46,4 +55,5 @@ def start_server_in_background(host="127.0.0.1", port=8000):
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return t
+
 

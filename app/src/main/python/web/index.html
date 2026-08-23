@@ -44,8 +44,9 @@
     <button id="ui-btn-around" class="btn" aria-label="掃描周遭所有店家">周遭所有 (P)</button>
     <button id="ui-btn-intersection" class="btn" aria-label="查詢前方路口走向與分支">前方路口 (I)</button>
     <button id="ui-btn-loc" class="btn" aria-label="播報當前定位">目前位置 (R)</button>
-    <button id="ui-btn-check-update" class="btn" style="background: #0369a1; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="檢查 GitHub 最新發布更新版本">檢查更新 (Update)</button>
-    <button id="ui-btn-export-log" class="btn" style="background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌 (Share Logs)</button>
+    <button id="ui-btn-check-update" class="btn" style="background: #0369a1; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="檢查 GitHub 最新發布更新版本">檢查更新 (App)</button>
+    <button id="ui-btn-map-db" class="btn" style="background: #0d9488; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="管理與下載全台離線店家地圖資料庫">離線圖資 (Map DB)</button>
+    <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌 (Share Logs)</button>
   </div>
 
   <!-- App 自動更新提示對話框 (App Update Accessible Modal) -->
@@ -68,6 +69,26 @@
     </div>
   </div>
 
+  <!-- 離線地圖資料庫管理對話框 (Offline Map Database Modal) -->
+  <div id="map-db-modal" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:9999; justify-content:center; align-items:center;" role="dialog" aria-modal="true" aria-labelledby="map-db-modal-title">
+    <div class="modal-content" style="background:#1e293b; border:2px solid #0d9488; border-radius:12px; padding:16px; max-width:480px; width:90%; margin:auto;">
+      <h2 id="map-db-modal-title" style="color:#2dd4bf; font-size:1.3em; margin:0 0 10px 0;" tabindex="0">📦 離線店家圖資管理</h2>
+      <div id="map-db-modal-body" style="font-size:1.1em; line-height:1.6; color:#f8fafc; margin-bottom:14px;" tabindex="0">
+        <!-- 動態注入圖資狀態 -->
+      </div>
+      <div id="map-db-progress-container" style="display:none; margin-bottom:12px;">
+        <p id="map-db-progress-text" style="color:#2dd4bf; font-size:1em; margin-bottom:4px;">圖資下載進度：0%</p>
+        <div style="width:100%; background:#334155; height:10px; border-radius:5px; overflow:hidden;">
+          <div id="map-db-progress-bar" style="width:0%; background:#2dd4bf; height:100%; transition:width 0.3s;"></div>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <button id="map-db-btn-download" class="btn" style="background:#0d9488; color:#f8fafc; padding:10px; font-size:1em;" aria-label="下載或更新全台 190 萬筆店家離線圖資">下載/更新圖資</button>
+        <button id="map-db-btn-delete" class="btn" style="background:#b91c1c; color:#f8fafc; padding:10px; font-size:1em;" aria-label="刪除離線圖資釋放手機儲存空間">刪除圖資</button>
+        <button id="map-db-btn-close" class="btn" style="grid-column:span 2; background:#475569; color:#f8fafc; padding:10px; font-size:1em;" aria-label="關閉圖資管理對話框">關閉 (Esc)</button>
+      </div>
+    </div>
+  </div>
 
   <div class="history-container" aria-label="歷史訊息與店家列表，可上下滑動逐條讀取或點擊地標查看詳情">
     <ul id="history-list" class="history-list">

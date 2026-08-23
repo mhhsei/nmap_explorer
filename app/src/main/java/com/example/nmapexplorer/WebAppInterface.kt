@@ -547,6 +547,79 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     fun getAppVersionName(): String {
         return updateManager.getCurrentVersionName()
     }
+
+    private val dbManager by lazy { com.example.nmapexplorer.update.MapDatabaseManager(context) }
+
+    /**
+     * 【取得離線圖資狀態 JSON】
+     */
+    @JavascriptInterface
+    fun getDatabaseStatusJson(): String {
+        val status = dbManager.getDatabaseStatus()
+        val json = org.json.JSONObject().apply {
+            put("exists", status.exists)
+            put("sizeFormattedMb", status.sizeFormattedMb)
+            put("sizeBytes", status.sizeBytes)
+            put("path", status.path)
+            put("downloadUrl", status.downloadUrl)
+        }
+        return json.toString()
+    }
+
+    /**
+     * 【獨立下載全台離線店家資料庫】
+     */
+    @JavascriptInterface
+    fun downloadOfflineDatabase() {
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                speak("已開始在背景下載全台離線店家資料庫，請稍候...", interrupt = true)
+                webView?.evaluateJavascript("if (window.onDatabaseDownloadStart) window.onDatabaseDownloadStart();", null)
+
+                var lastSpoken = 0
+                val result = dbManager.downloadDatabase { percent ->
+                    webView?.evaluateJavascript(
+                        "if (window.onDatabaseDownloadProgress) window.onDatabaseDownloadProgress($percent);",
+                        null
+                    )
+                    if (percent >= lastSpoken + 20 && percent < 100) {
+                        lastSpoken = percent
+                        speak("離線圖資下載進度 $percent 百分比", interrupt = false)
+                    }
+                }
+
+                result.onSuccess { file ->
+                    val status = dbManager.getDatabaseStatus()
+                    speak("全台離線店家資料庫下載完成（${status.sizeFormattedMb}），離線店家快速檢索已就緒！", interrupt = true)
+                    webView?.evaluateJavascript(
+                        "if (window.onDatabaseDownloadComplete) window.onDatabaseDownloadComplete('${status.sizeFormattedMb}');",
+                        null
+                    )
+                }.onFailure { err ->
+                    speak("離線圖資下載失敗：${err.message ?: "網路中斷"}", interrupt = true)
+                    webView?.evaluateJavascript(
+                        "if (window.onDatabaseDownloadError) window.onDatabaseDownloadError('${err.message ?: ""}');",
+                        null
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Download database failed", e)
+            }
+        }
+    }
+
+    /**
+     * 【刪除離線圖資以釋放手機空間】
+     */
+    @JavascriptInterface
+    fun deleteOfflineDatabase(): Boolean {
+        val success = dbManager.deleteDatabase()
+        if (success) {
+            speak("已清理本地離線地圖資料庫，成功釋放儲存空間。", interrupt = true)
+        }
+        return success
+    }
 }
+
 
 
