@@ -35,6 +35,7 @@ import com.example.nmapexplorer.theme.NMapExplorerTheme
 class MainActivity : ComponentActivity() {
     // 感測器橋接器：負責 GPS、陀螺儀與卡爾曼濾波的調度
     private var sensorBridge: LocationSensorBridge? = null
+    private var currentWebView: WebView? = null
 
     /**
      * 動態權限請求回調處理器
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
         if (fineGranted || coarseGranted) {
             startServiceIfPermitted()
             sensorBridge?.start()
+            currentWebView?.evaluateJavascript("if (window.onPermissionGranted) window.onPermissionGranted();", null)
         }
     }
 
@@ -85,14 +87,16 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     // 載入本機 Web 介面
-                    WebViewScreen("http://127.0.0.1:8000/") { bridge ->
+                    WebViewScreen("http://127.0.0.1:8000/") { bridge, webView ->
                         sensorBridge = bridge
+                        currentWebView = webView
                         checkAndStartSensors()
                     }
                 }
             }
         }
     }
+
 
     /**
      * 若已獲得權限，則啟動前台常駐服務 (ServerForegroundService)
@@ -222,7 +226,7 @@ class MainActivity : ComponentActivity() {
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge) -> Unit) {
+fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) -> Unit) {
     AndroidView(
         factory = { context ->
             val webView = WebView(context).apply {
@@ -243,10 +247,11 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge) -> Unit) 
             
             // 建立感測器橋接器並透過回調傳回
             val bridge = LocationSensorBridge(context, webView)
-            onBridgeCreated(bridge)
+            onBridgeCreated(bridge, webView)
             
             webView
         },
+
         modifier = Modifier.fillMaxSize()
     )
 }

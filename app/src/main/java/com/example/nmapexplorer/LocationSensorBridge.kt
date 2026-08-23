@@ -339,7 +339,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 Looper.getMainLooper()
             )
 
-            // 檢查快取位置：僅採納 5 秒內且精度小於 20 公尺的即時快取，過期一律丟棄避免開機報舊地址
+            // 快速熱啟動：若有最後已知位置（10 分鐘內且精度 150m 內），立即用於初次定位暖機
             fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
                 location?.let {
                     val ageNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
@@ -347,15 +347,16 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     } else {
                         (System.currentTimeMillis() - it.time) * 1_000_000L
                     }
-                    val isAccurate = it.hasAccuracy() && it.accuracy <= 20f
-                    if (ageNanos < 5_000_000_000L && isAccurate) {
-                        Log.i(tag, "Using fresh lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s)")
+                    val isUsable = it.hasAccuracy() && it.accuracy <= 150f && ageNanos < 600_000_000_000L // 10 分鐘內
+                    if (isUsable) {
+                        Log.i(tag, "Using initial warm-up lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s)")
                         onLocationChanged(it)
                     } else {
-                        Log.i(tag, "Ignoring stale or inaccurate lastLocation (${ageNanos / 1_000_000_000L}s old, Acc: ${it.accuracy}m). Waiting for live GPS fix.")
+                        Log.i(tag, "Waiting for fresh live GPS fix (lastLocation too old or inaccurate).")
                     }
                 }
             }
+
 
             // 5. 備援原生 LocationManager（GPS + Network 雙通道）
             locationManager?.let { lm ->

@@ -613,11 +613,16 @@ class NmapWebApp {
 
     // Check location permission on cold start
     if (window.AndroidBridge && window.AndroidBridge.hasLocationPermission) {
-      if (!window.AndroidBridge.hasLocationPermission()) {
+      if (window.AndroidBridge.hasLocationPermission()) {
+        if (permBanner) permBanner.style.display = "none";
+      } else {
         if (permBanner) permBanner.style.display = "block";
         this.updateLiveLog("📍 定位權限未開啟，已進入手動探索模式。請直接輸入地址開始探索，或點擊開啟系統設定。", false, true);
       }
+    } else {
+      if (permBanner) permBanner.style.display = "none";
     }
+
 
     // NLP Query Form
     const nlpForm = document.getElementById("nlp-form");
@@ -2147,6 +2152,19 @@ class NmapWebApp {
     modal.style.display = "flex";
     if (progContainer) progContainer.style.display = "none";
 
+    // 聚焦與無障礙報讀
+    if (window.AndroidBridge && window.AndroidBridge.speak) {
+      if (dbExists) {
+        window.AndroidBridge.speak(`離線圖資已就緒，大小 ${dbSize}。`, false);
+      } else {
+        window.AndroidBridge.speak("離線圖資管理已開啟。尚未下載全台離線圖資，可點選立即下載離線圖資。", false);
+      }
+    }
+    setTimeout(() => {
+      const titleEl = document.getElementById("map-db-modal-title");
+      if (titleEl) titleEl.focus();
+    }, 100);
+
     if (dlBtn) {
       dlBtn.onclick = () => {
         if (progContainer) progContainer.style.display = "block";
@@ -2157,6 +2175,7 @@ class NmapWebApp {
         }
       };
     }
+
 
     if (delBtn) {
       delBtn.onclick = () => {
@@ -2242,6 +2261,15 @@ window.onDatabaseDownloadError = (errMsg) => {
     window.app.updateLiveLog(`圖資下載失敗：${errMsg}`);
   }
 };
+
+window.onPermissionGranted = () => {
+  const pb = document.getElementById("permission-banner");
+  if (pb) pb.style.display = "none";
+  if (window.app) {
+    window.app.updateLiveLog("📍 已取得定位權限，正在接收衛星訊號...", false, false);
+  }
+};
+
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -2465,7 +2493,11 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
         window.lastMoveTime = Date.now();
     }
 
+    const pb = document.getElementById("permission-banner");
+    if (pb && pb.style.display !== "none") pb.style.display = "none";
+
     let dist = 999999;
+
     if (window.lastGpsLat !== null && window.lastGpsLon !== null) {
         const R = 6371e3;
         const φ1 = window.lastGpsLat * Math.PI / 180;
