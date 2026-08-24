@@ -949,15 +949,75 @@ class NmapWebApp {
     const historyList = document.getElementById("history-list");
     if (historyList) {
       // Split by spaces or punctuation to separate sentences as requested by the user
-      // Many Chinese phrases might use space or '。' for separation in our system
       let parts = text.split(/。|\n/).filter(p => p.trim().length > 0);
+      const allKnownPois = (this.getRealtimePois && this.getRealtimePois().length > 0) ? this.getRealtimePois() : (this.lastPois || []);
+      const curLat = this.localLat !== null ? this.localLat : (this.serverLat || 25.1764);
+      const curLon = this.localLon !== null ? this.localLon : (this.serverLon || 121.4468);
       
       parts.forEach(part => {
+        const cleanPart = part.trim();
         const li = document.createElement("li");
         li.className = "history-item";
         li.tabIndex = 0;
-        // Append a period to make the screen reader pause nicely
-        li.textContent = part.trim() + "。";
+        li.textContent = cleanPart + "。";
+
+        // 智慧比對是否包含店家/地標資訊
+        let matchedPoi = null;
+        for (const p of allKnownPois) {
+          if (p && p.name && (cleanPart.includes(p.name) || p.name.includes(cleanPart.replace(/[\(（].*$/, '').trim()))) {
+            matchedPoi = p;
+            break;
+          }
+        }
+
+        if (!matchedPoi && this.sessionDetectedPois) {
+          for (const p of this.sessionDetectedPois.values()) {
+            if (p && p.name && (cleanPart.includes(p.name) || p.name.includes(cleanPart.replace(/[\(（].*$/, '').trim()))) {
+              matchedPoi = p;
+              break;
+            }
+          }
+        }
+
+        // 若屬於地標/店家格式（如「美而美 (正前方 15m)」或「美而美，正前方」），自動提取店名
+        if (!matchedPoi && (cleanPart.includes("公尺") || cleanPart.includes("m") || cleanPart.includes("前方") || cleanPart.includes("左") || cleanPart.includes("右") || cleanPart.includes("點鐘"))) {
+          const rawName = cleanPart.replace(/[\(（].*$/, '').replace(/，.*$/, '').replace(/【.*】/, '').trim();
+          if (rawName.length >= 2 && rawName.length <= 25 && !rawName.includes("周遭") && !rawName.includes("十字路口") && !rawName.includes("路口") && !rawName.includes("前進")) {
+            matchedPoi = {
+              name: rawName,
+              lat: curLat,
+              lon: curLon,
+              distance_m: 10,
+              clock_position: "正前方",
+              category: "poi"
+            };
+          }
+        }
+
+        if (matchedPoi) {
+          li.style.cursor = "pointer";
+          li.setAttribute("role", "button");
+          li.setAttribute("aria-label", `${cleanPart}。雙擊或按 Enter 可展開此店家詳細營業資訊`);
+          li.style.borderLeft = "4px solid #38bdf8";
+          li.style.paddingLeft = "8px";
+
+          const triggerOpen = (e) => {
+            if (e) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+            this.showPoiDetail(matchedPoi);
+          };
+
+          li.onclick = triggerOpen;
+          li.ondblclick = triggerOpen;
+          li.onkeydown = (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              triggerOpen(e);
+            }
+          };
+        }
+
         historyList.prepend(li);
         
         while (historyList.children.length > 50) {
@@ -2575,18 +2635,19 @@ class TouchGestureController {
     this.touchStartY = 0;
     this.touchEndX = 0;
     this.touchEndY = 0;
+    this.touchTarget = null;
     this.touchCount = 1;
     this.lastTapTime = 0;
     
     // Add touch listener to the whole body
     document.body.addEventListener('touchstart', (e) => {
       this.touchCount = e.touches ? e.touches.length : 1;
+      this.touchTarget = e.target;
       if (e.changedTouches && e.changedTouches.length > 0) {
         this.touchStartX = e.changedTouches[0].screenX;
         this.touchStartY = e.changedTouches[0].screenY;
       }
     }, {passive: true});
-
 
     document.body.addEventListener('touchend', (e) => {
       if (e.changedTouches && e.changedTouches.length > 0) {
@@ -2598,16 +2659,27 @@ class TouchGestureController {
   }
 
   handleGesture() {
+    // 若點擊目標為按鈕、輸入框、對話框或歷史列表中的店家項目，交由元素自身的點擊/無障礙事件處理
+    if (this.touchTarget && (
+      this.touchTarget.closest("button") ||
+      this.touchTarget.closest("input") ||
+      this.touchTarget.closest(".modal-overlay") ||
+      this.touchTarget.closest(".modal-content") ||
+      this.touchTarget.closest("li.history-item")
+    )) {
+      return;
+    }
+
     const deltaX = this.touchEndX - this.touchStartX;
     const deltaY = this.touchEndY - this.touchStartY;
     const absX = Math.abs(deltaX);
     const absY = Math.abs(deltaY);
     
-    // Tap or Double-tap detection
+    // Tap or Double-tap detection on empty background
     if (absX < 30 && absY < 30) {
       const now = Date.now();
       if (now - this.lastTapTime < 350) {
-        // Double Tap: announce road & door numbers
+        // Double Tap on empty map background: announce road & door numbers
         this.app.announceRoadAndDoorNumbers();
         this.lastTapTime = 0;
       } else {
