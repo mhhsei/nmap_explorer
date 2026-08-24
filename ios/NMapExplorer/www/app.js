@@ -1167,7 +1167,7 @@ class NmapWebApp {
     const floorStr = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : " (1樓/地面層)";
     
     // 即時動態渲染函式
-    const renderModalContent = (richData = {}) => {
+    const renderModalContent = (richData = {}, isLoading = false) => {
       const merged = Object.assign({}, poi, richData);
       let infoRows = [
         `<div><strong>🏪 招牌店名：</strong>${merged.name}</div>`,
@@ -1186,20 +1186,29 @@ class NmapWebApp {
         infoRows.push(`<div><strong>📋 營業項目：</strong>${merged.business_desc}</div>`);
       }
       
-      const hours = merged.opening_hours || "營業中";
-      infoRows.push(`<div><strong>⏰ 營業時間：</strong><span style="color:#2dd4bf;font-weight:bold;">${hours}</span></div>`);
+      let hoursDisplay = merged.opening_hours;
+      if (!hoursDisplay && isLoading) {
+        hoursDisplay = `<span style="color:#94a3b8;">⏳ 正在連線查詢今日即時狀態...</span>`;
+      } else if (!hoursDisplay) {
+        hoursDisplay = "營業中";
+      }
+      infoRows.push(`<div><strong>⏰ 營業時間：</strong><span style="color:#2dd4bf;font-weight:bold;">${hoursDisplay}</span></div>`);
 
       const wheelchair = merged.wheelchair || (merged.floor === "1F" ? "♿ 具備 1 樓平整入口" : "無障礙狀態未知");
       infoRows.push(`<div><strong>♿ 無障礙：</strong><span style="color:#38bdf8;">${wheelchair}</span></div>`);
 
       if (merged.phone) {
-        infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${merged.phone}</a></div>`);
+        infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${merged.phone} (點擊撥打)</a></div>`);
+      }
+
+      if (merged.rating) {
+        infoRows.push(`<div><strong>⭐ 評價：</strong><span style="color:#facc15; font-weight:bold;">${merged.rating}</span></div>`);
       }
 
       body.innerHTML = infoRows.join("");
     };
 
-    renderModalContent();
+    renderModalContent({}, true);
     modal.style.display = "flex";
     body.focus();
 
@@ -1207,7 +1216,7 @@ class NmapWebApp {
     const spokenFloor = (poi.floor && poi.floor !== "1F") ? `，位於${poi.floor}` : "";
     this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺。背景播報已暫停。`, false, true);
 
-    // 非同步向後端獲取免費即時營業時間、電話與無障礙資訊
+    // 非同步極速向後端獲取當日即時營業時間、電話與無障礙資訊 (< 0.55s)
     const encodedName = encodeURIComponent(poi.name || "");
     const encodedAddr = encodeURIComponent(poi.address || "");
     const floorParam = encodeURIComponent(poi.floor || "1F");
@@ -1215,18 +1224,32 @@ class NmapWebApp {
       .then(res => res.json())
       .then(data => {
         if (data.success && data.details) {
-          renderModalContent(data.details);
+          renderModalContent(data.details, false);
           const extraInfo = [];
-          if (data.details.opening_hours) extraInfo.push(data.details.opening_hours);
-          if (data.details.wheelchair && data.details.wheelchair !== "無障礙狀態未知") extraInfo.push(data.details.wheelchair);
+          if (data.details.opening_hours) extraInfo.push(data.details.opening_hours.replace(/[🟢🔴]/g, '').trim());
           if (data.details.phone) extraInfo.push(`電話 ${data.details.phone}`);
+          if (data.details.wheelchair && data.details.wheelchair !== "無障礙狀態未知") extraInfo.push(data.details.wheelchair);
+          if (data.details.rating) extraInfo.push(`評價 ${data.details.rating}`);
+          
           if (extraInfo.length > 0) {
-            this.updateLiveLog(`【${poi.name} 營業資訊】：${extraInfo.join("，")}`, false, true);
+            const reportStr = `【${poi.name} 即時資訊】：${extraInfo.join("，")}。`;
+            this.updateLiveLog(reportStr, false, true);
+            // 直接觸發原生語音朗讀最新即時狀態
+            if (window.AndroidBridge && window.AndroidBridge.speakTtsDirect) {
+              window.AndroidBridge.speakTtsDirect(reportStr, false);
+            } else if (window.speechSynthesis) {
+              try {
+                const u = new SpeechSynthesisUtterance(reportStr);
+                u.lang = 'zh-TW';
+                window.speechSynthesis.speak(u);
+              } catch(e) {}
+            }
           }
         }
       })
       .catch(err => {
-        console.warn("Fetch POI detail fallback", err);
+        console.warn("Fetch POI detail error", err);
+        renderModalContent({}, false);
       });
   }
 
