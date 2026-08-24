@@ -66,9 +66,14 @@
   4. **介面說明現代化更新**：離線圖資管理視窗完整顯示「全台 193 萬店家與 171 萬營業稅籍整合資料庫 (v1.0.3)」，明確標示門牌、樓層、統編與營業項目。
 - **📋 地標詳細資訊無障礙視窗全面升級 (`app.js`, `index.html`)**:
   1. 點擊或 Enter 開啟地標詳細資訊時，完整呈現：🏪 招牌店名、🏢 登記行號全名、🔢 統一編號、📍 門牌地址與所在樓層、📋 營業項目與資訊、📅 設立日期（核准設立，營業中）、⏰ 營業時間、📞 電話與 ♿ 無障礙設施。
-- **⚡ 超高速 SQLite R-Tree 空間索引與向下相容視圖**:
-  1. 建立 `places` 統一資料表與 `idx_places_lat_lon`、`idx_places_name`、`idx_places_tax_id`、`idx_places_address` 索引，全台 193 萬筆店家之空間查詢時間僅需 **0.002 ~ 0.04 秒**。
-  2. 內建 `overture_places` 與 `gov_places` 向下相容視圖，確保舊有模組 100% 零破壞相容。
+- **🗜️ 資料庫極致瘦身與欄位精簡重構 (`streamline_database.py`, `real_poi_fetcher.py`)**:
+  1. **剔除冗餘與 0% 填寫率欄位**：移除完全空白欄位（`phone`, `opening_hours`, `wheelchair`）、固定重複字串欄位（`status`, `source`）以及次要欄位（`tax_id`, `establishment_date`, `category_code`）。
+  2. **UUID 轉整數自增 ID**：將長達 36 字元的字串 UUID 改為 SQLite 緊湊型 `INTEGER PRIMARY KEY`，消除數十 MB 索引開銷。
+  3. **重複字串 NULL 化壓縮**：當公司登記名稱與招牌名稱相同時儲存為 NULL，大幅縮減資料庫實體體積。
+  4. **驚人瘦身成果**：
+     - 未壓縮原始資料庫：由 **469.1 MB 驟降至 254.0 MB（節省 215.1 MB，減肥達 45.9%）**！
+     - GitHub 下載 ZIP 包：由 **168.1 MB 驟降至 94.9 MB（減少 43.5%，成功壓入 100 MB 內）**！
+     - 查詢效能：空間檢索依然維持在 **0.002 秒超極速**，記憶體佔用大幅下降。
 
 ### [v1.0.2 - 2026-08-24] - 實測日誌深度除錯：卡爾曼濾波協方差塌陷修復 (消滅 80m 滯後)、前進路徑走廊左右店家優先播報、路口狀態機防跳針
 - **🛠️ 實機日誌分析與定位延遲根治 (`LocationSensorBridge.kt`, `LocationSensorBridge.swift`)**:

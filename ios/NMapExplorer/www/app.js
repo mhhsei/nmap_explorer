@@ -2267,11 +2267,11 @@ class NmapWebApp {
 
     if (dbExists) {
       body.innerHTML = `
-        <p style="color:#2dd4bf;font-weight:bold;font-size:1.05em;">✅ 全台 193 萬店家與 171 萬營業稅籍整合資料庫已就緒！</p>
-        <p style="margin:6px 0;"><strong>資料庫版本：</strong>商工稅籍整合版 (v1.0.3)</p>
-        <p style="margin:6px 0;"><strong>本地檔案大小：</strong><strong>${dbSize}</strong></p>
+        <p style="color:#2dd4bf;font-weight:bold;font-size:1.05em;">✅ 全台 193 萬店家與商工整合資料庫已就緒！</p>
+        <p style="margin:6px 0;"><strong>資料庫版本：</strong>商工整合精簡版 (v1.0.3)</p>
+        <p style="margin:6px 0;"><strong>本地檔案大小：</strong><strong>${dbSize}</strong> (約 254 MB)</p>
         <p style="color:#cbd5e1;font-size:0.95em;line-height:1.5;">
-          📍 涵蓋範圍：全台 22 縣市實體店家、門牌地址、樓層標籤、統一編號與詳細營業項目。<br>
+          📍 涵蓋範圍：全台 22 縣市實體店家、門牌地址、樓層標籤與詳細營業項目。<br>
           ⚡ 運作狀態：離線極速 0.002 秒檢索，無網路環境 100% 完整可用。
         </p>
       `;
@@ -2279,13 +2279,13 @@ class NmapWebApp {
       if (dlBtn) dlBtn.innerText = "檢查更新 / 下載最新圖資";
     } else {
       body.innerHTML = `
-        <p style="color:#fbbf24;font-weight:bold;font-size:1.05em;">⚠️ 尚未下載全台離線店家與稅籍圖資</p>
+        <p style="color:#fbbf24;font-weight:bold;font-size:1.05em;">⚠️ 尚未下載全台離線店家圖資</p>
         <p style="color:#cbd5e1;font-size:0.95em;line-height:1.5;">
-          目前正在使用線上即時查詢。建議在 Wi-Fi 環境下載全台商工稅籍整合圖資包（壓縮檔約 168 MB），下載後可享受全台 193 萬店家與 171 萬稅籍資料之永久離線極速檢索。
+          目前正在使用線上即時查詢。建議在 Wi-Fi 環境下載全台精簡圖資包（壓縮檔約 95 MB，解壓後 254 MB），下載後可享受全台 193 萬店家之永久離線極速檢索。
         </p>
       `;
       if (delBtn) delBtn.style.display = "none";
-      if (dlBtn) dlBtn.innerText = "立即下載離線圖資包 (168 MB)";
+      if (dlBtn) dlBtn.innerText = "立即下載離線圖資包 (95 MB)";
     }
 
     modal.style.display = "flex";

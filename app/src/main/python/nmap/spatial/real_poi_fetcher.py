@@ -215,10 +215,10 @@ class RealPoiFetcher:
             min_lon = lon - radius_deg
             max_lon = lon + radius_deg
             
-            # 優先查詢具備完整商工稅籍結構的 places 資料表
+            # 優先查詢精簡商工結構的 places 資料表
             try:
                 c.execute('''
-                    SELECT id, name, legal_name, brand, category, category_code, business_desc, tax_id, address, floor, establishment_date, status, lat, lon, phone, opening_hours, wheelchair, source 
+                    SELECT id, name, legal_name, brand, category, address, floor, business_desc, lat, lon 
                     FROM places 
                     WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
                 ''', (min_lat, max_lat, min_lon, max_lon))
@@ -228,25 +228,16 @@ class RealPoiFetcher:
                     c_name = self.clean_poi_name(r[1])
                     if not c_name:
                         continue
-                    lat_val = float(r[12])
-                    lon_val = float(r[13])
+                    lat_val = float(r[8])
+                    lon_val = float(r[9])
                     if not self.is_geographically_valid(c_name, lat_val, lon_val):
                         continue
                     legal_name = r[2] or c_name
                     brand = r[3] or ""
                     cat = r[4] or "poi"
-                    b_desc = r[6] or ""
-                    tax_id = r[7] or ""
-                    addr = r[8] or ""
-                    floor = r[9] or "1F"
-                    est_date = r[10] or ""
-                    status = r[11] or "核准設立"
-                    lat_val = float(r[12])
-                    lon_val = float(r[13])
-                    phone = r[14] or ""
-                    opening_hours = r[15] or ""
-                    wheelchair = r[16] or ""
-                    source = r[17] or "overture"
+                    addr = r[5] or ""
+                    floor = r[6] or "1F"
+                    b_desc = r[7] or ""
                     
                     results.append({
                         "id": f"places_{r[0]}",
@@ -254,33 +245,20 @@ class RealPoiFetcher:
                         "legal_name": legal_name,
                         "brand": brand,
                         "category": cat,
-                        "category_code": r[5] or "",
                         "business_desc": b_desc,
-                        "tax_id": tax_id,
                         "address": addr,
                         "floor": floor,
-                        "establishment_date": est_date,
-                        "status": status,
                         "lat": lat_val,
                         "lon": lon_val,
-                        "phone": phone,
-                        "opening_hours": opening_hours,
-                        "wheelchair": wheelchair,
                         "tags": {
                             "amenity": cat,
                             "name": c_name,
                             "legal_name": legal_name,
                             "brand": brand,
-                            "tax_id": tax_id,
                             "address": addr,
                             "floor": floor,
                             "business_desc": b_desc,
-                            "establishment_date": est_date,
-                            "status": status,
-                            "phone": phone,
-                            "opening_hours": opening_hours,
-                            "wheelchair": wheelchair,
-                            "source": source
+                            "source": "places"
                         }
                     })
                 return results
