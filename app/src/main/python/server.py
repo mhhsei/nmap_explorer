@@ -80,7 +80,7 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
     agent.heading_deg = cur_head
 
     road_info = agent.world_model.get_road_info(cur_lat, cur_lon, cur_head)
-    pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=120.0)
+    pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=150.0)
     buildings = agent.world_model.get_nearby_buildings(cur_lat, cur_lon, cur_head, radius_m=50.0)
     intersection = agent.intersection_analyzer.analyze(cur_lat, cur_lon, cur_head, agent.world_model, curr_road_info=road_info)
     door_estimates = agent.world_model.get_interpolated_door_numbers(cur_lat, cur_lon, cur_head)

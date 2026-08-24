@@ -285,13 +285,14 @@ class WorldModel:
 
         if target_ref_lat is not None and target_ref_lon is not None:
             try:
-                offline_pois = self.poi_fetcher.fetch_offline_pois(target_ref_lat, target_ref_lon, radius_deg=0.012)
-                existing_names = {p.name for p in self.pois if hasattr(p, 'name')}
+                offline_pois = self.poi_fetcher.fetch_offline_pois(target_ref_lat, target_ref_lon, radius_deg=0.015)
+                existing_keys = {(p.name, round(p.lat, 4), round(p.lon, 4)) for p in self.pois if hasattr(p, 'name')}
                 with self.rtree_lock:
                     for p in offline_pois:
                         name = p.get('name')
-                        if name and name not in existing_names:
-                            existing_names.add(name)
+                        key = (name, round(p.get('lat', 0.0), 4), round(p.get('lon', 0.0), 4))
+                        if name and key not in existing_keys:
+                            existing_keys.add(key)
                             sp = SpatialPOI(p)
                             self.pois.append(sp)
                             self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
@@ -308,8 +309,9 @@ class WorldModel:
                         with self.rtree_lock:
                             for p in online_pois:
                                 name = p.get('name')
-                                if name and name not in existing_names:
-                                    existing_names.add(name)
+                                key = (name, round(p.get('lat', 0.0), 4), round(p.get('lon', 0.0), 4))
+                                if name and key not in existing_keys:
+                                    existing_keys.add(key)
                                     sp = SpatialPOI(p)
                                     self.pois.append(sp)
                                     self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
@@ -323,21 +325,22 @@ class WorldModel:
         # 即時釋放 JVM/Python 暫存記憶體
         gc.collect()
 
-    def reload_real_pois(self, lat: float, lon: float, radius_deg: float = 0.008) -> int:
+    def reload_real_pois(self, lat: float, lon: float, radius_deg: float = 0.012) -> int:
         """
         【手動或下載完成後即時重新載入全台離線資料庫地標】
         作用：在使用者下載完離線資料庫或主動刷新時，立即將數千間真實店家注入 R-Tree 空間索引。
         """
         try:
             external_pois = self.poi_fetcher.fetch_real_pois(lat, lon, pages=3, radius_deg=radius_deg)
-            existing_names = {p.name for p in self.pois if hasattr(p, 'name')}
+            existing_keys = {(p.name, round(p.lat, 4), round(p.lon, 4)) for p in self.pois if hasattr(p, 'name')}
             added_count = 0
             
             with self.rtree_lock:
                 for p in external_pois:
                     name = p.get('name')
-                    if name and name not in existing_names:
-                        existing_names.add(name)
+                    key = (name, round(p.get('lat', 0.0), 4), round(p.get('lon', 0.0), 4))
+                    if name and key not in existing_keys:
+                        existing_keys.add(key)
                         sp = SpatialPOI(p)
                         self.pois.append(sp)
                         self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
@@ -377,11 +380,11 @@ class WorldModel:
 
         return best_road, min_dist
 
-    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 120.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 150.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        【查詢半徑 radius_m 內的所有店家與地標】
+        【查詢半徑 radius_m 內的所有店家、設施與地標大樓】
         作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的完整 POI 列表。
-        精準依據座標去重，確保範圍內所有店家、連鎖分店與設施完整呈現。
+        精準依據座標去重，確保範圍內所有店家、連鎖分店、社區大樓與設施完整呈現。
         """
         results = []
         radius_deg = radius_m / 111139.0
@@ -408,10 +411,59 @@ class WorldModel:
                 rel = poi.calculate_relative(lat, lon, heading_deg)
                 if rel["distance_m"] <= radius_m:
                     seen_keys.add(loc_key)
-                    # 確保返回字典包含完整屬性
                     if not rel.get("name"):
                         rel["name"] = poi_name
                     results.append(rel)
+
+            # 同步納入周遭具名社區大樓與地標建築物（如：宏國青山、大旭地社區等）
+            for b_item in self.building_rtree.intersection(bounds, objects=True):
+                bldg = b_item.object
+                b_name = bldg.get("name") if isinstance(bldg, dict) else getattr(bldg, "name", None)
+                if not b_name:
+                    continue
+                
+                b_geom = bldg.get("geometry", []) if isinstance(bldg, dict) else getattr(bldg, "geometry", [])
+                if b_geom and len(b_geom) > 0:
+                    b_lat = sum(p[0] for p in b_geom) / len(b_geom)
+                    b_lon = sum(p[1] for p in b_geom) / len(b_geom)
+                else:
+                    b_lat = bldg.get("lat") if isinstance(bldg, dict) else getattr(bldg, "lat", lat)
+                    b_lon = bldg.get("lon") if isinstance(bldg, dict) else getattr(bldg, "lon", lon)
+
+                loc_key = (b_name, round(b_lat, 4), round(b_lon, 4))
+                if loc_key in seen_keys:
+                    continue
+
+                dist_m = haversine_distance(lat, lon, b_lat, b_lon)
+                if dist_m <= radius_m:
+                    seen_keys.add(loc_key)
+                    brng = calculate_bearing(lat, lon, b_lat, b_lon)
+                    rel_bearing = (brng - heading_deg + 360.0) % 360.0
+                    clock_hr = int((rel_bearing + 15) // 30) % 12
+                    if clock_hr == 0:
+                        clock_hr = 12
+
+                    rel_dir = "正前方" if (rel_bearing <= 22.5 or rel_bearing >= 337.5) else \
+                              ("右前方" if rel_bearing < 67.5 else \
+                              ("右側" if rel_bearing < 112.5 else \
+                              ("右後方" if rel_bearing < 157.5 else \
+                              ("正後方" if rel_bearing <= 202.5 else \
+                              ("左後方" if rel_bearing < 247.5 else \
+                              ("左側" if rel_bearing < 292.5 else "左前方"))))))
+
+                    results.append({
+                        "name": b_name,
+                        "category": "landmark_and_historical_building",
+                        "lat": b_lat,
+                        "lon": b_lon,
+                        "distance_m": round(dist_m, 1),
+                        "bearing_deg": round(brng, 1),
+                        "relative_bearing_deg": round(rel_bearing, 1),
+                        "clock_direction": f"{clock_hr}點鐘方向",
+                        "relative_direction": rel_dir,
+                        "floor": "1F",
+                        "tags": {"building": "residential"}
+                    })
 
         results.sort(key=lambda x: x["distance_m"])
         return results
