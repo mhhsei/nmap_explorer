@@ -144,10 +144,13 @@ class WorldModel:
         self.house_numbers: List[Dict[str, Any]] = []
         
         # Spatial Grid indices
-        self.poi_rtree = GridSpatialIndex()
-        self.road_rtree = GridSpatialIndex()
-        self.building_rtree = GridSpatialIndex()
-        self.crossing_rtree = GridSpatialIndex()
+        self.poi_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.road_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.building_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.crossing_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.traffic_signal_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.house_number_rtree = GridSpatialIndex(cell_size_deg=0.001)
         
         self.poi_fetcher = RealPoiFetcher()
         self.next_external_poi_id = 1000000
@@ -158,15 +161,18 @@ class WorldModel:
         【從 OSM 結構化數據構建數位雙生空間模型】
         作用：
         1. 重置 R-Tree 空間索引，防止搬移地點時記憶體洩漏或出現前一個區域的幽靈設施。
-        2. 建立 POI、道路網 (NetworkX Graph)、建築物與斑馬線的空間網格索引。
+        2. 建立 POI、道路網 (NetworkX Graph)、建築物、路口節點與斑馬線的空間網格索引。
         3. 在背景 Daemon 執行緒中非同步拉取 Overture / TDX 政府真實店家資料注入模型。
         4. 呼叫 gc.collect() 即時釋放暫存 JSON 結構，維護記憶體健康。
         """
         with self.rtree_lock:
-            self.poi_rtree = GridSpatialIndex()
-            self.road_rtree = GridSpatialIndex()
-            self.building_rtree = GridSpatialIndex()
-            self.crossing_rtree = GridSpatialIndex()
+            self.poi_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.road_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.building_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.crossing_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.traffic_signal_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.house_number_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.next_external_poi_id = 1000000
 
         self.roads = parsed_data.get("roads", [])
@@ -233,6 +239,14 @@ class WorldModel:
                     rev_brng = (brng + 180.0) % 360.0
                     self.road_graph.add_edge(v_id, u_id, weight=dist, name=road["name"], bearing=rev_brng, road=road)
 
+        # 構建路口節點索引 (degree >= 3 或端點)
+        j_idx = 0
+        for node_id, degree in self.road_graph.degree():
+            node_data = self.road_graph.nodes[node_id]
+            n_lat, n_lon = node_data["lat"], node_data["lon"]
+            self.junction_rtree.insert(j_idx, (n_lon, n_lat, n_lon, n_lat), obj=(node_id, degree, n_lat, n_lon))
+            j_idx += 1
+
         # 構建大樓輪廓空間索引
         b_idx = 0
         for b in self.buildings:
@@ -249,7 +263,19 @@ class WorldModel:
             self.crossing_rtree.insert(c_idx, (c_lon, c_lat, c_lon, c_lat), obj=c)
             c_idx += 1
 
-        # 在背景非同步獲取真實店家數據
+        # 構建交通號誌空間索引
+        ts_idx = 0
+        for ts in self.traffic_signals:
+            self.traffic_signal_rtree.insert(ts_idx, (ts["lon"], ts["lat"], ts["lon"], ts["lat"]), obj=ts)
+            ts_idx += 1
+
+        # 構建門牌空間索引
+        hn_idx = 0
+        for hn in self.house_numbers:
+            self.house_number_rtree.insert(hn_idx, (hn["lon"], hn["lat"], hn["lon"], hn["lat"]), obj=hn)
+            hn_idx += 1
+
+        # 1. 瞬間從本地離線資料庫（Overture + Gov）載入地標（~2ms 零延遲注入）
         target_ref_lat = ref_lat
         target_ref_lon = ref_lon
         if target_ref_lat is None or target_ref_lon is None:
@@ -258,21 +284,41 @@ class WorldModel:
                 target_ref_lon = self.roads[0]["geometry"][0][1]
 
         if target_ref_lat is not None and target_ref_lon is not None:
-            def fetch_and_inject():
-                try:
-                    external_pois = self.poi_fetcher.fetch_real_pois(target_ref_lat, target_ref_lon, pages=3)
-                    for p in external_pois:
-                        sp = SpatialPOI(p)
-                        self.pois.append(sp)
-                        with self.rtree_lock:
+            try:
+                offline_pois = self.poi_fetcher.fetch_offline_pois(target_ref_lat, target_ref_lon, radius_deg=0.012)
+                existing_names = {p.name for p in self.pois if hasattr(p, 'name')}
+                with self.rtree_lock:
+                    for p in offline_pois:
+                        name = p.get('name')
+                        if name and name not in existing_names:
+                            existing_names.add(name)
+                            sp = SpatialPOI(p)
+                            self.pois.append(sp)
                             self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
                             self.next_external_poi_id += 1
+            except Exception as e:
+                import logging
+                logging.warning(f"Offline POI sync injection error: {e}")
+
+            # 2. 在背景非同步執行食記爬蟲補充最新餐飲評價
+            def fetch_and_inject_online():
+                try:
+                    for page in range(1, 3):
+                        online_pois = self.poi_fetcher._fetch_ifoodie_page(target_ref_lat, target_ref_lon, page)
+                        with self.rtree_lock:
+                            for p in online_pois:
+                                name = p.get('name')
+                                if name and name not in existing_names:
+                                    existing_names.add(name)
+                                    sp = SpatialPOI(p)
+                                    self.pois.append(sp)
+                                    self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
+                                    self.next_external_poi_id += 1
                 except Exception as e:
                     import logging
-                    logging.warning(f"Background POI fetch error: {e}")
+                    logging.warning(f"Background online POI fetch error: {e}")
             
-            # 啟動背景 Daemon 執行緒
-            threading.Thread(target=fetch_and_inject, daemon=True).start()
+            threading.Thread(target=fetch_and_inject_online, daemon=True).start()
 
         # 即時釋放 JVM/Python 暫存記憶體
         gc.collect()
@@ -337,29 +383,28 @@ class WorldModel:
         作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的 POI 列表，並自動去重。
         """
         results = []
-        radius_deg = radius_m / 100000.0
+        radius_deg = radius_m / 111139.0
         bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        seen_names = set()
+        category_lower = category.lower() if category else None
+
         with self.rtree_lock:
             for item in self.poi_rtree.intersection(bounds, objects=True):
                 poi = item.object
+                if category_lower:
+                    if category_lower not in poi.category.lower() and category_lower not in poi.name.lower():
+                        continue
+                if poi.name and poi.name in seen_names:
+                    continue
+
                 rel = poi.calculate_relative(lat, lon, heading_deg)
                 if rel["distance_m"] <= radius_m:
-                    if category is None or category.lower() in rel["category"].lower() or category.lower() in rel["name"].lower():
-                        results.append(rel)
+                    if poi.name:
+                        seen_names.add(poi.name)
+                    results.append(rel)
 
         results.sort(key=lambda x: x["distance_m"])
-        
-        # 依店名去重，防止報讀重複店家
-        seen_names = set()
-        unique_results = []
-        for p in results:
-            name = p.get("name", "")
-            if not name or name not in seen_names:
-                if name:
-                    seen_names.add(name)
-                unique_results.append(p)
-                
-        return unique_results
+        return results
 
     def get_road_info(self, lat: float, lon: float, heading_deg: float) -> Dict[str, Any]:
         """
@@ -492,7 +537,10 @@ class WorldModel:
                     else:
                         road_seg = (p1, p2)
 
-        for h in self.house_numbers:
+        radius_deg = radius_m / 111139.0
+        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        for item in self.house_number_rtree.intersection(bounds, objects=True):
+            h = item.object
             dist = haversine_distance(lat, lon, h["lat"], h["lon"])
             if dist <= radius_m:
                 brng = calculate_bearing(lat, lon, h["lat"], h["lon"])

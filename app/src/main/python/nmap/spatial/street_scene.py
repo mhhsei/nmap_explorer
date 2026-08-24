@@ -7,7 +7,7 @@
 3. 建築天際線高度分析：估算周遭大樓平均樓層（摩天商辦、現代公寓、傳統騎樓），描繪立體的真實街景。
 """
 import math
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 
 class StreetSceneEngine:
@@ -15,15 +15,13 @@ class StreetSceneEngine:
     街道場景風貌分析引擎
     """
 
-    def analyze_scene(self, lat: float, lon: float, heading_deg: float, world_model: Any) -> Dict[str, Any]:
+    def analyze_scene(self, lat: float, lon: float, heading_deg: float, world_model: Any, road_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         【分析當前位置的街道風貌與周遭環境氛圍】
+        作用：透過空間網格僅查詢周遭 100 公尺內的實體設施與建物，消除全表掃描開銷。
         """
-        pois = world_model.pois
-        buildings = world_model.buildings
-
-        # 1. 判定道路型態與氛圍
-        road_info = world_model.get_road_info(lat, lon, heading_deg)
+        if road_info is None:
+            road_info = world_model.get_road_info(lat, lon, heading_deg)
         highway_type = road_info.get("highway_type", "unclassified")
         street_name = road_info.get("street_name", "街道")
 
@@ -40,14 +38,17 @@ class StreetSceneEngine:
             scene_type = "繁華都市街道"
             atmosphere = "典型都市街景，車流與行人交織"
 
-        # 2. 提取街道公共設施 (行道樹、路燈、長椅、騎樓)
+        # 2. 空間網格提取街道公共設施 (行道樹、路燈、長椅、騎樓)
         tree_count = 0
         lamp_count = 0
         bench_count = 0
         arcade_found = False
 
+        radius_deg = 100.0 / 111139.0
+        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
 
-        for raw_p in pois:
+        for item in world_model.poi_rtree.intersection(bounds, objects=True):
+            raw_p = item.object
             tags = getattr(raw_p, "tags", {})
             cat = getattr(raw_p, "category", "")
             if tags.get("natural") == "tree" or cat == "tree":
@@ -59,9 +60,10 @@ class StreetSceneEngine:
             if tags.get("covered") == "yes" or tags.get("building") == "arcade":
                 arcade_found = True
 
-        # 3. Analyze Building Architecture & Height Profile
+        # 3. 空間網格分析周遭建築天際線高度 (Building Architecture & Height Profile)
         b_heights = []
-        for b in buildings:
+        for item in world_model.building_rtree.intersection(bounds, objects=True):
+            b = item.object
             h = b.get("height") or b.get("levels")
             if h:
                 try:

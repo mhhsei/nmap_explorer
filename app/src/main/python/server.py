@@ -54,29 +54,43 @@ def serve_static(filename):
     return static_file(filename, root=WEB_ROOT)
 
 
-@app.route("/api/status", method="GET")
-def get_status():
+def build_status_dict(include_full_report: bool = True) -> dict:
     """
-    【取得當前地圖全景狀態 (Get Current World Status)】
-    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 100 米有什麼店、前方路口長怎樣、門牌幾號」。
-    回傳完整的綜合資訊 JSON，讓前端畫面與語音朗讀可以一瞬間獲取最新現況。
+    【單次管線構建地圖綜合狀態 (Single-Pass World Status Builder)】
+    作用：
+    1. 在單一運算週期中只計算一次 road_info、pois、buildings、intersection。
+    2. 將計算好的 Context 同時共享給 reporter 與 street_analyzer，徹底消滅 3~5 次的重複 GIS 運算。
+    3. 直接產出原生 Python 字典，消除 json.dumps -> json.loads 的無效序列化開銷。
     """
     if not agent.is_loaded:
-        return json_response({
+        return {
+            "success": False,
             "is_loaded": False,
             "message": "尚未初始化地圖起點。請在上方搜尋列輸入地址。"
-        })
+        }
 
     road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)
     pois = agent.world_model.get_nearby_pois(agent.lat, agent.lon, agent.heading_deg, radius_m=100.0)
     buildings = agent.world_model.get_nearby_buildings(agent.lat, agent.lon, agent.heading_deg, radius_m=50.0)
-    intersection = agent.intersection_analyzer.analyze(agent.lat, agent.lon, agent.heading_deg, agent.world_model)
+    intersection = agent.intersection_analyzer.analyze(agent.lat, agent.lon, agent.heading_deg, agent.world_model, curr_road_info=road_info)
     door_estimates = agent.world_model.get_interpolated_door_numbers(agent.lat, agent.lon, agent.heading_deg)
-    full_report = reporter.generate_full_report(agent)
-    concise_report = reporter.generate_concise_report(agent)
-    street_scene = street_analyzer.analyze_scene(agent.lat, agent.lon, agent.heading_deg, agent.world_model)
+    concise_report = reporter.generate_concise_report(agent, road_info=road_info, pois=pois, intersection=intersection)
+    street_scene = street_analyzer.analyze_scene(agent.lat, agent.lon, agent.heading_deg, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
 
-    return json_response({
+    if include_full_report:
+        full_report = reporter.generate_full_report(
+            agent,
+            road_info=road_info,
+            pois=pois,
+            buildings=buildings,
+            intersection_analysis=intersection,
+            door_estimates=door_estimates,
+            scene=street_scene
+        )
+    else:
+        full_report = concise_report
+
+    return {
         "success": True,
         "is_loaded": True,
         "is_overseas": getattr(agent, "is_overseas", False),
@@ -93,7 +107,17 @@ def get_status():
         "full_report": full_report,
         "concise_report": concise_report,
         "street_scene": street_scene
-    })
+    }
+
+
+@app.route("/api/status", method="GET")
+def get_status():
+    """
+    【取得當前地圖全景狀態 (Get Current World Status)】
+    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 100 米有什麼店、前方路口長怎樣、門牌幾號」。
+    回傳完整的綜合資訊 JSON，讓前端畫面與語音朗讀可以一瞬間獲取最新現況。
+    """
+    return json_response(build_status_dict(include_full_report=True))
 
 
 @app.route("/api/poi_detail", method=["GET", "POST"])
@@ -155,8 +179,8 @@ def teleport():
     if not ok:
         return json_response({"success": False, "message": msg}, status=400)
 
-    return get_status()
-
+    status_data = build_status_dict(include_full_report=True)
+    return json_response(status_data)
 
 
 @app.route("/api/move", method="POST")
@@ -165,11 +189,10 @@ def move():
     【處理玩家空間位移 (Spatial Translation)】
     為什麼這個端點這麼重要？
     視障者在探索時，移動是最頻繁的操作（預設每步 1~5 公尺）。
-    1. 首先呼叫 `agent.move()` 透過空間引擎 (NetworkX) 計算最新的 (Lat, Lon)。
+    1. 首先呼叫 `agent.move()` 透過空間引擎計算最新經緯度。
     2. 接著進行碰撞檢測 (Collision Detection)，若撞牆則提早攔截。
     3. 如果啟用了「遊戲模擬模式 (Simulation Engine)」，則會額外推算動態事件 (如車輛、行人)。
-    4. 最終回傳一個巨大的 `status_data` JSON，讓前端 JS 根據這個狀態樹決定要報讀什麼。
-       （將 UI 渲染與資料計算徹底解耦）。
+    4. 最終回傳 status_data JSON，直接由 build_status_dict 產出，達成極速響應。
     """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
@@ -188,7 +211,7 @@ def move():
     if simulation.enabled and ok:
         sim_data = simulation.process_step(agent)
 
-    status_data = json.loads(get_status())
+    status_data = build_status_dict(include_full_report=True)
     if sim_data:
         status_data['simulation'] = sim_data
     status_data["action_message"] = msg
@@ -196,6 +219,7 @@ def move():
 
     return json_response(status_data)
     
+
 @app.route("/api/jump_intersection", method="POST")
 def jump_intersection():
     """
@@ -211,7 +235,7 @@ def jump_intersection():
     if simulation.enabled and ok:
         sim_data = simulation.process_step(agent)
 
-    status_data = json.loads(get_status())
+    status_data = build_status_dict(include_full_report=True)
     if sim_data:
         status_data['simulation'] = sim_data
     status_data["action_message"] = msg
@@ -219,13 +243,14 @@ def jump_intersection():
 
     return json_response(status_data)
 
+
 @app.route("/api/snap_turn", method="POST")
 def snap_turn():
     """
     【自動對齊路口分支轉向 (Snap Turn)】
     作用：站在十字路口時，自動辨識左轉或右轉的道路角度，直接將朝向「吸附」至該道路方向。
     """
-    data = request.json
+    data = request.json or {}
     direction = data.get("direction", "left")
     ok, msg = agent.snap_to_branch(direction)
     
@@ -233,12 +258,13 @@ def snap_turn():
     if simulation.enabled and ok:
         sim_data = simulation.process_step(agent)
 
-    status_data = json.loads(get_status())
+    status_data = build_status_dict(include_full_report=True)
     if sim_data:
         status_data['simulation'] = sim_data
     status_data["action_message"] = msg
 
     return json_response(status_data)
+
 
 @app.route("/api/gps", method="POST")
 def update_gps():
@@ -258,7 +284,7 @@ def update_gps():
 
     ok, msg = agent.update_gps_position(lat, lon, heading, accuracy)
 
-    status_data = json.loads(get_status())
+    status_data = build_status_dict(include_full_report=True)
     status_data["action_message"] = msg
     status_data["is_collision"] = False
     return json_response(status_data)
@@ -291,7 +317,7 @@ def sync():
     if simulation.enabled and ok:
         sim_data = simulation.process_step(agent)
 
-    status_data = json.loads(get_status())
+    status_data = build_status_dict(include_full_report=True)
     if sim_data:
         status_data['simulation'] = sim_data
     status_data["action_message"] = msg
@@ -322,7 +348,7 @@ def turn():
     if simulation.enabled and ok:
         sim_data = simulation.process_step(agent)
 
-    status_data = json.loads(get_status())
+    status_data = build_status_dict(include_full_report=True)
     if sim_data:
         status_data['simulation'] = sim_data
     status_data["action_message"] = msg
@@ -497,8 +523,8 @@ def check_update():
     """
     import urllib.request
     import json
+    current_version = "1.0.1"
     try:
-        current_version = "1.0.0"
         api_url = "https://api.github.com/repos/mhhsei/nmap_explorer/releases/latest"
         req = urllib.request.Request(
             api_url,
@@ -564,10 +590,11 @@ def check_update():
             "current_version": current_version,
             "message": f"GitHub API 回應錯誤 ({he.code})"
         })
+    except Exception as e:
         return json_response({
             "success": False,
             "has_update": False,
-            "current_version": "1.0.0",
+            "current_version": current_version,
             "message": f"檢查更新失敗: {str(e)}"
         })
 

@@ -33,14 +33,144 @@ import java.util.Collections
 import kotlin.math.*
 
 /**
- * 二維行人卡爾曼濾波器 (Pedestrian Kalman Filter)
+ * 【行人與車載運動狀態列舉 (Motion State)】
  * 
- * 核心功能與生活化比喻：
- * 1. 軌跡平滑：把 GPS 忽左忽右的跳動（測量雜訊），想像成一個喝醉的導遊，卡爾曼濾波器就像一個清醒的助手，根據行人正常的步行速度（0.8~2.0 m/s）把軌跡拉平拉直。
- * 2. 靜止防飄 (ZUPT)：當人在紅綠燈前停下腳步（速度 < 0.25 m/s），強制鎖定座標，杜絕原地乒乓橫跳。
- * 3. 都會折射過濾：走在大樓林立的市區時，GPS 訊號容易撞牆反射（多路徑誤差），此時主動調高測量誤差信任度，防止人物瞬間穿牆瞬移。
- * 4. L5 雙頻衛星加權：偵測到新型 L5/E5a 高精度雙頻衛星時，優先採納，將定位誤差壓低至 1.5~2.5 公尺。
- * 5. 騎樓步伐推算 (PDR)：走進騎樓或雨遮 GPS 中斷時，由計步器接管前進推算。
+ * 作用：定義使用者當前的真實物理運動情境，讓定位系統自適應切換最佳濾波策略。
+ */
+enum class MotionState {
+    /** 1. 室內或原地靜止（100% 座標完全凍結，阻絕任何跳動） */
+    STATIONARY_LOCKED,
+
+    /** 2. 行人正常步行（PDR 步態同步推進 + 卡爾曼平滑） */
+    PEDESTRIAN_WALKING,
+
+    /** 3. 乘車交通工具移動（時速 > 10 km/h，自動解除步數限制，以即時 GPS 流暢跟隨） */
+    VEHICULAR_TRANSIT
+}
+
+/**
+ * 【手持智慧型手機多特徵滑動視窗靜止偵測器 (StationaryMotionDetector)】
+ * 
+ * 生活化比喻：
+ * 就像一位經驗豐富的領航員，同時觀察手部的微小震顫、步伐的節奏與車速。
+ * 當您在室內坐下或在路口停步時，它會立即在 1.4 秒內為您「拉下手煞車（鎖定座標）」，
+ * 徹底杜絕 GPS 在天花板下的鬼影飄移；而當您搭上公車、計程車或捷運時，它會自動識別高速並鬆開手煞車。
+ */
+class StationaryMotionDetector(
+    private val windowSize: Int = 35, // 50Hz 採樣下約 0.7 秒
+    private val onStateChanged: (MotionState) -> Unit
+) {
+    // 3 軸加速度計模長滑動視窗緩衝區
+    private val accNormBuffer = FloatArray(windowSize)
+    private var bufferIndex = 0
+    private var isBufferFull = false
+
+    // 最後一次偵測到實體步伐的時間戳記 (uptimeMillis)
+    private var lastStepTimestampMs = 0L
+
+    // 當前運動狀態
+    var currentState: MotionState = MotionState.STATIONARY_LOCKED
+        private set
+
+    companion object {
+        /** 加速度模長變異數靜止門檻 (m^2/s^4)：靜止手持時通常 < 0.045 */
+        const val ACC_VAR_STATIONARY_THRESHOLD = 0.045f
+
+        /** 步伐逾時時間 (毫秒)：超過 1.4 秒沒有踩出下一步，判定可能已停下腳步 */
+        const val STEP_TIMEOUT_MS = 1400L
+
+        /** 判定為乘車的車速門檻 (m/s)：約 10.08 km/h，超出人類一般步行極限 */
+        const val VEHICLE_SPEED_THRESHOLD_MPS = 2.8f
+    }
+
+    private fun getNowMs(): Long {
+        return try {
+            SystemClock.uptimeMillis()
+        } catch (e: Exception) {
+            System.currentTimeMillis()
+        }
+    }
+
+    /**
+     * 當硬體計步器偵測到一步時呼叫
+     */
+    fun onStepDetected() {
+        lastStepTimestampMs = getNowMs()
+        if (currentState == MotionState.STATIONARY_LOCKED) {
+            updateState(MotionState.PEDESTRIAN_WALKING)
+        }
+    }
+
+    /**
+     * 於 50Hz onSensorChanged 灌入加速度計數據與即時 GPS 車速
+     */
+    fun feedAccelerometer(ax: Float, ay: Float, az: Float, currentGpsSpeedMps: Float) {
+        // 1. 若 GPS 瞬時車速 > 2.8 m/s (~10 km/h)，自動切換為乘車高速模式
+        if (currentGpsSpeedMps >= VEHICLE_SPEED_THRESHOLD_MPS) {
+            if (currentState != MotionState.VEHICULAR_TRANSIT) {
+                updateState(MotionState.VEHICULAR_TRANSIT)
+            }
+            return
+        }
+
+        val accNorm = sqrt(ax * ax + ay * ay + az * az)
+        accNormBuffer[bufferIndex] = accNorm
+        bufferIndex = (bufferIndex + 1) % windowSize
+        if (bufferIndex == 0) isBufferFull = true
+
+        if (!isBufferFull) return
+
+        // 2. 計算加速度模長滑動變異數 (AMV, Acceleration Moving Variance)
+        var accSum = 0f
+        for (i in 0 until windowSize) accSum += accNormBuffer[i]
+        val accMean = accSum / windowSize
+
+        var accVarSum = 0f
+        for (i in 0 until windowSize) {
+            val diff = accNormBuffer[i] - accMean
+            accVarSum += diff * diff
+        }
+        val accVariance = accVarSum / windowSize
+
+        val now = getNowMs()
+        val stepTimedOut = (now - lastStepTimestampMs) > STEP_TIMEOUT_MS
+
+        // 3. 靜止條件綜合仲裁：加速度極度平穩且逾時未邁步
+        val isPhysicallyStill = (accVariance < ACC_VAR_STATIONARY_THRESHOLD) && stepTimedOut
+
+        if (isPhysicallyStill) {
+            if (currentState != MotionState.STATIONARY_LOCKED) {
+                updateState(MotionState.STATIONARY_LOCKED)
+            }
+        } else if (accVariance > 0.35f || !stepTimedOut) {
+            if (currentState != MotionState.PEDESTRIAN_WALKING) {
+                updateState(MotionState.PEDESTRIAN_WALKING)
+            }
+        }
+    }
+
+    private fun updateState(newState: MotionState) {
+        currentState = newState
+        onStateChanged(newState)
+    }
+
+    fun reset() {
+        bufferIndex = 0
+        isBufferFull = false
+        currentState = MotionState.STATIONARY_LOCKED
+        lastStepTimestampMs = 0L
+    }
+}
+
+
+/**
+ * 【二維行人與乘車自適應卡爾曼濾波器 (Pedestrian & Vehicular Adaptive Kalman Filter)】
+ * 
+ * 核心升級：
+ * 1. 靜止絕對鎖定 (Zero Drift Deadband)：靜止時 100% 凍結座標，阻絕室內 GPS 虛擬跳點。
+ * 2. 步態事件驅動推進 (Step-Synchronous Predict)：行走時僅在物理邁步時推進位置，消除原地自動向前滑行。
+ * 3. 馬氏距離新息門控 (Mahalanobis Innovation Gating)：以 95% 卡方檢定 (5.991) 嚴格把關 GPS，剔除大樓折射跳點。
+ * 4. 乘車高速自適應 (Vehicular High-Speed Mode)：搭乘公車/計程車時自動解鎖，流暢追蹤車載軌跡。
  */
 class PedestrianKalmanFilter {
     private var isInitialized = false
@@ -54,183 +184,193 @@ class PedestrianKalmanFilter {
     private var vx = 0.0
     private var vy = 0.0
 
-    // 協方差矩陣 4x4（對角線近似值，代表對自身估計的不確定度）
-    private var p00 = 10.0 // x 位置變異數
-    private var p11 = 10.0 // y 位置變異數
-    private var p22 = 2.0  // vx 速度變異數
-    private var p33 = 2.0  // vy 速度變異數
+    // 協方差矩陣 (對角近似值，代表對自身估計的不確定度)
+    private var p00 = 4.0 // x 位置變異數
+    private var p11 = 4.0 // y 位置變異數
+    private var p22 = 1.0 // vx 速度變異數
+    private var p33 = 1.0 // vy 速度變異數
+
+    // 靜止鎖定座標
+    private var lockedLat = 0.0
+    private var lockedLon = 0.0
 
     private var lastTimestampNanos: Long = 0
 
     /**
-     * 執行卡爾曼濾波更新
+     * 步態推進 (Predict Step - 由步伐事件驅動)
+     * 作用：當使用者走一步時，由 Weinberg 自適應步長模型平滑推算前進。
+     */
+    fun advanceStep(stepMeters: Double, headingDeg: Double): Pair<Double, Double> {
+        if (!isInitialized) return Pair(anchorLat, anchorLon)
+
+        val radHeading = Math.toRadians(headingDeg)
+        val dx = stepMeters * sin(radHeading)
+        val dy = stepMeters * cos(radHeading)
+
+        x += dx
+        y += dy
+        vx = dx / 0.6 // 假設一步約 0.6 秒
+        vy = dy / 0.6
+
+        p00 += 0.25
+        p11 += 0.25
+
+        val (curLat, curLon) = getCurrentGeoLocation()
+        lockedLat = curLat
+        lockedLon = curLon
+        return Pair(curLat, curLon)
+    }
+
+    /**
+     * 執行卡爾曼濾波測量更新
      * 
-     * @param lat GPS 原始緯度
-     * @param lon GPS 原始經度
+     * @param rawLat GPS 原始緯度
+     * @param rawLon GPS 原始經度
      * @param accuracyMeters GPS 精度半徑（公尺）
+     * @param speedMps GPS 測量速度（公尺/秒）
      * @param timestampNanos 時間戳記（奈秒）
+     * @param motionState 當前運動狀態 (靜止/步行/乘車)
      * @param isMultipath 是否偵測到大樓多路徑折射反射雜訊
      * @param hasDualFrequencyL5 是否收到 L5 雙頻衛星高精度訊號
      * @return 濾波平滑後的 (緯度, 經度)
      */
     fun filter(
-        lat: Double,
-        lon: Double,
+        rawLat: Double,
+        rawLon: Double,
         accuracyMeters: Float,
+        speedMps: Float,
         timestampNanos: Long,
+        motionState: MotionState,
         isMultipath: Boolean = false,
         hasDualFrequencyL5: Boolean = false
     ): Pair<Double, Double> {
         // 若為第一次定位：設定初始錨點與狀態
         if (!isInitialized) {
-            anchorLat = lat
-            anchorLon = lon
+            anchorLat = rawLat
+            anchorLon = rawLon
             x = 0.0
             y = 0.0
             vx = 0.0
             vy = 0.0
+            lockedLat = rawLat
+            lockedLon = rawLon
             lastTimestampNanos = timestampNanos
             isInitialized = true
-            return Pair(lat, lon)
+            return Pair(rawLat, rawLon)
         }
 
-        // 計算兩次測量的時間差 dt（秒）
+        // 1. 【室內/原地靜止模式】：100% 凍結座標，完全阻絕 GPS 跳動！
+        if (motionState == MotionState.STATIONARY_LOCKED) {
+            vx = 0.0
+            vy = 0.0
+            return Pair(lockedLat, lockedLon)
+        }
+
         var dt = (timestampNanos - lastTimestampNanos) / 1_000_000_000.0
         lastTimestampNanos = timestampNanos
+        if (dt <= 0.0 || dt > 10.0) dt = 1.0
 
-        // 異常時間差防護（若過久或為負值，回退為 1.0 秒）
-        if (dt <= 0.0 || dt > 10.0) {
-            dt = 1.0
-        }
-
-        // 1. 將經緯度轉換為局部平面直角座標（等距圓柱投影，單位：公尺）
+        // 將經緯度轉換為局部平面直角座標（等距圓柱投影，單位：公尺）
         val radLat = Math.toRadians(anchorLat)
         val mPerLat = 111139.0
         val mPerLon = 111139.0 * cos(radLat)
 
-        val zx = (lon - anchorLon) * mPerLon
-        val zy = (lat - anchorLat) * mPerLat
+        val zx = (rawLon - anchorLon) * mPerLon
+        val zy = (rawLat - anchorLat) * mPerLat
 
-        // 跨區大位移防護：若距離原錨點超過 60 公尺（如開車或瞬間換區），立即重置錨點避免濾波器拉扯
-        if (sqrt(zx * zx + zy * zy) > 60.0) {
-            anchorLat = lat
-            anchorLon = lon
+        // 跨區大位移重置防護 (> 80m，如搭車高速前進跨區)
+        if (sqrt(zx * zx + zy * zy) > 80.0) {
+            anchorLat = rawLat
+            anchorLon = rawLon
             x = 0.0
             y = 0.0
             vx = 0.0
             vy = 0.0
-            return Pair(lat, lon)
+            p00 = 4.0
+            p11 = 4.0
+            lockedLat = rawLat
+            lockedLon = rawLon
+            return Pair(rawLat, rawLon)
         }
 
-        // 2. 狀態預測步驟 (Predict Step)：依據先前估計的速度推進座標
-        x += vx * dt
-        y += vy * dt
+        // 2. 狀態預測步驟 (乘車模式依速度推算，步行模式由步態推算)
+        if (motionState == MotionState.VEHICULAR_TRANSIT) {
+            x += vx * dt
+            y += vy * dt
+            p00 += p22 * dt * dt + 1.0 * dt
+            p11 += p33 * dt * dt + 1.0 * dt
+        }
 
-        val qPos = 0.5 * dt // 位置過程雜訊
-        val qVel = 1.0 * dt // 速度過程雜訊
-        p00 += p22 * dt * dt + qPos
-        p11 += p33 * dt * dt + qPos
-        p22 += qVel
-        p33 += qVel
-
-        // 3. 測量更新步驟 (Measurement Update)：計算增益並融合新測量
-        val measuredDelta = sqrt((zx - x).pow(2.0) + (zy - y).pow(2.0))
-        val impliedSpeed = measuredDelta / dt
-
-        // 基礎測量雜訊協方差 R（以 GPS 精度平方為基準）
+        // 3. 自適應測量雜訊協方差 R（以 GPS 精度平方為基準）
         var baseR = max(accuracyMeters.toDouble().pow(2.0), 3.0)
+        if (hasDualFrequencyL5) baseR *= 0.5
+        if (isMultipath) baseR *= 8.0
 
-        // 若具備 L5 雙頻衛星：雜訊協方差減半（更信任測量值）
-        if (hasDualFrequencyL5) {
-            baseR *= 0.5
+        // 4. 馬氏距離新息門控 (Mahalanobis Innovation Gating)
+        val innovX = zx - x
+        val innovY = zy - y
+        val sX = p00 + baseR
+        val sY = p11 + baseR
+        val mahalanobisSq = (innovX * innovX / sX) + (innovY * innovY / sY)
+
+        // 乘車模式放寬門檻以容許車輛快速轉向與加速；步行模式以 95% 卡方檢定 (5.991) 嚴格過濾
+        val maxGate = if (motionState == MotionState.VEHICULAR_TRANSIT) 16.0 else 5.991
+        if (mahalanobisSq > maxGate) {
+            // 判定為大樓折射瞬移跳點，拒絕更新測量
+            return getCurrentGeoLocation()
         }
 
-        // 若偵測到大樓峽谷折射反射：雜訊放大 6 倍（降低對跳動數據的信任度）
-        if (isMultipath) {
-            baseR *= 6.0
-        }
-        // 若換算速度 > 4.5 m/s（人類步行極限），判定為瞬移雜訊，進一步壓制
-        val r = if (impliedSpeed > 4.5) baseR * 10.0 else baseR
+        // 5. 計算卡爾曼增益並更新狀態
+        val k0 = p00 / sX
+        val k1 = p11 / sY
 
-        // 計算卡爾曼增益 K (Kalman Gain)
-        val k0 = p00 / (p00 + r)
-        val k1 = p11 / (p11 + r)
+        x += k0 * innovX
+        y += k1 * innovY
 
-        // 修正位置估計
-        x += k0 * (zx - x)
-        y += k1 * (zy - y)
-
-        // 更新協方差矩陣
         p00 *= (1.0 - k0)
         p11 *= (1.0 - k1)
 
-        // 更新速度估計
-        vx = (k0 * (zx - x)) / dt
-        vy = (k1 * (zy - y)) / dt
+        vx = (k0 * innovX) / dt
+        vy = (k1 * innovY) / dt
 
-        // 行人速度鉗制（最大步行速度限制在 4.5 m/s）
-        val currentSpeed = sqrt(vx * vx + vy * vy)
-        if (currentSpeed > 4.5) {
-            val scale = 4.5 / currentSpeed
-            vx *= scale
-            vy *= scale
-        } else if (currentSpeed < 0.25) {
-            // ZUPT 零速修正 (Zero-Velocity Update)：速度小於 0.25 m/s 判定為靜止，速度直接歸零防止原地飄移
-            vx = 0.0
-            vy = 0.0
+        // 步行模式速度鉗制 (最高 4.5 m/s)
+        if (motionState == MotionState.PEDESTRIAN_WALKING) {
+            val curSpd = sqrt(vx * vx + vy * vy)
+            if (curSpd > 4.5) {
+                val scale = 4.5 / curSpd
+                vx *= scale
+                vy *= scale
+            }
         }
 
-        // 4. 將局部公尺座標轉回全球經緯度
-        val outLat = anchorLat + (y / mPerLat)
-        val outLon = anchorLon + (x / mPerLon)
-
+        val (outLat, outLon) = getCurrentGeoLocation()
+        lockedLat = outLat
+        lockedLon = outLon
         return Pair(outLat, outLon)
     }
 
-    /**
-     * 騎樓與遮蔽區航位推算推進 (PDR Step Advance)
-     * 
-     * 作用：當走進騎樓導致 GPS 斷訊時，利用步長與手機朝向角度平滑推算座標。
-     */
-    fun advanceStep(stepMeters: Double, headingDeg: Double): Pair<Double, Double> {
-        if (!isInitialized) return Pair(anchorLat, anchorLon)
-        val radHead = Math.toRadians(headingDeg)
-        val dx = stepMeters * sin(radHead)
-        val dy = stepMeters * cos(radHead)
-
-        x += dx
-        y += dy
-        vx = dx / 0.6 // 假設一步耗時約 0.6 秒
-        vy = dy / 0.6
-
+    private fun getCurrentGeoLocation(): Pair<Double, Double> {
         val radLat = Math.toRadians(anchorLat)
         val mPerLat = 111139.0
         val mPerLon = 111139.0 * cos(radLat)
-
-        val outLat = anchorLat + (y / mPerLat)
-        val outLon = anchorLon + (x / mPerLon)
-        return Pair(outLat, outLon)
+        return Pair(anchorLat + (y / mPerLat), anchorLon + (x / mPerLon))
     }
 
-    /** 是否已完成初始錨定 */
     fun isFilterInitialized(): Boolean = isInitialized
-
-    /** 重置濾波器狀態 */
-    fun reset() {
-        isInitialized = false
-    }
+    fun reset() { isInitialized = false }
 }
 
 
 /**
- * 定位與感測器原生橋接器 (LocationSensorBridge)
+ * 【定位與感測器原生橋接器 (LocationSensorBridge)】
  * 
  * 作用：負責調度 Android 手機底層所有導航與運動硬體感測器：
  * 1. 9 軸硬體旋轉向量 (TYPE_ROTATION_VECTOR)：50Hz 高頻無抖動即時朝向計算。
  * 2. 3D 空間真北補償 (Geomagnetic Declination)：消除台灣地區約 -3.8° 的地磁偏角，確保方向正對地理真北。
  * 3. 衛星訊噪比 (GNSS SNR) 與 L5 雙頻衛星辨識：動態過濾高樓大廈折射的反射雜訊。
- * 4. Weinberg 白手杖步態自適應模型：自動推算每一步長 (0.45m~0.85m)，在走進騎樓失去 GPS 時無縫接管導航。
- * 5. 跨程序即時通訊：將計算後的平滑座標與朝向，以 JavaScript 回調即時注入前端 WebView。
+ * 4. 三態運動分類器與靜止鎖定：室內/停留時 100% 座標凍結防飄；搭車時自動切換高速追蹤。
+ * 5. Weinberg 白手杖步態自適應模型：自動推算每一步長 (0.45m~0.85m)，在走進騎樓失去 GPS 時無縫接管導航。
+ * 6. 跨程序即時通訊：將計算後的平滑座標與朝向，以 JavaScript 回調即時注入前端 WebView。
  */
 class LocationSensorBridge(private val context: Context, private val webView: WebView) : SensorEventListener, LocationListener {
 
@@ -247,6 +387,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
     private var hasRotationVector = false
     private var smoothedHeading = -1f
+    private var lastEmittedHeading = -1f
     private var lastHeadingEmitTime = 0L
 
     // 真北校正之地磁偏角（台灣地區預設約 -3.8°）
@@ -261,12 +402,17 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var userStepLengthM = 0.65f
     private var lastGpsFixTimeMs = 0L
     private var lastStepEmitTimeMs = 0L
+    private var lastGpsSpeedMps = 0f
     private var stepDetectorSensor: Sensor? = null
     private var maxAccInWindow = 9.8f
     private var minAccInWindow = 9.8f
 
-    // 行人卡爾曼濾波器實例
+    // 行人卡爾曼濾波器與靜止偵測器實例
     private val kalmanFilter = PedestrianKalmanFilter()
+    private val stationaryDetector = StationaryMotionDetector { state ->
+        Log.i(tag, "Motion state changed to: $state")
+    }
+
     private var isRunning = false
     private var lastEmittedLocation: Location? = null
 
@@ -286,7 +432,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     fun start() {
         if (isRunning) return
         isRunning = true
-        Log.i(tag, "Starting sensors with 9-axis fusion, True North correction, GNSS SNR filtering, Dual-Frequency L5, and Weinberg PDR...")
+        Log.i(tag, "Starting sensors with 9-axis fusion, True North correction, GNSS SNR filtering, Dual-Frequency L5, Stationary Lock, and Weinberg PDR...")
 
         // 1. 優先使用硬體 9 軸旋轉向量感測器 (TYPE_ROTATION_VECTOR)
         val rotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -303,7 +449,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             Log.i(tag, "Fallback to Accelerometer + Magnetometer.")
         }
 
-        // 常態監聽加速度計，用於 Weinberg 步長動態自適應推算
+        // 常態監聽加速度計，用於靜止偵測與 Weinberg 步長動態自適應推算
         sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
@@ -357,7 +503,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 }
             }
 
-
             // 5. 備援原生 LocationManager（GPS + Network 雙通道）
             locationManager?.let { lm ->
                 if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -373,20 +518,16 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     }
 
     /**
-     * 螢幕開關自適應降頻省電調節：
-     * 1. 螢幕關閉（放入口袋）：註銷高耗電 50Hz 姿態感測器，保留低功耗計步器。
-     * 2. 螢幕開啟：恢復高頻姿態監聽。
+     * 螢幕開關自適應降頻省電調節
      */
     fun setScreenActive(active: Boolean) {
         if (!isRunning) return
         Log.i(tag, "setScreenActive: $active (throttling sensors accordingly)")
         if (!active) {
-            // 螢幕關閉：註銷耗電的姿態監聽
             sensorManager.unregisterListener(this, sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR))
             sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sensorManager.unregisterListener(this, it) }
             sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sensorManager.unregisterListener(this, it) }
         } else {
-            // 螢幕開啟：重新註冊姿態監聽
             val rotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
             if (rotVectorSensor != null) {
                 sensorManager.registerListener(this, rotVectorSensor, SensorManager.SENSOR_DELAY_GAME)
@@ -403,9 +544,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
     /**
      * 註冊衛星狀態回調 (GnssStatus.Callback)
-     * 作用：
-     * 1. 檢查每顆衛星的 C/N0 訊噪比，若使用中的衛星平均 SNR < 21 dB-Hz 判定為大樓峽谷折射。
-     * 2. 識別載波頻率 ~1176.45 MHz 的 L5/E5a 高頻寬雙頻衛星。
      */
     @SuppressLint("MissingPermission")
     private fun registerGnssStatusCallback() {
@@ -427,7 +565,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                                 if (snr >= 22.0f) {
                                     highCount++
                                 }
-                                // 檢查是否為 L5 / E5a 雙頻載波 (~1176.45 MHz)
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && status.hasCarrierFrequencyHz(i)) {
                                     val freq = status.getCarrierFrequencyHz(i)
                                     if (abs(freq - 1.17645e9f) < 1.5e7f) {
@@ -437,9 +574,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                             }
                         }
                         val avgSnr = if (usedCount > 0) totalSnr / usedCount else 0f
-                        // 大樓反射判定：若參與定位的衛星訊號極弱，判定為都市多路徑反射
                         isUrbanCanyonMultipath = (usedCount >= 3 && avgSnr < 21.0f) || (highCount < 4 && usedCount >= 4)
-                        // L5 雙頻判定：至少鎖定 2 顆 L5 衛星且總衛星數 >= 5
                         hasDualFrequencyL5 = (l5Count >= 2 && usedCount >= 5)
                     }
                 }
@@ -458,6 +593,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         isRunning = false
         sensorManager.unregisterListener(this)
         kalmanFilter.reset()
+        stationaryDetector.reset()
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
             locationManager?.removeUpdates(this)
@@ -488,10 +624,10 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
     /**
      * 當硬體計步器偵測到一步時觸發
-     * 1. 採集加速度極值差，利用 Weinberg 模型動態微調步長。
-     * 2. 若 GPS 訊號已中斷超過 1.2 秒（走進騎樓），自動推進卡爾曼座標並更新網頁。
      */
     private fun onStepDetected() {
+        stationaryDetector.onStepDetected()
+
         val now = SystemClock.uptimeMillis()
         if (now - lastStepEmitTimeMs < 250L) return
         lastStepEmitTimeMs = now
@@ -522,7 +658,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             }.toString()
             addTrajectoryLog(humanLog, ndjson)
 
-            Log.d(tag, "PDR Step Advance under arcade: ($pdrLat, $pdrLon) Adaptive Weinberg Step: ${userStepLengthM}m Heading: $smoothedHeading")
+            Log.d(tag, "PDR Step Advance: ($pdrLat, $pdrLon) Step: ${userStepLengthM}m Heading: $smoothedHeading")
             webView.post {
                 webView.evaluateJavascript(
                     "if (window.onLocationUpdate) window.onLocationUpdate(${pdrLat}, ${pdrLon}, 6.0, ${smoothedHeading}, 1.1);",
@@ -534,7 +670,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
     /**
      * 感測器數值變更回調
-     * 作用：計算抗傾斜的水平方位角 (Azimuth)、補正磁偏角，並以 50ms 節流傳送給前端網頁
      */
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) {
@@ -550,13 +685,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             System.arraycopy(event.values, 0, accelerometerReading, 0, accelerometerReading.size)
             SensorManager.getRotationMatrix(rotationMatrix, null, accelerometerReading, magnetometerReading)
 
-            // 採集加速度極值以供 Weinberg 步長模型使用
             val ax = event.values[0]
             val ay = event.values[1]
             val az = event.values[2]
             val mag = sqrt(ax * ax + ay * ay + az * az)
             if (mag > maxAccInWindow) maxAccInWindow = mag
             if (mag < minAccInWindow) minAccInWindow = mag
+
+            // 灌入靜止偵測器進行即時滑動變異數計算
+            stationaryDetector.feedAccelerometer(ax, ay, az, lastGpsSpeedMps)
         } else if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) {
             System.arraycopy(event.values, 0, magnetometerReading, 0, magnetometerReading.size)
             SensorManager.getRotationMatrix(rotationMatrix, null, accelerometerReading, magnetometerReading)
@@ -570,10 +707,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         val horizontalMagSq = eastForward * eastForward + northForward * northForward
 
         val rawDegrees: Float = if (horizontalMagSq > 0.03) {
-            // 手持行走姿態（傾斜 15° ~ 80°）
             ((Math.toDegrees(atan2(eastForward, northForward)) + 360.0) % 360.0).toFloat()
         } else {
-            // 手機水平平放於桌面
             SensorManager.getOrientation(rotationMatrix, orientationAngles)
             ((Math.toDegrees(orientationAngles[0].toDouble()) + 360.0) % 360.0).toFloat()
         }
@@ -583,17 +718,23 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         if (smoothedHeading < 0f) {
             smoothedHeading = trueDegrees
+            lastEmittedHeading = trueDegrees
         } else {
-            // 圓周最短路徑指數平滑 (0.45 平滑係數，轉彎靈敏俐落)
             var diff = trueDegrees - smoothedHeading
             while (diff < -180f) diff += 360f
             while (diff > 180f) diff -= 360f
-            smoothedHeading = (smoothedHeading + 0.45f * diff + 360f) % 360f
+
+            val alpha = if (Math.abs(diff) > 2.0f) 0.85f else 0.35f
+            smoothedHeading = (smoothedHeading + alpha * diff + 360f) % 360f
         }
 
-        // 每 50ms 節流傳送至前端 WebView，確保反應即時流暢
-        if (now - lastHeadingEmitTime >= 50L) {
+        // 節流與瞬時傳送：每 25ms 或角度有轉動 (> 2.0°) 時立即發送至前端 WebView
+        var angleDelta = Math.abs(smoothedHeading - lastEmittedHeading)
+        if (angleDelta > 180f) angleDelta = 360f - angleDelta
+
+        if (now - lastHeadingEmitTime >= 25L || angleDelta >= 2.0f) {
             lastHeadingEmitTime = now
+            lastEmittedHeading = smoothedHeading
             val deg = smoothedHeading
             webView.post {
                 webView.evaluateJavascript("if (window.onHeadingUpdate) window.onHeadingUpdate(${deg});", null)
@@ -605,10 +746,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
     /**
      * GPS 定位回調
-     * 作用：
-     * 1. 根據速度與高精度 GPS 自動校準使用者個人步長。
-     * 2. 送入行人卡爾曼濾波器進行平滑與防飄。
-     * 3. 記錄結構化日誌並評估回傳至前端 WebView。
      */
     override fun onLocationChanged(location: Location) {
         lastGpsFixTimeMs = SystemClock.uptimeMillis()
@@ -624,13 +761,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         val acc = if (location.hasAccuracy()) location.accuracy else 10f
         val bearing = if (location.hasBearing()) location.bearing else -1f
         val speed = if (location.hasSpeed()) location.speed else 0f
+        lastGpsSpeedMps = speed
+
         val timestampNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
             location.elapsedRealtimeNanos
         } else {
             System.currentTimeMillis() * 1_000_000L
         }
 
-        // 更新所在經緯度的地磁偏角
         val alt = if (location.hasAltitude()) location.altitude else 0.0
         updateGeomagneticDeclination(rawLat, rawLon, alt)
 
@@ -640,17 +778,26 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             userStepLengthM = 0.85f * userStepLengthM + 0.15f * estimatedStep
         }
 
-        // 執行卡爾曼濾波
+        // 執行三態自適應卡爾曼濾波
+        val motionState = stationaryDetector.currentState
         val (filteredLat, filteredLon) = kalmanFilter.filter(
-            rawLat, rawLon, acc, timestampNanos, isUrbanCanyonMultipath, hasDualFrequencyL5
+            rawLat = rawLat,
+            rawLon = rawLon,
+            accuracyMeters = acc,
+            speedMps = speed,
+            timestampNanos = timestampNanos,
+            motionState = motionState,
+            isMultipath = isUrbanCanyonMultipath,
+            hasDualFrequencyL5 = hasDualFrequencyL5
         )
 
         // 記錄人類可讀與結構化 NDJSON 日誌
         val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-        val humanLog = "[$timeStr] [GPS] 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5雙頻: $hasDualFrequencyL5 | 都會反射: $isUrbanCanyonMultipath"
+        val humanLog = "[$timeStr] [GPS] 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 | 折射: $isUrbanCanyonMultipath"
         val ndjson = org.json.JSONObject().apply {
             put("t", timeStr)
             put("evt", "GPS_FIX")
+            put("motion_state", motionState.name)
             put("raw_lat", rawLat)
             put("raw_lon", rawLon)
             put("lat", filteredLat)
@@ -663,12 +810,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }.toString()
         addTrajectoryLog(humanLog, ndjson)
 
-        Log.d(tag, "GPS (Raw: $rawLat, $rawLon) -> (Kalman: $filteredLat, $filteredLon) Acc: $acc L5: $hasDualFrequencyL5 Multipath: $isUrbanCanyonMultipath")
+        Log.d(tag, "GPS (Raw: $rawLat, $rawLon) -> (Kalman: $filteredLat, $filteredLon) State: $motionState Acc: $acc L5: $hasDualFrequencyL5 Multipath: $isUrbanCanyonMultipath")
 
         // 呼叫前端 JavaScript onLocationUpdate 函式
+        val effectiveSpeed = if (motionState == MotionState.STATIONARY_LOCKED) 0f else speed
         webView.post {
             webView.evaluateJavascript(
-                "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${acc}, ${bearing}, ${speed});",
+                "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${acc}, ${bearing}, ${effectiveSpeed});",
                 null
             )
         }
@@ -678,13 +826,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 
     companion object {
-        // 執行緒安全的軌跡日誌清單
         private val trajectoryHistory = Collections.synchronizedList(mutableListOf<String>())
         private val ndjsonRecords = Collections.synchronizedList(mutableListOf<String>())
 
-        /**
-         * 新增一筆軌跡紀錄（保留最近 2000 筆）
-         */
         fun addTrajectoryLog(entry: String, ndjson: String? = null) {
             if (trajectoryHistory.size > 2000) {
                 trajectoryHistory.removeAt(0)
@@ -698,9 +842,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             }
         }
 
-        /**
-         * 取得純文字格式的軌跡日誌
-         */
         fun getTrajectoryLogText(): String {
             return synchronized(trajectoryHistory) {
                 if (trajectoryHistory.isEmpty()) {
@@ -711,18 +852,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             }
         }
 
-        /**
-         * 取得 NDJSON 格式的結構化軌跡
-         */
         fun getTrajectoryNdjson(): String {
             return synchronized(ndjsonRecords) {
                 ndjsonRecords.joinToString("\n")
             }
         }
 
-        /**
-         * 抽取所有有效 GPS 經緯度座標點清單（用於產生 GeoJSON 折線）
-         */
         fun getGpsCoordinatesList(): List<Pair<Double, Double>> {
             val list = mutableListOf<Pair<Double, Double>>()
             synchronized(ndjsonRecords) {
@@ -741,4 +876,3 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }
     }
 }
-

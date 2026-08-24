@@ -28,36 +28,46 @@ def find_closest_point_on_line(lat: float, lon: float, geom: List[Tuple[float, f
     """
     【尋找折線上距離目標點最近的座標點】
     作用：給予一個經緯度點與一條道路折線 (geometry)，遍歷所有線段找出距離最近的垂足投影點與距離公尺數。
+    優化：在函式頂層計算一次 cos_lat 與公尺轉換係數，消除內層迴圈每次計算三角函數與 haversine 的多餘開銷。
     """
-    min_dist = float('inf')
-    best_lat = lat
-    best_lon = lon
+    if not geom or len(geom) < 2:
+        return 0.0, lat, lon
 
-    # geom 為折線頂點列表 [(lat, lon), ...]
+    min_dist_sq = float('inf')
+    best_proj_lat = lat
+    best_proj_lon = lon
+
+    avg_lat = math.radians(lat)
+    cos_lat = math.cos(avg_lat)
+    m_per_deg_lat = 111139.0
+    m_per_deg_lon = 111139.0 * cos_lat
+
     for i in range(len(geom) - 1):
         lat1, lon1 = geom[i]
         lat2, lon2 = geom[i+1]
-        
-        avg_lat = math.radians((lat1 + lat2 + lat) / 3.0)
-        cos_lat = math.cos(avg_lat)
-        
-        px = lon * cos_lat
-        py = lat
-        vx = lon1 * cos_lat
-        vy = lat1
-        wx = lon2 * cos_lat
-        wy = lat2
-        
-        _, proj_x_adj, proj_y = point_to_segment_distance_squared(px, py, vx, vy, wx, wy)
-        proj_x = proj_x_adj / cos_lat
-        
-        dist_m = haversine_distance(lat, lon, proj_y, proj_x)
-        if dist_m < min_dist:
-            min_dist = dist_m
-            best_lat = proj_y
-            best_lon = proj_x
-            
-    return min_dist, best_lat, best_lon
+
+        px = (lon - lon1) * m_per_deg_lon
+        py = (lat - lat1) * m_per_deg_lat
+        vx = (lon2 - lon1) * m_per_deg_lon
+        vy = (lat2 - lat1) * m_per_deg_lat
+
+        l2 = vx * vx + vy * vy
+        if l2 == 0:
+            dist_sq = px * px + py * py
+            t = 0.0
+        else:
+            t = max(0.0, min(1.0, (px * vx + py * vy) / l2))
+            proj_x = t * vx
+            proj_y = t * vy
+            dist_sq = (px - proj_x) * (px - proj_x) + (py - proj_y) * (py - proj_y)
+
+        if dist_sq < min_dist_sq:
+            min_dist_sq = dist_sq
+            best_proj_lat = lat1 + t * (lat2 - lat1)
+            best_proj_lon = lon1 + t * (lon2 - lon1)
+
+    min_dist = math.sqrt(min_dist_sq)
+    return min_dist, best_proj_lat, best_proj_lon
 
 
 def estimate_road_width_m(road: dict) -> float:
@@ -120,7 +130,7 @@ def snap_pedestrian_to_road(
         return 0.0, lat, lon, "center"
 
 
-    min_dist = float('inf')
+    min_dist_sq = float('inf')
     best_proj_lat = lat
     best_proj_lon = lon
     best_seg_idx = 0
@@ -142,20 +152,22 @@ def snap_pedestrian_to_road(
 
         l2 = vx * vx + vy * vy
         if l2 == 0:
-            dist = math.sqrt(px * px + py * py)
+            dist_sq = px * px + py * py
             t = 0.0
         else:
             t = max(0.0, min(1.0, (px * vx + py * vy) / l2))
             proj_x = t * vx
             proj_y = t * vy
-            dist = math.sqrt((px - proj_x)**2 + (py - proj_y)**2)
+            dist_sq = (px - proj_x) * (px - proj_x) + (py - proj_y) * (py - proj_y)
 
-        if dist < min_dist:
-            min_dist = dist
+        if dist_sq < min_dist_sq:
+            min_dist_sq = dist_sq
             best_seg_idx = i
             best_t = t
             best_proj_lat = lat1 + t * (lat2 - lat1)
             best_proj_lon = lon1 + t * (lon2 - lon1)
+
+    min_dist = math.sqrt(min_dist_sq)
 
     road_width = estimate_road_width_m(road)
 

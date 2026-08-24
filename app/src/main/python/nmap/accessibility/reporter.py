@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from nmap.agent.explorer import ExplorerAgent
 from nmap.spatial.geometry import bearing_to_cardinal
 
@@ -21,7 +21,13 @@ class NVDAReporter:
         self.last_street = ""
         self.last_junc_alert = ""
 
-    def generate_concise_report(self, agent: ExplorerAgent) -> str:
+    def generate_concise_report(
+        self,
+        agent: ExplorerAgent,
+        road_info: Optional[Dict[str, Any]] = None,
+        pois: Optional[List[Dict[str, Any]]] = None,
+        intersection: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
         【產生極簡「省話模式」即時播報 (VoiceVista-Style Concise Announcement)】
         
@@ -33,11 +39,14 @@ class NVDAReporter:
             return "提示：尚未載入起點。"
 
         cardinal = bearing_to_cardinal(agent.heading_deg)
-        road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)
-        pois = agent.world_model.get_nearby_pois(agent.lat, agent.lon, agent.heading_deg, radius_m=100.0)
-        intersection = agent.intersection_analyzer.analyze(
-            agent.lat, agent.lon, agent.heading_deg, agent.world_model, max_distance_m=50.0
-        )
+        if road_info is None:
+            road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)
+        if pois is None:
+            pois = agent.world_model.get_nearby_pois(agent.lat, agent.lon, agent.heading_deg, radius_m=100.0)
+        if intersection is None:
+            intersection = agent.intersection_analyzer.analyze(
+                agent.lat, agent.lon, agent.heading_deg, agent.world_model, max_distance_m=50.0, curr_road_info=road_info
+            )
 
         street_name = road_info.get("street_name", "道路")
         
@@ -74,10 +83,18 @@ class NVDAReporter:
         if not has_junc_alert and not has_poi_alert and street_name == self.last_street:
             pass # 靜默保持安靜，留給使用者聽環境音的空間
 
-
         return " ".join(parts).strip()
 
-    def generate_full_report(self, agent: ExplorerAgent) -> str:
+    def generate_full_report(
+        self,
+        agent: ExplorerAgent,
+        road_info: Optional[Dict[str, Any]] = None,
+        pois: Optional[List[Dict[str, Any]]] = None,
+        buildings: Optional[List[Dict[str, Any]]] = None,
+        intersection_analysis: Optional[Dict[str, Any]] = None,
+        door_estimates: Optional[Dict[str, Any]] = None,
+        scene: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
         【產生 360 度周遭全景探索報告 (Full Spatial Exploration Report)】
         
@@ -92,14 +109,17 @@ class NVDAReporter:
         if not agent.is_loaded:
             return "提示：尚未載入地圖起點。請先使用 start 指令定位起點。"
 
-
         cardinal = bearing_to_cardinal(agent.heading_deg)
-        road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)
-        pois = agent.world_model.get_nearby_pois(agent.lat, agent.lon, agent.heading_deg, radius_m=150.0)
-        buildings = agent.world_model.get_nearby_buildings(agent.lat, agent.lon, agent.heading_deg, radius_m=80.0)
-        intersection_analysis = agent.intersection_analyzer.analyze(
-            agent.lat, agent.lon, agent.heading_deg, agent.world_model, max_distance_m=60.0
-        )
+        if road_info is None:
+            road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)
+        if pois is None:
+            pois = agent.world_model.get_nearby_pois(agent.lat, agent.lon, agent.heading_deg, radius_m=150.0)
+        if buildings is None:
+            buildings = agent.world_model.get_nearby_buildings(agent.lat, agent.lon, agent.heading_deg, radius_m=80.0)
+        if intersection_analysis is None:
+            intersection_analysis = agent.intersection_analyzer.analyze(
+                agent.lat, agent.lon, agent.heading_deg, agent.world_model, max_distance_m=60.0, curr_road_info=road_info
+            )
 
         lines = []
         
@@ -114,9 +134,11 @@ class NVDAReporter:
         lines.append(f"• 朝向：面向{cardinal} (方位角 {int(agent.heading_deg)}°)")
 
         # Section 1.5: Real-World Physical Street Scene Architecture & Infrastructure
-        scene = agent.street_scene_engine.analyze_scene(agent.lat, agent.lon, agent.heading_deg, agent.world_model)
+        if scene is None:
+            scene = agent.street_scene_engine.analyze_scene(agent.lat, agent.lon, agent.heading_deg, agent.world_model, road_info=road_info)
+        scene_desc = scene.get('full_description') or scene.get('scene_summary') or '街景資料解析完成。'
         lines.append("\n【真實街道場景風貌】")
-        lines.append(f"• 街道風貌：{scene['full_description']}")
+        lines.append(f"• 街道風貌：{scene_desc}")
 
         # Section 2: Road & Sidewalk Status
         lines.append("\n【道路與人行道】")
@@ -125,7 +147,8 @@ class NVDAReporter:
 
         # Section 2.5: Left/Right Side House Numbers & Alleys
         side_scan = agent.world_model.get_left_right_side_scan(agent.lat, agent.lon, agent.heading_deg, radius_m=60.0)
-        door_estimates = agent.world_model.get_interpolated_door_numbers(agent.lat, agent.lon, agent.heading_deg)
+        if door_estimates is None:
+            door_estimates = agent.world_model.get_interpolated_door_numbers(agent.lat, agent.lon, agent.heading_deg)
         lines.append("\n【左右側門牌與巷弄掃描】")
         left_h = f" (門牌: {', '.join(side_scan['left_side']['house_numbers'])})" if side_scan['left_side']['house_numbers'] else f" ({door_estimates['left_side_estimate']})"
         left_a = f" (巷弄: {', '.join(a['name'] for a in side_scan['left_side']['alleys'])})" if side_scan['left_side']['alleys'] else ""

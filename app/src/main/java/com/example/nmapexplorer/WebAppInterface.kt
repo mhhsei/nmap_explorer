@@ -39,18 +39,50 @@ class WebAppInterface(private val context: Context, private val webView: WebView
 
     init {
         try {
-            // 初始化 Android 原生 TTS 語音引擎（優先設定台灣中文）
+            // 初始化 Android 原生 TTS 語音引擎（優先設定台灣中文，並提升語速至 1.25x 達成極速響應）
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     val result = tts?.setLanguage(Locale.TAIWAN)
                     if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                         tts?.setLanguage(Locale.CHINESE)
                     }
+                    tts?.setSpeechRate(1.25f) // 俐落敏捷，縮短單字唸讀時間
+                    tts?.setPitch(1.02f)
                     isTtsReady = true
+                    Log.i(tag, "Google/Android Native TextToSpeech initialized successfully.")
                 }
             }
         } catch (e: Exception) {
             Log.e(tag, "Failed to initialize TextToSpeech", e)
+        }
+    }
+
+    /**
+     * 【Google 內建原生 TTS 直接極速發聲通道 (Direct Native Google TTS)】
+     * 作用：
+     * 1. 專用於「手機轉動即時羅盤方位播報」。
+     * 2. 100% 繞過 TalkBack 系統無障礙事件隊列 (QUEUE)，杜絕 TalkBack 的排隊延遲、卡頓與吞字。
+     * 3. 使用 TextToSpeech.QUEUE_FLUSH 瞬間中斷並立即播報最新方位，達成「有轉動就馬上播報」。
+     * 
+     * @param text 要朗讀的文字 (如「正北」、「北北東」)
+     * @param interrupt 是否立即插播（預設 true，立即中斷前一句）
+     */
+    @JavascriptInterface
+    fun speakTtsDirect(text: String, interrupt: Boolean = true) {
+        if (text.isBlank()) return
+        Log.d(tag, "speakTtsDirect: $text (interrupt=$interrupt)")
+        (context as? android.app.Activity)?.runOnUiThread {
+            try {
+                if (isTtsReady && tts != null) {
+                    val queueMode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                    tts?.speak(text, queueMode, null, "turn_${System.currentTimeMillis()}")
+                } else {
+                    // 若 TTS 尚未就緒，暫時以 announceForAccessibility 作為保底
+                    webView?.announceForAccessibility(text)
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Error in speakTtsDirect", e)
+            }
         }
     }
 
@@ -81,7 +113,6 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     event.packageName = context.packageName
                     am.sendAccessibilityEvent(event)
                 }
-
 
                 // 2. 同步調用 WebView announceForAccessibility
                 webView?.announceForAccessibility(text)

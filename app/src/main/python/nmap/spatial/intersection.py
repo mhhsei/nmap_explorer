@@ -24,13 +24,20 @@ class IntersectionAnalyzer:
     路口與行人穿越安全性分析器
     """
 
-    def analyze(self, lat: float, lon: float, heading_deg: float, world_model: WorldModel, max_distance_m: float = 60.0, signal_announce_distance_m: float = 10.0) -> Dict[str, Any]:
+    def analyze(self, lat: float, lon: float, heading_deg: float, world_model: WorldModel, max_distance_m: float = 60.0, signal_announce_distance_m: float = 10.0, curr_road_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         【分析前方 60 公尺內的路口結構與過馬路安全性】
+        作用：
+        利用 WorldModel 預先建立的空間網格索引 (crossing_rtree, traffic_signal_rtree, junction_rtree)，
+        只檢索方圓 60 公尺內的實體設施與路口節點，將查詢複雜度由 O(N) 降至 O(1)。
         """
-        # 搜尋前方附近的斑馬線節點
+        radius_deg = max_distance_m / 111139.0
+        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+
+        # 1. 空間索引搜尋前方附近的斑馬線節點
         nearby_crossings = []
-        for cr in world_model.crossings:
+        for item in world_model.crossing_rtree.intersection(bounds, objects=True):
+            cr = item.object
             c_lat, c_lon = cr["lat"], cr["lon"]
             dist = haversine_distance(lat, lon, c_lat, c_lon)
             if dist <= max_distance_m:
@@ -54,9 +61,10 @@ class IntersectionAnalyzer:
 
         nearby_crossings.sort(key=lambda x: x["distance_m"])
 
-        # 搜尋前方附近的紅綠燈號誌
+        # 2. 空間索引搜尋前方附近的紅綠燈號誌
         nearby_signals = []
-        for ts in world_model.traffic_signals:
+        for item in world_model.traffic_signal_rtree.intersection(bounds, objects=True):
+            ts = item.object
             s_lat, s_lon = ts["lat"], ts["lon"]
             dist = haversine_distance(lat, lon, s_lat, s_lon)
             if dist <= max_distance_m:
@@ -76,19 +84,18 @@ class IntersectionAnalyzer:
 
         nearby_signals.sort(key=lambda x: x["distance_m"])
 
-        # 藉由檢查道路拓撲節點的度數 (degree) 來判定路口型態
+        # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3)
         junction_type = "直行道路"
         closest_junction_dist = 999.0
 
-
         intersecting_roads = set()
         branches_info = []
-        curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
+        if curr_road_info is None:
+            curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
         curr_street = curr_road_info.get("street_name", "")
 
-        for node_id, degree in world_model.road_graph.degree():
-            node_data = world_model.road_graph.nodes[node_id]
-            n_lat, n_lon = node_data["lat"], node_data["lon"]
+        for item in world_model.junction_rtree.intersection(bounds, objects=True):
+            node_id, degree, n_lat, n_lon = item.object
             dist = haversine_distance(lat, lon, n_lat, n_lon)
             
             if dist <= max_distance_m:

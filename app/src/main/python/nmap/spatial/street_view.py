@@ -4,7 +4,7 @@
 作用：
 為視障者將空間圖資轉譯為生動的街景意象（例如：「面向正北的北新路街景：兩側店家林立，道路寬敞，設有劃設人行道」）。
 """
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 from nmap.spatial.geometry import bearing_to_cardinal
 
 
@@ -13,13 +13,16 @@ class StreetViewAnalyzer:
     非視覺街景合成器
     """
 
-    def analyze_scene(self, lat: float, lon: float, heading_deg: float, world_model) -> Dict[str, Any]:
+    def analyze_scene(self, lat: float, lon: float, heading_deg: float, world_model, road_info: Optional[Dict[str, Any]] = None, pois: Optional[List[Dict[str, Any]]] = None, buildings: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         【合成目前朝向的非視覺街景摘要】
         """
-        road_info = world_model.get_road_info(lat, lon, heading_deg)
-        pois = world_model.get_nearby_pois(lat, lon, heading_deg, radius_m=50.0)
-        buildings = world_model.get_nearby_buildings(lat, lon, heading_deg, radius_m=40.0)
+        if road_info is None:
+            road_info = world_model.get_road_info(lat, lon, heading_deg)
+        if pois is None:
+            pois = world_model.get_nearby_pois(lat, lon, heading_deg, radius_m=50.0)
+        if buildings is None:
+            buildings = world_model.get_nearby_buildings(lat, lon, heading_deg, radius_m=40.0)
         cardinal = bearing_to_cardinal(heading_deg)
 
         # 街景特徵分類（店家、樹木、騎樓）

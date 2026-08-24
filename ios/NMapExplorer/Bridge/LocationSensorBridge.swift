@@ -2,8 +2,10 @@
  * iOS 定位與感測器橋接器 (iOS Location & Sensor Bridge)
  * 
  * 作用：
- * 1. 2D 行人卡爾曼濾波器 (Pedestrian Kalman Filter)：
- *    濾除高樓大廈多路徑效應造成的 GPS 漂移跳動，並在進入騎樓遮蔽時，無縫切換為 CMPedometer 行人慣性推算 (PDR)。
+ * 1. 2D 行人與車載自適應卡爾曼濾波器 (Adaptive Kalman Filter)：
+ *    - 靜止鎖定 (ZUPT)：室內/停步時 100% 凍結座標，阻絕天花板下的多路徑跳點。
+ *    - 馬氏距離新息門控 (Innovation Gating)：以 95% 卡方檢定 (5.991) 嚴格剔除大樓折射跳點。
+ *    - 乘車高速自適應：時速 > 10 km/h 時自動切換為高速追蹤模式。
  * 2. 磁北與真北即時平滑：透過 20Hz (0.05s) 低通濾波將指北針角度推送給 WebView 前端。
  * 3. 觸覺震動回饋 (UIImpactFeedbackGenerator)：在撞牆或到達路口時觸發觸覺震動。
  */
@@ -14,7 +16,16 @@ import WebKit
 import UIKit
 
 /**
- * 2D 行人卡爾曼濾波器 (2D Pedestrian Kalman Filter)
+ * 運動狀態列舉
+ */
+enum MotionState {
+    case stationaryLocked
+    case pedestrianWalking
+    case vehicularTransit
+}
+
+/**
+ * 2D 行人與車載卡爾曼濾波器 (2D Pedestrian & Vehicular Kalman Filter)
  */
 class PedestrianKalmanFilter {
     private var isInitialized = false
@@ -26,15 +37,17 @@ class PedestrianKalmanFilter {
     private var vx: Double = 0.0
     private var vy: Double = 0.0
 
-    private var p00: Double = 10.0
-    private var p11: Double = 10.0
-    private var p22: Double = 2.0
-    private var p33: Double = 2.0
+    private var p00: Double = 4.0
+    private var p11: Double = 4.0
+    private var p22: Double = 1.0
+    private var p33: Double = 1.0
+
+    private var lockedLat: Double = 0.0
+    private var lockedLon: Double = 0.0
 
     private var lastTimestamp: TimeInterval = 0
 
-    func filter(lat: Double, lon: Double, accuracy: Double, timestamp: TimeInterval) -> (lat: Double, lon: Double) {
-
+    func filter(lat: Double, lon: Double, accuracy: Double, speed: Double, timestamp: TimeInterval, motionState: MotionState) -> (lat: Double, lon: Double) {
         if !isInitialized {
             anchorLat = lat
             anchorLon = lon
@@ -42,9 +55,18 @@ class PedestrianKalmanFilter {
             y = 0.0
             vx = 0.0
             vy = 0.0
+            lockedLat = lat
+            lockedLon = lon
             lastTimestamp = timestamp
             isInitialized = true
             return (lat, lon)
+        }
+
+        // 靜止模式：100% 凍結座標，阻絕 GPS 飄移
+        if motionState == .stationaryLocked {
+            vx = 0.0
+            vy = 0.0
+            return (lockedLat, lockedLon)
         }
 
         var dt = timestamp - lastTimestamp
@@ -58,46 +80,68 @@ class PedestrianKalmanFilter {
         let zx = (lon - anchorLon) * mPerLon
         let zy = (lat - anchorLat) * mPerLat
 
-        x += vx * dt
-        y += vy * dt
+        // 跨區大位移防護 (> 80m)
+        if sqrt(zx * zx + zy * zy) > 80.0 {
+            anchorLat = lat
+            anchorLon = lon
+            x = 0.0
+            y = 0.0
+            vx = 0.0
+            vy = 0.0
+            p00 = 4.0
+            p11 = 4.0
+            lockedLat = lat
+            lockedLon = lon
+            return (lat, lon)
+        }
 
-        let qPos = 0.5 * dt
-        let qVel = 1.0 * dt
-        p00 += p22 * dt * dt + qPos
-        p11 += p33 * dt * dt + qPos
-        p22 += qVel
-        p33 += qVel
+        // 乘車模式預測步驟
+        if motionState == .vehicularTransit {
+            x += vx * dt
+            y += vy * dt
+            p00 += p22 * dt * dt + 1.0 * dt
+            p11 += p33 * dt * dt + 1.0 * dt
+        }
 
-        let measuredDelta = sqrt(pow(zx - x, 2) + pow(zy - y, 2))
-        let impliedSpeed = measuredDelta / dt
-        let baseR = max(pow(accuracy, 2), 4.0)
-        let r = (impliedSpeed > 4.5) ? baseR * 10.0 : baseR
+        let baseR = max(pow(accuracy, 2), 3.0)
 
-        let k0 = p00 / (p00 + r)
-        let k1 = p11 / (p11 + r)
+        // 馬氏距離新息門控
+        let innovX = zx - x
+        let innovY = zy - y
+        let sX = p00 + baseR
+        let sY = p11 + baseR
+        let mahalanobisSq = (innovX * innovX / sX) + (innovY * innovY / sY)
 
-        x += k0 * (zx - x)
-        y += k1 * (zy - y)
+        let maxGate = (motionState == .vehicularTransit) ? 16.0 : 5.991
+        if mahalanobisSq > maxGate {
+            return getCurrentGeoLocation()
+        }
+
+        let k0 = p00 / sX
+        let k1 = p11 / sY
+
+        x += k0 * innovX
+        y += k1 * innovY
 
         p00 *= (1.0 - k0)
         p11 *= (1.0 - k1)
 
-        vx = (k0 * (zx - x)) / dt
-        vy = (k1 * (zy - y)) / dt
+        vx = (k0 * innovX) / dt
+        vy = (k1 * innovY) / dt
 
-        let currentSpeed = sqrt(vx * vx + vy * vy)
-        if currentSpeed > 4.5 {
-            let scale = 4.5 / currentSpeed
-            vx *= scale
-            vy *= scale
-        } else if currentSpeed < 0.25 {
-            vx = 0.0
-            vy = 0.0
+        if motionState == .pedestrianWalking {
+            let curSpd = sqrt(vx * vx + vy * vy)
+            if curSpd > 4.5 {
+                let scale = 4.5 / curSpd
+                vx *= scale
+                vy *= scale
+            }
         }
 
-        let outLat = anchorLat + (y / mPerLat)
-        let outLon = anchorLon + (x / mPerLon)
-        return (outLat, outLon)
+        let current = getCurrentGeoLocation()
+        lockedLat = current.lat
+        lockedLon = current.lon
+        return current
     }
 
     func advanceStep(stepMeters: Double, headingDeg: Double) -> (lat: Double, lon: Double) {
@@ -111,17 +155,28 @@ class PedestrianKalmanFilter {
         vx = dx / 0.6
         vy = dy / 0.6
 
+        p00 += 0.25
+        p11 += 0.25
+
+        let current = getCurrentGeoLocation()
+        lockedLat = current.lat
+        lockedLon = current.lon
+        return current
+    }
+
+    private func getCurrentGeoLocation() -> (lat: Double, lon: Double) {
         let radLat = anchorLat * .pi / 180.0
         let mPerLat = 111139.0
         let mPerLon = 111139.0 * cos(radLat)
-
-        let outLat = anchorLat + (y / mPerLat)
-        let outLon = anchorLon + (x / mPerLon)
-        return (outLat, outLon)
+        return (anchorLat + (y / mPerLat), anchorLon + (x / mPerLon))
     }
 
     func isReady() -> Bool {
         return isInitialized
+    }
+
+    fun reset() {
+        isInitialized = false
     }
 }
 
@@ -136,7 +191,9 @@ class LocationSensorBridge: NSObject, CLLocationManagerDelegate {
     private var smoothedHeading: Double = -1.0
     private var lastHeadingEmitTime: TimeInterval = 0
     private var lastGpsFixTime: TimeInterval = 0
+    private var lastStepTime: TimeInterval = 0
     private var userStepLengthM: Double = 0.65
+    private var currentMotionState: MotionState = .stationaryLocked
 
     init(webView: WKWebView) {
         self.webView = webView
@@ -169,9 +226,12 @@ class LocationSensorBridge: NSObject, CLLocationManagerDelegate {
 
     private func onPedometerStep(data: CMPedometerData) {
         let now = ProcessInfo.processInfo.systemUptime
+        lastStepTime = now
+        currentMotionState = .pedestrianWalking
+
         let timeSinceGps = now - lastGpsFixTime
 
-        // If GPS is obscured (> 1.2s without update, e.g. under arcade / 騎樓), advance via PDR
+        // 若 GPS 中斷 (> 1.2s，如進入騎樓)，由 PDR 接管平滑推算
         if timeSinceGps > 1.2 && kalmanFilter.isReady() && smoothedHeading >= 0 {
             let pdr = kalmanFilter.advanceStep(stepMeters: userStepLengthM, headingDeg: smoothedHeading)
             DispatchQueue.main.async {
@@ -187,7 +247,8 @@ class LocationSensorBridge: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        lastGpsFixTime = ProcessInfo.processInfo.systemUptime
+        let now = ProcessInfo.processInfo.systemUptime
+        lastGpsFixTime = now
 
         let rawLat = location.coordinate.latitude
         let rawLon = location.coordinate.longitude
@@ -196,17 +257,25 @@ class LocationSensorBridge: NSObject, CLLocationManagerDelegate {
         let speed = max(location.speed, 0.0)
         let timestamp = location.timestamp.timeIntervalSince1970
 
-        // Auto-calibrate step length on clear GPS walk
+        // 運動狀態判定
+        if speed >= 2.8 {
+            currentMotionState = .vehicularTransit
+        } else if (now - lastStepTime) > 1.4 && speed < 0.5 {
+            currentMotionState = .stationaryLocked
+        }
+
+        // 行走時校準個人步長
         if speed > 0.6 && acc < 5.0 {
             let estimatedStep = min(max(speed / 1.8, 0.50), 0.85)
             userStepLengthM = 0.85 * userStepLengthM + 0.15 * estimatedStep
         }
 
-        let filtered = kalmanFilter.filter(lat: rawLat, lon: rawLon, accuracy: acc, timestamp: timestamp)
+        let filtered = kalmanFilter.filter(lat: rawLat, lon: rawLon, accuracy: acc, speed: speed, timestamp: timestamp, motionState: currentMotionState)
 
+        let effectiveSpeed = (currentMotionState == .stationaryLocked) ? 0.0 : speed
         DispatchQueue.main.async {
             self.webView?.evaluateJavaScript(
-                "if (window.onLocationUpdate) window.onLocationUpdate(\(filtered.lat), \(filtered.lon), \(acc), \(bearing), \(speed));",
+                "if (window.onLocationUpdate) window.onLocationUpdate(\(filtered.lat), \(filtered.lon), \(acc), \(bearing), \(effectiveSpeed));",
                 completionHandler: nil
             )
         }
@@ -214,7 +283,6 @@ class LocationSensorBridge: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         let now = ProcessInfo.processInfo.systemUptime
-        // True North is automatically calculated by iOS CoreLocation
         let headingDeg = (newHeading.trueHeading >= 0) ? newHeading.trueHeading : newHeading.magneticHeading
 
         if smoothedHeading < 0 {
@@ -223,10 +291,11 @@ class LocationSensorBridge: NSObject, CLLocationManagerDelegate {
             var diff = headingDeg - smoothedHeading
             while diff < -180.0 { diff += 360.0 }
             while diff > 180.0 { diff -= 360.0 }
-            smoothedHeading = (smoothedHeading + 0.30 * diff + 360.0).truncatingRemainder(dividingBy: 360.0)
+            let alpha = (abs(diff) > 2.0) ? 0.85 : 0.35
+            smoothedHeading = (smoothedHeading + alpha * diff + 360.0).truncatingRemainder(dividingBy: 360.0)
         }
 
-        if now - lastHeadingEmitTime >= 0.05 {
+        if now - lastHeadingEmitTime >= 0.025 {
             lastHeadingEmitTime = now
             let deg = smoothedHeading
             DispatchQueue.main.async {

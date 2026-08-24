@@ -339,6 +339,7 @@ class NmapWebApp {
     this.lastSpokenDoor = "";
     this.lastSpokenIntersection = "";
 
+    this.initSettings();
     this.initElements();
     this.bindEvents();
     this.isReady = true;
@@ -499,6 +500,14 @@ class NmapWebApp {
         uiBtnCheckUpdate.addEventListener("click", () => {
             this.recordInteraction("點擊按鈕", "手動檢查 App 更新");
             this.checkForAppUpdates(false);
+        });
+    }
+
+    const uiBtnSettings = document.getElementById("ui-btn-settings");
+    if (uiBtnSettings) {
+        uiBtnSettings.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "開啟偏好設定");
+            this.showSettingsModal();
         });
     }
 
@@ -1195,22 +1204,36 @@ class NmapWebApp {
   }
 
   announceAllPOIs() {
-    const realtimePois = this.getRealtimePois();
-    if (!realtimePois || realtimePois.length === 0) {
-      this.updateLiveLog("【周遭掃描】100 公尺內無特別設施標籤。", false, true);
-      return;
-    }
-    
-    this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
-    
-    let msg = `【周遭共發現 ${realtimePois.length} 家店】\n`;
-    const lines = realtimePois.map(p => {
-        const cat = this.translateCategory(p.category);
-        return `${p.name} (${p.relative_direction} ${p.distance_m}m，${cat})`;
-    });
-    
-    msg += lines.join("\n");
-    this.updateLiveLog(msg, false, true);
+    const doAnnounce = () => {
+      const realtimePois = this.getRealtimePois();
+      if (!realtimePois || realtimePois.length === 0) {
+        this.updateLiveLog("【周遭掃描】100 公尺內無特別設施標籤。", false, true);
+        return;
+      }
+      
+      this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
+      
+      let msg = `【周遭共發現 ${realtimePois.length} 家店】\n`;
+      const lines = realtimePois.map(p => {
+          const cat = this.translateCategory(p.category);
+          return `${p.name} (${p.relative_direction} ${p.distance_m}m，${cat})`;
+      });
+      
+      msg += lines.join("\n");
+      this.updateLiveLog(msg, false, true);
+    };
+
+    fetch("/api/status")
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.pois) {
+          this.updatePOIs(data.pois);
+        }
+        doAnnounce();
+      })
+      .catch(() => {
+        doAnnounce();
+      });
   }
 
   announceRoadAndDoorNumbers() {
@@ -2242,6 +2265,101 @@ class NmapWebApp {
       };
     }
   }
+
+  /**
+   * 【初始化偏好設定管理器 (Extensible Settings Manager)】
+   * 作用：載入本地偏好設定，支援日後任意增修設定項與持久化
+   */
+  initSettings() {
+    const DEFAULT_SETTINGS = {
+      turnAnnounce: true,         // 轉動手機即時播報方位 (Google TTS)
+      turnTickSound: true,        // 轉向立體聲刻度音與微震 (Tick)
+      autoPoiAnnounce: true,      // 接近店家自動提醒 (VoiceVista)
+      hapticFeedback: true        // 齒輪與正北重震觸覺
+    };
+
+    try {
+      const saved = localStorage.getItem("nmap_user_settings");
+      this.settings = saved ? Object.assign({}, DEFAULT_SETTINGS, JSON.parse(saved)) : DEFAULT_SETTINGS;
+    } catch (e) {
+      this.settings = DEFAULT_SETTINGS;
+    }
+  }
+
+  /**
+   * 【儲存偏好設定至本地儲存區】
+   */
+  saveSettings() {
+    try {
+      localStorage.setItem("nmap_user_settings", JSON.stringify(this.settings));
+    } catch (e) {
+      console.error("Failed to save settings", e);
+    }
+  }
+
+  /**
+   * 【開啟偏好設定無障礙對話框 (Accessible Settings Modal)】
+   * 作用：
+   * 1. 支援 VoiceOver / TalkBack 焦點捕捉與 Esc 關閉。
+   * 2. 提供核取方塊即時反饋語音，雙擊切換時清楚報讀「已開啟」或「已關閉」。
+   * 3. 模組化結構，未來可隨時擴充新功能設定項。
+   */
+  showSettingsModal() {
+    const modal = document.getElementById("settings-modal");
+    if (!modal) return;
+
+    const chkTurn = document.getElementById("setting-turn-announce");
+    const chkTick = document.getElementById("setting-tick-sound");
+    const chkPoi = document.getElementById("setting-auto-poi-announce");
+    const chkHaptic = document.getElementById("setting-haptic-feedback");
+
+    if (chkTurn) chkTurn.checked = !!this.settings.turnAnnounce;
+    if (chkTick) chkTick.checked = !!this.settings.turnTickSound;
+    if (chkPoi) chkPoi.checked = !!this.settings.autoPoiAnnounce;
+    if (chkHaptic) chkHaptic.checked = !!this.settings.hapticFeedback;
+
+    modal.style.display = "flex";
+
+    // VoiceOver / 螢幕閱讀器友善引導
+    if (window.AndroidBridge && window.AndroidBridge.speak) {
+      window.AndroidBridge.speak("偏好設定已開啟。可上下滑動瀏覽設定項目，雙擊切換開關。", false);
+    }
+
+    setTimeout(() => {
+      const titleEl = document.getElementById("settings-modal-title");
+      if (titleEl) titleEl.focus();
+    }, 100);
+
+    // 綁定核取方塊切換監聽（即時存檔並提供語音回饋）
+    const bindToggle = (chkEl, key, labelName) => {
+      if (!chkEl) return;
+      chkEl.onchange = () => {
+        this.settings[key] = chkEl.checked;
+        this.saveSettings();
+        const stateText = chkEl.checked ? "已開啟" : "已關閉";
+        const announceText = `${labelName}，${stateText}。`;
+        if (window.AndroidBridge && window.AndroidBridge.speak) {
+          window.AndroidBridge.speak(announceText, true);
+        }
+      };
+    };
+
+    bindToggle(chkTurn, "turnAnnounce", "轉動手機即時播報方位");
+    bindToggle(chkTick, "turnTickSound", "轉向立體聲刻度音與微震");
+    bindToggle(chkPoi, "autoPoiAnnounce", "接近店家自動提醒");
+    bindToggle(chkHaptic, "hapticFeedback", "正北重震與齒輪觸覺");
+
+    const closeBtn = document.getElementById("settings-modal-close-btn");
+    const closeBottomBtn = document.getElementById("settings-modal-close-bottom-btn");
+    const closeModal = () => {
+      modal.style.display = "none";
+      const settingsBtn = document.getElementById("ui-btn-settings");
+      if (settingsBtn) settingsBtn.focus();
+    };
+
+    if (closeBtn) closeBtn.onclick = closeModal;
+    if (closeBottomBtn) closeBottomBtn.onclick = closeModal;
+  }
 }
 
 // 全域 AndroidBridge 回調綁定
@@ -2459,6 +2577,13 @@ window.lastReportedCardinal = "";
 window.onHeadingUpdate = function(headingDegrees) {
     window.lastHeading = headingDegrees;
     
+    const settings = (window.app && window.app.settings) ? window.app.settings : {
+        turnAnnounce: true,
+        turnTickSound: true,
+        autoPoiAnnounce: true,
+        hapticFeedback: true
+    };
+
     // 1. 即時同步至前端狀態，確保 3D 空間音效與動態店家方位計算零延遲
     if (window.app) {
         window.app.localHeading = headingDegrees;
@@ -2476,11 +2601,13 @@ window.onHeadingUpdate = function(headingDegrees) {
     if (Math.abs(tickDiff) >= 15.0) {
         const isLeft = tickDiff < 0;
         window.lastTickHeading = headingDegrees;
-        if (window.app && window.app.audio) {
-            window.app.audio.playTick(isLeft);
-        }
-        if (window.AndroidBridge && window.AndroidBridge.vibrateTick) {
-            window.AndroidBridge.vibrateTick();
+        if (settings.turnTickSound) {
+            if (window.app && window.app.audio) {
+                window.app.audio.playTick(isLeft);
+            }
+            if (window.AndroidBridge && window.AndroidBridge.vibrateTick) {
+                window.AndroidBridge.vibrateTick();
+            }
         }
     }
 
@@ -2501,7 +2628,7 @@ window.onHeadingUpdate = function(headingDegrees) {
 
     if (matchedCardinal !== -1 && matchedCardinal !== window.lastHapticCardinal) {
         window.lastHapticCardinal = matchedCardinal;
-        if (window.AndroidBridge) {
+        if (settings.hapticFeedback && window.AndroidBridge) {
             if (matchedCardinal === 0) { // 正北 0°
                 if (window.AndroidBridge.vibrateHeavy) window.AndroidBridge.vibrateHeavy();
             } else {
@@ -2512,34 +2639,33 @@ window.onHeadingUpdate = function(headingDegrees) {
         window.lastHapticCardinal = -1;
     }
     
-    // 4. 即時極簡 16 方位語音回報 (省話模式：只報方位，如「北北東」、「正東」)
+    // 4. 16 方位極速語音回報（完全不走螢幕報讀排隊佇列，可由偏好設定開關）
     if (window.app && window.app.isReady !== false) {
-        const now = Date.now();
-        const isWalking = (now - (window.lastMoveTime || 0) < 3000) && ((window.lastWalkSpeed || 0) >= 0.4);
         const dirStr = window.app.getCardinalDirection(headingDegrees);
         
         if (dirStr !== window.lastReportedCardinal) {
-            if (window.headingTimeout) clearTimeout(window.headingTimeout);
-            const debounceMs = isWalking ? 550 : 200;
+            window.lastReportedCardinal = dirStr;
+            window.lastReportedHeading = headingDegrees;
             
-            window.headingTimeout = setTimeout(() => {
-                const speechInterval = Date.now() - (window.app.lastSpeechTime || 0);
-                
-                // 行走中若 2 秒內剛朗讀過店家/路口，不打斷語音
-                if (isWalking && speechInterval < 2000) {
-                    window.lastReportedCardinal = dirStr;
-                    window.lastReportedHeading = window.lastHeading;
-                    return;
+            if (settings.turnTickSound && window.app.audio) {
+                window.app.audio.playSettledChime();
+            }
+            
+            // 轉動播報開關：僅當使用者開啟「轉動手機即時播報方位」時，才透過原生 TTS 發聲！
+            // 絕不調用 TalkBack / announceForAccessibility，確保 TalkBack 在轉向時徹底靜音無干擾。
+            if (settings.turnAnnounce) {
+                if (window.AndroidBridge && window.AndroidBridge.speakTtsDirect) {
+                    window.AndroidBridge.speakTtsDirect(dirStr, true);
+                } else if (!window.AndroidBridge && window.speechSynthesis) {
+                    try {
+                        window.speechSynthesis.cancel();
+                        const u = new SpeechSynthesisUtterance(dirStr);
+                        u.lang = 'zh-TW';
+                        u.rate = 1.25;
+                        window.speechSynthesis.speak(u);
+                    } catch (e) {}
                 }
-
-                window.lastReportedCardinal = dirStr;
-                window.lastReportedHeading = window.lastHeading;
-                
-                if (window.app.audio) window.app.audio.playSettledChime();
-                
-                // 極簡省話：只報方位本身 (例如：「正北」、「北北東」、「東南」)
-                window.app.updateLiveLog(dirStr, false, true);
-            }, debounceMs);
+            }
         }
     }
 };
