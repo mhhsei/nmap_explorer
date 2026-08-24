@@ -179,8 +179,17 @@ class PoiDetailFetcher:
         elif not clean_addr:
             clean_addr = "新北市淡水區"
 
-        query_text = f"{clean_addr} {clean_name} 電話 營業時間".strip()
+        # 符號淨化（去除波浪號、破折號等易干擾搜尋引擎的特殊符號）
+        sanitized_name = re.sub(r'[～~—–\-_/|]+', ' ', clean_name).strip()
+        name_tokens = [t for t in sanitized_name.split() if t]
+        main_token = name_tokens[0] if name_tokens else sanitized_name
+
+        query_text = f"{clean_addr} {sanitized_name} 電話 營業時間".strip()
         encoded = urllib.parse.quote(query_text)
+        
+        # 輔助備援搜尋詞（針對複合長店名如「等我一下～甜點冰品專賣店」提取「等我一下」主店名）
+        alt_query_text = f"{clean_addr} {main_token} 電話 營業時間".strip()
+        encoded_alt = urllib.parse.quote(alt_query_text)
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -194,8 +203,8 @@ class PoiDetailFetcher:
             ssl_ctx = None
 
         # 來源 1：Google 搜尋與 Google Maps 摘要
-        def fetch_google():
-            url = f"https://www.google.com/search?q={encoded}+google+maps&hl=zh-TW"
+        def fetch_google(q_enc):
+            url = f"https://www.google.com/search?q={q_enc}+google+maps&hl=zh-TW"
             try:
                 req = urllib.request.Request(url, headers=headers)
                 kwargs = {"timeout": 1.2}
@@ -208,8 +217,8 @@ class PoiDetailFetcher:
                 return ""
 
         # 來源 2：Bing 台灣商家資料
-        def fetch_bing():
-            url = f"https://www.bing.com/search?q={encoded}&setlang=zh-Hant-TW"
+        def fetch_bing(q_enc):
+            url = f"https://www.bing.com/search?q={q_enc}&setlang=zh-Hant-TW"
             try:
                 req = urllib.request.Request(url, headers=headers)
                 kwargs = {"timeout": 1.2}
@@ -222,8 +231,8 @@ class PoiDetailFetcher:
                 return ""
 
         # 來源 3：Yahoo 台灣在地商圈
-        def fetch_yahoo():
-            url = f"https://tw.search.yahoo.com/search?p={encoded}"
+        def fetch_yahoo(q_enc):
+            url = f"https://tw.search.yahoo.com/search?p={q_enc}"
             try:
                 req = urllib.request.Request(url, headers=headers)
                 kwargs = {"timeout": 1.2}
@@ -237,8 +246,15 @@ class PoiDetailFetcher:
 
         combined_html = ""
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                futures = [executor.submit(fetch_google), executor.submit(fetch_bing), executor.submit(fetch_yahoo)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(fetch_google, encoded),
+                    executor.submit(fetch_bing, encoded),
+                    executor.submit(fetch_yahoo, encoded)
+                ]
+                if encoded_alt != encoded:
+                    futures.append(executor.submit(fetch_bing, encoded_alt))
+
                 try:
                     for f in concurrent.futures.as_completed(futures, timeout=1.4):
                         try:
