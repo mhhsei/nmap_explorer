@@ -288,29 +288,37 @@ body {
   color: var(--text-muted);
 }
 
-/* Modal Dialog */
+/* Modal Dialog - 100% Solid Shield to Prevent Any Homepage Bleed-Through */
 .modal-overlay {
   position: fixed;
   top: 0;
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(0, 0, 0, 0.75);
+  background: rgba(15, 23, 42, 0.98);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 2000;
+  z-index: 99999;
+  box-sizing: border-box;
+  padding: 16px;
 }
 
 .modal-content {
-  background: var(--panel-bg);
-  border: 2px solid var(--accent-focus);
-  padding: 1.75rem;
-  border-radius: 0.75rem;
-  max-width: 600px;
-  width: 90%;
-  max-height: 85vh;
+  background: #1e293b;
+  border: 2px solid var(--accent-focus, #38bdf8);
+  padding: 1.5rem;
+  border-radius: 1rem;
+  max-width: 520px;
+  width: 100%;
+  max-height: 88vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.95);
+  margin: auto;
 }
 
 .modal-header {

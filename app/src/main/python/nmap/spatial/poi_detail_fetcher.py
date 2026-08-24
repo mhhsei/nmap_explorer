@@ -79,20 +79,28 @@ class PoiDetailFetcher:
             return f"{clean[:2]}-{clean[2:5]}-{clean[5:]}"
 
     @classmethod
-    def _extract_real_phone(cls, html: str) -> str:
+    def _extract_real_phone(cls, html: str, area_prefix: str = "") -> str:
         # 1. 優先尋找帶有「電話/TEL/專線」標籤的字串
         candidates = re.findall(r'(?:電話|TEL|連絡電話|聯絡電話|專線|門市電話|預約專線|市話)[:：\s]*(0\d{1,3}[-\s]?\d{3,4}[-\s]?\d{3,4})', html, re.IGNORECASE)
         for c in candidates:
-            clean = re.sub(r'[-\s]', '', c)
+            clean = re.sub(r'[-\s\(\)]', '', c)
             if cls._is_valid_taiwan_phone(clean):
-                return cls._format_taiwan_phone(clean)
+                formatted = cls._format_taiwan_phone(clean)
+                if area_prefix and formatted.startswith(area_prefix):
+                    return formatted
+                elif not area_prefix:
+                    return formatted
 
         # 2. 通用台灣電話正規化提取
         all_p = re.findall(r'(?:[^\d]|^)(02[-\s]?[2378]\d{3}[-\s]?\d{4}|0[3-8][-\s]?\d{2,3}[-\s]?\d{4}|09\d{2}[-\s]?\d{3}[-\s]?\d{3})(?:[^\d]|$)', html)
         for c in all_p:
-            clean = re.sub(r'[-\s]', '', c)
+            clean = re.sub(r'[-\s\(\)]', '', c)
             if cls._is_valid_taiwan_phone(clean):
-                return cls._format_taiwan_phone(clean)
+                formatted = cls._format_taiwan_phone(clean)
+                if area_prefix and formatted.startswith(area_prefix):
+                    return formatted
+                elif not area_prefix:
+                    return formatted
         return ""
 
     @staticmethod
@@ -163,44 +171,53 @@ class PoiDetailFetcher:
                 details["wheelchair"] = "♿ 1 樓騎樓/平整入口"
                 details["category_desc"] = "早午餐餐飲"
 
-        # 2. 多執行緒並行發起極速即時網頁抓取 (< 0.55s)
-        query_text = f"{clean_name} {address} 電話 營業時間".strip()
+        # 2. 建構地點鎖定的高精準搜尋語句 (Location-Anchored Query)
+        area_prefix = "02" if (lat and lat > 24.9) else ""
+        clean_addr = (address or "").replace("台灣", "").replace("臺灣", "").strip()
+        if clean_addr and not any(c in clean_addr for c in ["市", "縣"]):
+            clean_addr = f"新北市淡水區 {clean_addr}"
+        elif not clean_addr:
+            clean_addr = "新北市淡水區"
+
+        query_text = f"{clean_addr} {clean_name} 電話 營業時間".strip()
         encoded = urllib.parse.quote(query_text)
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "zh-TW,zh;q=0.9"
+        }
 
         def fetch_yahoo():
             url = f"https://tw.search.yahoo.com/search?p={encoded}"
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept-Language": "zh-TW,zh;q=0.9"
-            })
-            with urllib.request.urlopen(req, timeout=0.8) as r:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=1.0) as r:
                 return r.read().decode('utf-8', errors='ignore')
 
         def fetch_bing():
             url = f"https://www.bing.com/search?q={encoded}&setlang=zh-Hant-TW"
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept-Language": "zh-TW,zh;q=0.9"
-            })
-            with urllib.request.urlopen(req, timeout=0.8) as r:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=1.0) as r:
                 return r.read().decode('utf-8', errors='ignore')
 
         combined_html = ""
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [executor.submit(fetch_yahoo), executor.submit(fetch_bing)]
-                for f in concurrent.futures.as_completed(futures, timeout=0.9):
-                    try:
-                        res = f.result()
-                        if res:
-                            combined_html += "\n" + res
-                    except Exception:
-                        pass
+                try:
+                    for f in concurrent.futures.as_completed(futures, timeout=1.2):
+                        try:
+                            res = f.result()
+                            if res:
+                                combined_html += "\n" + res
+                        except Exception:
+                            pass
+                except concurrent.futures.TimeoutError:
+                    pass
         except Exception:
             pass
 
         # 3. 提取即時資訊覆蓋
-        live_phone = self._extract_real_phone(combined_html)
+        live_phone = self._extract_real_phone(combined_html, area_prefix)
         if live_phone:
             details["phone"] = live_phone
 
