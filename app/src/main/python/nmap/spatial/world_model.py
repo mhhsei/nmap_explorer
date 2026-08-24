@@ -377,30 +377,40 @@ class WorldModel:
 
         return best_road, min_dist
 
-    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 80.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 120.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         【查詢半徑 radius_m 內的所有店家與地標】
-        作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的 POI 列表，並自動去重。
+        作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的完整 POI 列表。
+        精準依據座標去重，確保範圍內所有店家、連鎖分店與設施完整呈現。
         """
         results = []
         radius_deg = radius_m / 111139.0
         bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
-        seen_names = set()
+        seen_keys = set()
         category_lower = category.lower() if category else None
 
         with self.rtree_lock:
             for item in self.poi_rtree.intersection(bounds, objects=True):
                 poi = item.object
+                poi_name = poi.name or poi.tags.get("legal_name") or poi.tags.get("brand") or poi.category
+                if not poi_name:
+                    continue
+
                 if category_lower:
-                    if category_lower not in poi.category.lower() and category_lower not in poi.name.lower():
+                    if category_lower not in poi.category.lower() and category_lower not in poi_name.lower():
                         continue
-                if poi.name and poi.name in seen_names:
+
+                # 依據名稱與座標 (精確度約 11 公尺) 去重，防止同一實體重複，但保留不同分店與不同地點
+                loc_key = (poi_name, round(poi.lat, 4), round(poi.lon, 4))
+                if loc_key in seen_keys:
                     continue
 
                 rel = poi.calculate_relative(lat, lon, heading_deg)
                 if rel["distance_m"] <= radius_m:
-                    if poi.name:
-                        seen_names.add(poi.name)
+                    seen_keys.add(loc_key)
+                    # 確保返回字典包含完整屬性
+                    if not rel.get("name"):
+                        rel["name"] = poi_name
                     results.append(rel)
 
         results.sort(key=lambda x: x["distance_m"])

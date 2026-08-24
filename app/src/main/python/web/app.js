@@ -1190,15 +1190,17 @@ class NmapWebApp {
       if (!hoursDisplay && isLoading) {
         hoursDisplay = `<span style="color:#94a3b8;">⏳ 正在連線查詢今日即時狀態...</span>`;
       } else if (!hoursDisplay) {
-        hoursDisplay = "營業中";
+        hoursDisplay = "營業中（依現場實際狀況為準）";
       }
       infoRows.push(`<div><strong>⏰ 營業時間：</strong><span style="color:#2dd4bf;font-weight:bold;">${hoursDisplay}</span></div>`);
 
-      const wheelchair = merged.wheelchair || (merged.floor === "1F" ? "♿ 具備 1 樓平整入口" : "無障礙狀態未知");
+      const wheelchair = merged.wheelchair || (merged.floor === "1F" ? "♿ 具備 1 樓平整入口 (地面層)" : "無障礙狀態未知");
       infoRows.push(`<div><strong>♿ 無障礙：</strong><span style="color:#38bdf8;">${wheelchair}</span></div>`);
 
       if (merged.phone) {
         infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${merged.phone} (點擊撥打)</a></div>`);
+      } else if (!isLoading) {
+        infoRows.push(`<div><strong>📞 電話：</strong><span style="color:#94a3b8;">無登記公開市話（可直接依門牌或導航前往）</span></div>`);
       }
 
       if (merged.rating) {
