@@ -1102,13 +1102,31 @@ class NmapWebApp {
     title.textContent = poi.name;
     const cat = this.translateCategory(poi.category);
     const wheelchair = poi.wheelchair === "yes" ? "♿ 具備無障礙通行" : (poi.wheelchair === "no" ? "⚠️ 無無障礙設施" : "無障礙狀態未知");
+    const floorStr = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : " (1樓/地面層)";
     
     let infoRows = [
+      `<div><strong>🏪 招牌店名：</strong>${poi.name}</div>`,
       `<div><strong>📍 類別：</strong>${cat}</div>`,
       `<div><strong>🧭 方位：</strong>${poi.clock_position || '正前方'} (${poi.relative_direction || '前方'})</div>`,
-      `<div><strong>📏 距離：</strong>約 ${poi.distance_m} 公尺 (座標: ${poi.lat.toFixed(5)}, ${poi.lon.toFixed(5)})</div>`,
-      `<div><strong>♿ 無障礙：</strong>${wheelchair}</div>`
+      `<div><strong>📏 距離：</strong>約 ${poi.distance_m} 公尺 (座標: ${poi.lat.toFixed(5)}, ${poi.lon.toFixed(5)})</div>`
     ];
+
+    if (poi.legal_name && poi.legal_name !== poi.name) {
+      infoRows.push(`<div><strong>🏢 登記名稱：</strong>${poi.legal_name}</div>`);
+    }
+    if (poi.tax_id) {
+      infoRows.push(`<div><strong>🔢 統一編號：</strong><span style="color:#38bdf8; font-weight:bold;">${poi.tax_id}</span></div>`);
+    }
+    if (poi.address) {
+      infoRows.push(`<div><strong>📍 門牌地址：</strong>${poi.address}${floorStr}</div>`);
+    }
+    if (poi.business_desc) {
+      infoRows.push(`<div><strong>📋 營業項目：</strong>${poi.business_desc}</div>`);
+    }
+    if (poi.establishment_date) {
+      infoRows.push(`<div><strong>📅 設立日期：</strong>${poi.establishment_date} (核准設立，營業中)</div>`);
+    }
+    infoRows.push(`<div><strong>♿ 無障礙：</strong>${wheelchair}</div>`);
 
     if (poi.opening_hours) {
       infoRows.push(`<div><strong>⏰ 營業時間：</strong>${poi.opening_hours}</div>`);
@@ -1125,7 +1143,8 @@ class NmapWebApp {
     body.focus();
 
     if (this.audio) this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.1);
-    this.updateLiveLog(`開啟地標詳情：${poi.name}，距離 ${poi.distance_m} 公尺，位於 ${poi.clock_position}`, false, true);
+    const spokenFloor = (poi.floor && poi.floor !== "1F") ? `，位於${poi.floor}` : "";
+    this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺，位於 ${poi.clock_position}`, false, true);
   }
 
   closePoiModal() {
@@ -1386,9 +1405,10 @@ class NmapWebApp {
             const z = -distAudio * Math.cos(rad);
             this.audio.playSpatialTone(660, 'triangle', x, 0, z, 0.15);
 
-            // 省話模式格式：[店名]，[方位] [距離]m (例如：「全家便利商店，左前方 8公尺」)
+            // 省話模式格式：[店名] (樓層)，[方位 距離]m (例如：「全家便利商店，左前方 8公尺」或「祐安牙醫 (2樓)，右前方 12公尺」)
+            const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
             const dirText = poi.relative_direction ? `，${poi.relative_direction} ${Math.round(poi.distance_m)}公尺` : "";
-            const msg = `${cleanedName}${dirText}`;
+            const msg = `${cleanedName}${floorTag}${dirText}`;
             this.updateLiveLog(msg, false, true);
             this.lastSpeechTime = now;
             break; // 每次只報讀最急需的一間，避免語音塞車

@@ -19,6 +19,7 @@ __pycache__/
 
 *.ipa
 ios_build_output/
-database_assets/
 *.db
+*.db-shm
+*.db-wal
 

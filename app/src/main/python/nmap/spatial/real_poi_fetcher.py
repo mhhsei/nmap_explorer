@@ -178,7 +178,7 @@ class RealPoiFetcher:
 
     def _fetch_overture_local(self, lat: float, lon: float, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
-        從我們在地端建置的 Overture Maps 資料庫 (SQLite) 瞬間拉取大量真實店家。
+        從我們在地端建置的 Unified Places 資料庫 (SQLite) 瞬間拉取大量真實店家與商工稅籍資訊。
         利用持久化連線與 Memory-Mapped I/O，查詢速度可達 2 毫秒內。
         """
         results = []
@@ -197,29 +197,99 @@ class RealPoiFetcher:
             min_lon = lon - radius_deg
             max_lon = lon + radius_deg
             
-            c.execute('''
-                SELECT id, name, category, lat, lon 
-                FROM overture_places 
-                WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
-            ''', (min_lat, max_lat, min_lon, max_lon))
-            
-            rows = c.fetchall()
-            for r in rows:
-                c_name = self.clean_poi_name(r[1])
-                if not c_name:
-                    continue
-                results.append({
-                    "id": f"overture_{r[0]}",
-                    "name": c_name,
-                    "category": r[2] or "poi",
-                    "lat": float(r[3]),
-                    "lon": float(r[4]),
-                    "tags": {
-                        "amenity": r[2] or "place",
+            # 優先查詢具備完整商工稅籍結構的 places 資料表
+            try:
+                c.execute('''
+                    SELECT id, name, legal_name, brand, category, category_code, business_desc, tax_id, address, floor, establishment_date, status, lat, lon, phone, opening_hours, wheelchair, source 
+                    FROM places 
+                    WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                ''', (min_lat, max_lat, min_lon, max_lon))
+                
+                rows = c.fetchall()
+                for r in rows:
+                    c_name = self.clean_poi_name(r[1])
+                    if not c_name:
+                        continue
+                    legal_name = r[2] or c_name
+                    brand = r[3] or ""
+                    cat = r[4] or "poi"
+                    b_desc = r[6] or ""
+                    tax_id = r[7] or ""
+                    addr = r[8] or ""
+                    floor = r[9] or "1F"
+                    est_date = r[10] or ""
+                    status = r[11] or "核准設立"
+                    lat_val = float(r[12])
+                    lon_val = float(r[13])
+                    phone = r[14] or ""
+                    opening_hours = r[15] or ""
+                    wheelchair = r[16] or ""
+                    source = r[17] or "overture"
+                    
+                    results.append({
+                        "id": f"places_{r[0]}",
                         "name": c_name,
-                        "source": "overture"
-                    }
-                })
+                        "legal_name": legal_name,
+                        "brand": brand,
+                        "category": cat,
+                        "category_code": r[5] or "",
+                        "business_desc": b_desc,
+                        "tax_id": tax_id,
+                        "address": addr,
+                        "floor": floor,
+                        "establishment_date": est_date,
+                        "status": status,
+                        "lat": lat_val,
+                        "lon": lon_val,
+                        "phone": phone,
+                        "opening_hours": opening_hours,
+                        "wheelchair": wheelchair,
+                        "tags": {
+                            "amenity": cat,
+                            "name": c_name,
+                            "legal_name": legal_name,
+                            "brand": brand,
+                            "tax_id": tax_id,
+                            "address": addr,
+                            "floor": floor,
+                            "business_desc": b_desc,
+                            "establishment_date": est_date,
+                            "status": status,
+                            "phone": phone,
+                            "opening_hours": opening_hours,
+                            "wheelchair": wheelchair,
+                            "source": source
+                        }
+                    })
+                return results
+            except sqlite3.OperationalError:
+                # 兼容舊版 overture_places 表結構
+                c.execute('''
+                    SELECT id, name, category, lat, lon 
+                    FROM overture_places 
+                    WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                ''', (min_lat, max_lat, min_lon, max_lon))
+                
+                rows = c.fetchall()
+                for r in rows:
+                    c_name = self.clean_poi_name(r[1])
+                    if not c_name:
+                        continue
+                    results.append({
+                        "id": f"overture_{r[0]}",
+                        "name": c_name,
+                        "legal_name": c_name,
+                        "category": r[2] or "poi",
+                        "lat": float(r[3]),
+                        "lon": float(r[4]),
+                        "floor": "1F",
+                        "tags": {
+                            "amenity": r[2] or "place",
+                            "name": c_name,
+                            "floor": "1F",
+                            "source": "overture"
+                        }
+                    })
         except Exception as e:
             print(f"Overture DB error: {e}")
             
@@ -245,7 +315,7 @@ class RealPoiFetcher:
             min_lon, max_lon = lon - radius_deg, lon + radius_deg
             
             c.execute('''
-                SELECT id, name, category, lat, lon, source 
+                SELECT id, name, category, lat, lon, address, source 
                 FROM gov_places 
                 WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
             ''', (min_lat, max_lat, min_lon, max_lon))
@@ -258,13 +328,18 @@ class RealPoiFetcher:
                 results.append({
                     "id": f"gov_{r[0]}",
                     "name": c_name,
+                    "legal_name": c_name,
                     "category": r[2],
                     "lat": float(r[3]),
                     "lon": float(r[4]),
+                    "address": r[5] or "",
+                    "floor": "1F",
                     "tags": {
                         "amenity": r[2],
                         "name": c_name,
-                        "source": r[5] or "gov"
+                        "address": r[5] or "",
+                        "floor": "1F",
+                        "source": r[6] or "gov"
                     }
                 })
 
