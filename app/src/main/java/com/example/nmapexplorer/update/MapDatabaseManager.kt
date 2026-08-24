@@ -27,21 +27,40 @@ data class DatabaseStatus(
     val sizeFormattedMb: String,
     val path: String,
     val lastModified: Long,
-    val remoteVersion: String = "1.0",
+    val remoteVersion: String = "v1.0.3",
     val downloadUrl: String = ""
+)
+
+data class DatabaseCheckResult(
+    val isUpToDate: Boolean,
+    val localVersion: String,
+    val remoteVersion: String,
+    val downloadUrl: String,
+    val sizeFormattedMb: String,
+    val message: String
 )
 
 class MapDatabaseManager(private val context: Context) {
 
     private val tag = "MapDatabaseManager"
+    private val prefs by lazy { context.getSharedPreferences("nmap_prefs", Context.MODE_PRIVATE) }
 
     companion object {
         const val DB_FILENAME = "overture_places.db"
         const val DEFAULT_REPO_OWNER = "mhhsei"
         const val DEFAULT_REPO_NAME = "nmap_explorer"
-        const val FALLBACK_DB_URL = "https://github.com/mhhsei/nmap_explorer/releases/download/v1.0.0/overture_places.db"
+        const val CURRENT_DEFAULT_VERSION = "v1.0.3"
+        const val FALLBACK_DB_URL = "https://github.com/mhhsei/nmap_explorer/releases/download/v1.0.3/overture_places.db.zip"
         private const val CONNECT_TIMEOUT_MS = 10000
         private const val READ_TIMEOUT_MS = 30000
+    }
+
+    fun getLocalDbVersion(): String {
+        return prefs.getString("nmap_db_version", CURRENT_DEFAULT_VERSION) ?: CURRENT_DEFAULT_VERSION
+    }
+
+    fun setLocalDbVersion(version: String) {
+        prefs.edit().putString("nmap_db_version", version).apply()
     }
 
     /**
@@ -78,15 +97,19 @@ class MapDatabaseManager(private val context: Context) {
             sizeFormattedMb = formattedMb,
             path = file.absolutePath,
             lastModified = if (exists) file.lastModified() else 0L,
-            remoteVersion = "1.0",
+            remoteVersion = getLocalDbVersion(),
             downloadUrl = FALLBACK_DB_URL
         )
     }
 
     /**
-     * 向 GitHub Releases 查詢最新地圖資料庫下載連結
+     * 【智慧比對 GitHub Releases 是否有新版離線圖資】
+     * 作用：若本地資料庫已是最新版，直接回傳 isUpToDate = true 避免重複耗費流量下載；若有新版則抓取最新版本。
      */
-    suspend fun fetchLatestDatabaseUrl(): String = withContext(Dispatchers.IO) {
+    suspend fun checkDatabaseUpdate(): DatabaseCheckResult = withContext(Dispatchers.IO) {
+        val status = getDatabaseStatus()
+        val localVer = getLocalDbVersion()
+
         try {
             val apiUrl = "https://api.github.com/repos/$DEFAULT_REPO_OWNER/$DEFAULT_REPO_NAME/releases"
             val url = URL(apiUrl)
@@ -100,25 +123,53 @@ class MapDatabaseManager(private val context: Context) {
             if (conn.responseCode == HttpURLConnection.HTTP_OK) {
                 val jsonStr = conn.inputStream.bufferedReader().use { it.readText() }
                 val releasesArray = org.json.JSONArray(jsonStr)
-                for (i in 0 until releasesArray.length()) {
-                    val release = releasesArray.getJSONObject(i)
-                    val assets = release.optJSONArray("assets") ?: continue
-                    for (j in 0 until assets.length()) {
-                        val asset = assets.getJSONObject(j)
-                        val name = asset.optString("name", "")
-                        if (name.equals(DB_FILENAME, ignoreCase = true) || name.startsWith("overture_places", ignoreCase = true)) {
-                            val downloadUrl = asset.optString("browser_download_url", "")
-                            if (downloadUrl.isNotEmpty()) {
-                                return@withContext downloadUrl
+                if (releasesArray.length() > 0) {
+                    val latestRelease = releasesArray.getJSONObject(0)
+                    val remoteTag = latestRelease.optString("tag_name", CURRENT_DEFAULT_VERSION)
+                    val assets = latestRelease.optJSONArray("assets")
+                    var downloadUrl = ""
+                    if (assets != null) {
+                        for (j in 0 until assets.length()) {
+                            val asset = assets.getJSONObject(j)
+                            val name = asset.optString("name", "")
+                            if (name.equals(DB_FILENAME, ignoreCase = true) || name.startsWith("overture_places", ignoreCase = true)) {
+                                downloadUrl = asset.optString("browser_download_url", "")
+                                if (downloadUrl.isNotEmpty()) break
                             }
                         }
                     }
+
+                    val isUpToDate = status.exists && (localVer >= remoteTag || remoteTag.isEmpty())
+                    return@withContext DatabaseCheckResult(
+                        isUpToDate = isUpToDate,
+                        localVersion = localVer,
+                        remoteVersion = remoteTag,
+                        downloadUrl = downloadUrl.ifEmpty { FALLBACK_DB_URL },
+                        sizeFormattedMb = status.sizeFormattedMb,
+                        message = if (isUpToDate) "目前已是最新版本" else "發現新版圖資資料庫 ($remoteTag)"
+                    )
                 }
             }
         } catch (e: Exception) {
-            Log.w(tag, "Failed to query remote releases for db asset, using fallback", e)
+            Log.w(tag, "Failed to check remote db release", e)
         }
-        FALLBACK_DB_URL
+
+        DatabaseCheckResult(
+            isUpToDate = status.exists,
+            localVersion = localVer,
+            remoteVersion = localVer,
+            downloadUrl = FALLBACK_DB_URL,
+            sizeFormattedMb = status.sizeFormattedMb,
+            message = if (status.exists) "目前已是最新版本" else "尚未下載離線資料庫"
+        )
+    }
+
+    /**
+     * 向 GitHub Releases 查詢最新地圖資料庫下載連結
+     */
+    suspend fun fetchLatestDatabaseUrl(): String = withContext(Dispatchers.IO) {
+        val check = checkDatabaseUpdate()
+        check.downloadUrl
     }
 
     /**

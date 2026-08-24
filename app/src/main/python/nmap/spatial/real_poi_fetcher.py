@@ -176,6 +176,24 @@ class RealPoiFetcher:
         
         return name.strip() or raw_name.strip()
 
+    @staticmethod
+    def is_geographically_valid(name: str, lat: float, lon: float) -> bool:
+        """
+        防禦性地理邊界檢驗：防止圖資開源社群錯誤標註或假節點（例如將台中火車站標在淡水）。
+        """
+        if not name or lat is None or lon is None:
+            return True
+        if any(k in name for k in ['站', '車站', '高鐵', '捷運', '轉運站', '棒球場', '公園']):
+            if ('台中' in name or '臺中' in name) and (lat > 24.5 or lat < 23.9):
+                return False
+            if ('高雄' in name or '左營' in name) and (lat > 23.4 or lat < 22.3):
+                return False
+            if ('台南' in name or '臺南' in name) and (lat > 23.5 or lat < 22.8):
+                return False
+            if ('台北' in name or '臺北' in name) and (lat < 24.8):
+                return False
+        return True
+
     def _fetch_overture_local(self, lat: float, lon: float, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
         從我們在地端建置的 Unified Places 資料庫 (SQLite) 瞬間拉取大量真實店家與商工稅籍資訊。
@@ -209,6 +227,10 @@ class RealPoiFetcher:
                 for r in rows:
                     c_name = self.clean_poi_name(r[1])
                     if not c_name:
+                        continue
+                    lat_val = float(r[12])
+                    lon_val = float(r[13])
+                    if not self.is_geographically_valid(c_name, lat_val, lon_val):
                         continue
                     legal_name = r[2] or c_name
                     brand = r[3] or ""
@@ -275,13 +297,17 @@ class RealPoiFetcher:
                     c_name = self.clean_poi_name(r[1])
                     if not c_name:
                         continue
+                    lat_v = float(r[3])
+                    lon_v = float(r[4])
+                    if not self.is_geographically_valid(c_name, lat_v, lon_v):
+                        continue
                     results.append({
                         "id": f"overture_{r[0]}",
                         "name": c_name,
                         "legal_name": c_name,
                         "category": r[2] or "poi",
-                        "lat": float(r[3]),
-                        "lon": float(r[4]),
+                        "lat": lat_v,
+                        "lon": lon_v,
                         "floor": "1F",
                         "tags": {
                             "amenity": r[2] or "place",
@@ -324,6 +350,10 @@ class RealPoiFetcher:
             for r in rows:
                 c_name = self.clean_poi_name(r[1])
                 if not c_name:
+                    continue
+                lat_v = float(r[3])
+                lon_v = float(r[4])
+                if not self.is_geographically_valid(c_name, lat_v, lon_v):
                     continue
                 results.append({
                     "id": f"gov_{r[0]}",

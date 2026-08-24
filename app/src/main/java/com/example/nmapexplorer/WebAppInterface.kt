@@ -598,17 +598,30 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     }
 
     /**
-     * 【獨立下載全台離線店家資料庫】
+     * 【獨立下載或更新全台離線店家資料庫】
      */
     @JavascriptInterface
     fun downloadOfflineDatabase() {
         CoroutineScope(Dispatchers.Main).launch {
             try {
-                speak("已開始在背景下載全台離線店家資料庫，請稍候...", interrupt = true)
+                speak("正在檢查離線圖資版本...", interrupt = true)
+                val check = dbManager.checkDatabaseUpdate()
+
+                if (check.isUpToDate) {
+                    val msg = "目前離線資料庫（${check.sizeFormattedMb}）已是最新版本，無須重複下載。"
+                    speak(msg, interrupt = true)
+                    webView?.evaluateJavascript(
+                        "if (window.onDatabaseAlreadyLatest) window.onDatabaseAlreadyLatest('${check.sizeFormattedMb}');",
+                        null
+                    )
+                    return@launch
+                }
+
+                speak("發現新版離線圖資（${check.remoteVersion}），已開始在背景下載更新，請稍候...", interrupt = true)
                 webView?.evaluateJavascript("if (window.onDatabaseDownloadStart) window.onDatabaseDownloadStart();", null)
 
                 var lastSpoken = 0
-                val result = dbManager.downloadDatabase { percent ->
+                val result = dbManager.downloadDatabase(check.downloadUrl) { percent ->
                     webView?.evaluateJavascript(
                         "if (window.onDatabaseDownloadProgress) window.onDatabaseDownloadProgress($percent);",
                         null
@@ -620,8 +633,9 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 }
 
                 result.onSuccess { file ->
+                    dbManager.setLocalDbVersion(check.remoteVersion)
                     val status = dbManager.getDatabaseStatus()
-                    speak("全台離線店家資料庫下載完成（${status.sizeFormattedMb}），離線店家快速檢索已就緒！", interrupt = true)
+                    speak("全台離線店家資料庫已更新至最新版（${status.sizeFormattedMb}），離線店家快速檢索已就緒！", interrupt = true)
                     webView?.evaluateJavascript(
                         "if (window.onDatabaseDownloadComplete) window.onDatabaseDownloadComplete('${status.sizeFormattedMb}');",
                         null
@@ -635,6 +649,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 }
             } catch (e: Exception) {
                 Log.e(tag, "Download database failed", e)
+                speak("檢查或下載離線圖資時發生異常", interrupt = true)
             }
         }
     }

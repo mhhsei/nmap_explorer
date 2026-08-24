@@ -2266,13 +2266,26 @@ class NmapWebApp {
     }
 
     if (dbExists) {
-      body.innerHTML = `<p style="color:#2dd4bf;font-weight:bold;">✅ 全台 190 萬筆店家離線圖資已就緒！</p><p>本地圖資大小：<strong>${dbSize}</strong></p><p style="color:#cbd5e1;font-size:0.95em;">您可以在無網路環境下享受 0.01 秒瞬間檢索周遭所有生活地標與店家。</p>`;
+      body.innerHTML = `
+        <p style="color:#2dd4bf;font-weight:bold;font-size:1.05em;">✅ 全台 193 萬店家與 171 萬營業稅籍整合資料庫已就緒！</p>
+        <p style="margin:6px 0;"><strong>資料庫版本：</strong>商工稅籍整合版 (v1.0.3)</p>
+        <p style="margin:6px 0;"><strong>本地檔案大小：</strong><strong>${dbSize}</strong></p>
+        <p style="color:#cbd5e1;font-size:0.95em;line-height:1.5;">
+          📍 涵蓋範圍：全台 22 縣市實體店家、門牌地址、樓層標籤、統一編號與詳細營業項目。<br>
+          ⚡ 運作狀態：離線極速 0.002 秒檢索，無網路環境 100% 完整可用。
+        </p>
+      `;
       if (delBtn) delBtn.style.display = "block";
-      if (dlBtn) dlBtn.innerText = "重新下載/更新圖資";
+      if (dlBtn) dlBtn.innerText = "檢查更新 / 下載最新圖資";
     } else {
-      body.innerHTML = `<p style="color:#fbbf24;font-weight:bold;">⚠️ 尚未下載全台離線店家圖資</p><p style="color:#cbd5e1;font-size:0.95em;">目前正在使用線上即時查詢（Overpass/Nominatim）。建議在 Wi-Fi 環境下載全台離線圖資包（約 220 MB），下載後可永久離線極速檢索。</p>`;
+      body.innerHTML = `
+        <p style="color:#fbbf24;font-weight:bold;font-size:1.05em;">⚠️ 尚未下載全台離線店家與稅籍圖資</p>
+        <p style="color:#cbd5e1;font-size:0.95em;line-height:1.5;">
+          目前正在使用線上即時查詢。建議在 Wi-Fi 環境下載全台商工稅籍整合圖資包（壓縮檔約 168 MB），下載後可享受全台 193 萬店家與 171 萬稅籍資料之永久離線極速檢索。
+        </p>
+      `;
       if (delBtn) delBtn.style.display = "none";
-      if (dlBtn) dlBtn.innerText = "立即下載離線圖資 (220 MB)";
+      if (dlBtn) dlBtn.innerText = "立即下載離線圖資包 (168 MB)";
     }
 
     modal.style.display = "flex";
@@ -2281,9 +2294,9 @@ class NmapWebApp {
     // 聚焦與無障礙報讀
     if (window.AndroidBridge && window.AndroidBridge.speak) {
       if (dbExists) {
-        window.AndroidBridge.speak(`離線圖資已就緒，大小 ${dbSize}。`, false);
+        window.AndroidBridge.speak(`離線商工稅籍資料庫已就緒，大小 ${dbSize}。版本 v1.0.3。`, false);
       } else {
-        window.AndroidBridge.speak("離線圖資管理已開啟。尚未下載全台離線圖資，可點選立即下載離線圖資。", false);
+        window.AndroidBridge.speak("離線圖資管理已開啟。尚未下載全台離線圖資，可點選立即下載離線圖資包。", false);
       }
     }
     setTimeout(() => {
@@ -2297,7 +2310,7 @@ class NmapWebApp {
         if (window.AndroidBridge && window.AndroidBridge.downloadOfflineDatabase) {
           window.AndroidBridge.downloadOfflineDatabase();
         } else {
-          window.open("https://github.com/mhhsei/nmap_explorer/releases/download/v1.0.0/overture_places.db", "_blank");
+          window.open("https://github.com/mhhsei/nmap_explorer/releases/latest/download/overture_places.db.zip", "_blank");
         }
       };
     }
@@ -2488,6 +2501,15 @@ window.onDatabaseDownloadComplete = (dbSize) => {
   }
 };
 
+
+window.onDatabaseAlreadyLatest = (dbSize) => {
+  const progContainer = document.getElementById("map-db-progress-container");
+  if (progContainer) progContainer.style.display = "none";
+  if (window.app) {
+    window.app.updateLiveLog(`✅ 目前全台離線資料庫（${dbSize}）已是最新版本，無須重複下載。`, true, true);
+    window.app.showMapDatabaseModal();
+  }
+};
 
 window.onDatabaseDownloadError = (errMsg) => {
   const pText = document.getElementById("map-db-progress-text");
