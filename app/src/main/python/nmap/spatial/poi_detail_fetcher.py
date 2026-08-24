@@ -187,34 +187,56 @@ class PoiDetailFetcher:
             "Accept-Language": "zh-TW,zh;q=0.9"
         }
 
+        try:
+            import ssl
+            ssl_ctx = ssl._create_unverified_context()
+        except Exception:
+            ssl_ctx = None
+
         def fetch_yahoo():
             url = f"https://tw.search.yahoo.com/search?p={encoded}"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=1.0) as r:
-                return r.read().decode('utf-8', errors='ignore')
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                kwargs = {"timeout": 1.2}
+                if ssl_ctx:
+                    kwargs["context"] = ssl_ctx
+                with urllib.request.urlopen(req, **kwargs) as r:
+                    html = r.read().decode('utf-8', errors='ignore')
+                    return html
+            except Exception as e:
+                print(f"[FETCH YAHOO ERROR] {e}")
+                return ""
 
         def fetch_bing():
             url = f"https://www.bing.com/search?q={encoded}&setlang=zh-Hant-TW"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=1.0) as r:
-                return r.read().decode('utf-8', errors='ignore')
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                kwargs = {"timeout": 1.2}
+                if ssl_ctx:
+                    kwargs["context"] = ssl_ctx
+                with urllib.request.urlopen(req, **kwargs) as r:
+                    html = r.read().decode('utf-8', errors='ignore')
+                    return html
+            except Exception as e:
+                print(f"[FETCH BING ERROR] {e}")
+                return ""
 
         combined_html = ""
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [executor.submit(fetch_yahoo), executor.submit(fetch_bing)]
                 try:
-                    for f in concurrent.futures.as_completed(futures, timeout=1.2):
+                    for f in concurrent.futures.as_completed(futures, timeout=1.5):
                         try:
                             res = f.result()
                             if res:
                                 combined_html += "\n" + res
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[FUTURE RESULT ERROR] {e}")
                 except concurrent.futures.TimeoutError:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[EXECUTOR ERROR] {e}")
 
         # 3. 提取即時資訊覆蓋
         live_phone = self._extract_real_phone(combined_html, area_prefix)

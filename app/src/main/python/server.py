@@ -138,11 +138,10 @@ def get_status():
     return json_response(build_status_dict(include_full_report=True, heading_deg=h_val, lat=lat_val, lon=lon_val))
 
 
-@app.route("/api/poi_detail", method=["GET", "POST"])
-def poi_detail():
+@app.route("/api/poi_detail_legacy", method=["GET", "POST"])
+def poi_detail_legacy():
     """
-    【取得單一店家/地標的詳細資訊】
-    作用：當視障者點擊某個地標時，查詢該店家的電話、營業時間、無障礙設施標籤與餐飲類別。
+    【舊版地標查詢端點】
     """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
@@ -668,16 +667,38 @@ def get_poi_detail():
     """
     【免 API Key 即時獲取地標詳細營業時間、電話與無障礙設施】
     """
-    name = request.params.get("name", "")
-    lat_str = request.params.get("lat")
-    lon_str = request.params.get("lon")
-    address = request.params.get("address", "")
-    floor = request.params.get("floor", "1F")
+    import urllib.parse
+    
+    # 支援 JSON POST, Form, 以及從原始 QUERY_STRING 以 UTF-8 解析，杜絕任何編碼亂碼
+    qs_data = urllib.parse.parse_qs(request.environ.get("QUERY_STRING", ""), encoding="utf-8")
+    
+    name = (request.json or {}).get("name") if request.json else None
+    if not name:
+        name = qs_data.get("name", [""])[0] if "name" in qs_data else request.params.get("name", "")
+    
+    address = (request.json or {}).get("address") if request.json else None
+    if not address:
+        address = qs_data.get("address", [""])[0] if "address" in qs_data else request.params.get("address", "")
+        
+    floor = (request.json or {}).get("floor") if request.json else None
+    if not floor:
+        floor = qs_data.get("floor", ["1F"])[0] if "floor" in qs_data else request.params.get("floor", "1F")
+        
+    lat_str = (request.json or {}).get("lat") if request.json else None
+    if not lat_str:
+        lat_str = qs_data.get("lat", [""])[0] if "lat" in qs_data else request.params.get("lat")
+        
+    lon_str = (request.json or {}).get("lon") if request.json else None
+    if not lon_str:
+        lon_str = qs_data.get("lon", [""])[0] if "lon" in qs_data else request.params.get("lon")
 
-    lat = float(lat_str) if lat_str else None
-    lon = float(lon_str) if lon_str else None
+    lat = float(lat_str) if (lat_str and str(lat_str).strip() != "") else None
+    lon = float(lon_str) if (lon_str and str(lon_str).strip() != "") else None
 
+    print(f"[POI DETAIL FETCH] Decoded params: Name='{name}', Addr='{address}', Lat={lat}, Lon={lon}")
     details = poi_detail_fetcher.fetch_poi_details(name, lat, lon, address, floor)
+    print(f"[POI DETAIL RESULT] '{name}' -> Phone='{details.get('phone')}', Hours='{details.get('opening_hours')}', Rating='{details.get('rating')}'")
+
     return json_response({
         "success": True,
         "details": details
