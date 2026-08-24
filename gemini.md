@@ -26,9 +26,9 @@
 
 ---
 
-## 2. 雙平台技術架構與目錄規範
+## 2. 系統技術架構與目錄規範
 
-專案採用雙平台（Android / iOS）離線優先混合架構：
+專案採用 Android 離線優先架構（原生 Kotlin + Chaquopy 嵌入式 Python 後端）：
 
 ```
 C:/ai pro/nmap_apk/
@@ -44,12 +44,8 @@ C:/ai pro/nmap_apk/
 │       ├── data/                       # 離線資料庫 (overture_places.db, gov_places.db)
 │       ├── nmap/                       # 核心演算法庫 (spatial, agent, accessibility)
 │       └── web/                        # 前端靜態資源 (HTML5/CSS/JS, Web Audio)
-├── ios/                                # iOS 原生專案
-│   ├── project.yml                     # XcodeGen 專案配置檔
-│   ├── README_IOS.md                   # iOS 雲端編譯與 Sideloadly 安裝指南
-│   └── NMapExplorer/                   # Swift 5.9 原生層 + WKWebView + 離線 DB
 ├── .github/workflows/
-│   └── build_ios.yml                   # GitHub Actions 免 Mac 雲端編譯工作流程
+│   └── build-and-release.yml           # GitHub Actions Android APK 自動編譯發布工作流程
 ├── DEVELOPMENT_LOG.md                  # 開發履歷與 Changelog 追蹤檔
 ├── nmap_android_plan.md                # 轉換計畫書與頂層架構設計
 └── gemini.md                           # 本開發守則
@@ -112,28 +108,16 @@ C:/ai pro/nmap_apk/
 
 ---
 
-## 6. iOS 版本開發與雲端編譯守則
-
-1. **免 Mac 雲端建置**：
-   - iOS 專案配置由 `ios/project.yml` 統一管理。
-   - 每次推動至 `main`/`master` 分支，由 GitHub Actions (`.github/workflows/build_ios.yml`) 自動執行 XcodeGen 編譯打包並輸出 [`NMapExplorer.ipa`](file:///C:/ai%20pro/nmap_apk/NMapExplorer.ipa)。
-2. **安裝與側載**：
-   - Windows 使用者透過 Sideloadly 搭配免費 Apple ID 自簽安裝，步驟詳見 [`ios/README_IOS.md`](file:///C:/ai%20pro/nmap_apk/ios/README_IOS.md)。
-3. **原生對齊**：
-   - iOS 原生層 (`LocationSensorBridge.swift`, `DatabaseManager.swift`) 必須與 Android 端的卡爾曼濾波、PDR 推算、3D 空間音效保持一致的空間計算邏輯。
-
----
-
-## 7. 維護流程與文件同步協議
+## 6. 維護流程與文件同步協議
 
 1. **更新日誌必填**：
    - 任何涉及核心演算法、後端 API 端點、前端手勢或原生橋接之變更，**完成後必須第一時間更新 [`DEVELOPMENT_LOG.md`](file:///C:/ai%20pro/nmap_apk/DEVELOPMENT_LOG.md)**。
 2. **驗證閉環**：
-   - 修改 Python 後端或 JS 前端後，需確保本地語法檢查無誤，並確認 Android 與 iOS 雙平台的 API 契約（API Contracts）無破壞性變更。
+   - 修改 Python 後端或 JS 前端後，需確保本地語法檢查無誤，並確認 Android 原生層與 Python 後端之間的 API 契約（API Contracts）無破壞性變更。
 
 ---
 
-## 8. 程式碼品質、白話註解與高可維護性規範 (Code Quality & Engineering Standards)
+## 7. 程式碼品質、白話註解與高可維護性規範 (Code Quality & Engineering Standards)
 
 為確保專案在長期迭代中易於維護、除錯與交接，所有開發者與 AI 必須嚴格遵循以下軟體工程準則：
 
