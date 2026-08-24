@@ -1094,6 +1094,9 @@ class NmapWebApp {
   showPoiDetail(poi) {
     if (!poi) return;
     this.activePoiTarget = poi;
+    this.isDetailModalOpen = true;
+    window.isDetailModalOpen = true;
+
     const modal = document.getElementById("poi-detail-modal");
     const title = document.getElementById("poi-modal-title");
     const body = document.getElementById("poi-modal-body");
@@ -1101,56 +1104,78 @@ class NmapWebApp {
 
     title.textContent = poi.name;
     const cat = this.translateCategory(poi.category);
-    const wheelchair = poi.wheelchair === "yes" ? "♿ 具備無障礙通行" : (poi.wheelchair === "no" ? "⚠️ 無無障礙設施" : "無障礙狀態未知");
     const floorStr = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : " (1樓/地面層)";
     
-    let infoRows = [
-      `<div><strong>🏪 招牌店名：</strong>${poi.name}</div>`,
-      `<div><strong>📍 類別：</strong>${cat}</div>`,
-      `<div><strong>🧭 方位：</strong>${poi.clock_position || '正前方'} (${poi.relative_direction || '前方'})</div>`,
-      `<div><strong>📏 距離：</strong>約 ${poi.distance_m} 公尺 (座標: ${poi.lat.toFixed(5)}, ${poi.lon.toFixed(5)})</div>`
-    ];
+    // 即時動態渲染函式
+    const renderModalContent = (richData = {}) => {
+      const merged = Object.assign({}, poi, richData);
+      let infoRows = [
+        `<div><strong>🏪 招牌店名：</strong>${merged.name}</div>`,
+        `<div><strong>📍 類別：</strong>${cat} ${merged.category_desc ? `(${merged.category_desc})` : ''}</div>`,
+        `<div><strong>🧭 方位：</strong>${merged.clock_position || '正前方'} (${merged.relative_direction || '前方'})</div>`,
+        `<div><strong>📏 距離：</strong>約 ${merged.distance_m} 公尺 (座標: ${merged.lat.toFixed(5)}, ${merged.lon.toFixed(5)})</div>`
+      ];
 
-    if (poi.legal_name && poi.legal_name !== poi.name) {
-      infoRows.push(`<div><strong>🏢 登記名稱：</strong>${poi.legal_name}</div>`);
-    }
-    if (poi.tax_id) {
-      infoRows.push(`<div><strong>🔢 統一編號：</strong><span style="color:#38bdf8; font-weight:bold;">${poi.tax_id}</span></div>`);
-    }
-    if (poi.address) {
-      infoRows.push(`<div><strong>📍 門牌地址：</strong>${poi.address}${floorStr}</div>`);
-    }
-    if (poi.business_desc) {
-      infoRows.push(`<div><strong>📋 營業項目：</strong>${poi.business_desc}</div>`);
-    }
-    if (poi.establishment_date) {
-      infoRows.push(`<div><strong>📅 設立日期：</strong>${poi.establishment_date} (核准設立，營業中)</div>`);
-    }
-    infoRows.push(`<div><strong>♿ 無障礙：</strong>${wheelchair}</div>`);
+      if (merged.legal_name && merged.legal_name !== merged.name) {
+        infoRows.push(`<div><strong>🏢 登記名稱：</strong>${merged.legal_name}</div>`);
+      }
+      if (merged.address) {
+        infoRows.push(`<div><strong>📍 門牌地址：</strong>${merged.address}${floorStr}</div>`);
+      }
+      if (merged.business_desc) {
+        infoRows.push(`<div><strong>📋 營業項目：</strong>${merged.business_desc}</div>`);
+      }
+      
+      const hours = merged.opening_hours || "營業中";
+      infoRows.push(`<div><strong>⏰ 營業時間：</strong><span style="color:#2dd4bf;font-weight:bold;">${hours}</span></div>`);
 
-    if (poi.opening_hours) {
-      infoRows.push(`<div><strong>⏰ 營業時間：</strong>${poi.opening_hours}</div>`);
-    }
-    if (poi.phone) {
-      infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${poi.phone}" style="color:#38bdf8; text-decoration:underline;">${poi.phone}</a></div>`);
-    }
-    if (poi.cuisine) {
-      infoRows.push(`<div><strong>🍽️ 料理風味：</strong>${poi.cuisine}</div>`);
-    }
+      const wheelchair = merged.wheelchair || (merged.floor === "1F" ? "♿ 具備 1 樓平整入口" : "無障礙狀態未知");
+      infoRows.push(`<div><strong>♿ 無障礙：</strong><span style="color:#38bdf8;">${wheelchair}</span></div>`);
 
-    body.innerHTML = infoRows.join("");
+      if (merged.phone) {
+        infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${merged.phone}</a></div>`);
+      }
+
+      body.innerHTML = infoRows.join("");
+    };
+
+    renderModalContent();
     modal.style.display = "flex";
     body.focus();
 
     if (this.audio) this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.1);
     const spokenFloor = (poi.floor && poi.floor !== "1F") ? `，位於${poi.floor}` : "";
-    this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺，位於 ${poi.clock_position}`, false, true);
+    this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺。背景播報已暫停。`, false, true);
+
+    // 非同步向後端獲取免費即時營業時間、電話與無障礙資訊
+    const encodedName = encodeURIComponent(poi.name || "");
+    const encodedAddr = encodeURIComponent(poi.address || "");
+    const floorParam = encodeURIComponent(poi.floor || "1F");
+    fetch(`/api/poi_detail?name=${encodedName}&lat=${poi.lat}&lon=${poi.lon}&address=${encodedAddr}&floor=${floorParam}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.details) {
+          renderModalContent(data.details);
+          const extraInfo = [];
+          if (data.details.opening_hours) extraInfo.push(data.details.opening_hours);
+          if (data.details.wheelchair && data.details.wheelchair !== "無障礙狀態未知") extraInfo.push(data.details.wheelchair);
+          if (data.details.phone) extraInfo.push(`電話 ${data.details.phone}`);
+          if (extraInfo.length > 0) {
+            this.updateLiveLog(`【${poi.name} 營業資訊】：${extraInfo.join("，")}`, false, true);
+          }
+        }
+      })
+      .catch(err => {
+        console.warn("Fetch POI detail fallback", err);
+      });
   }
 
   closePoiModal() {
+    this.isDetailModalOpen = false;
+    window.isDetailModalOpen = false;
     const modal = document.getElementById("poi-detail-modal");
     if (modal) modal.style.display = "none";
-    this.updateLiveLog("已關閉地標詳情對話框。", false, true);
+    this.updateLiveLog("已關閉地標詳情，恢復地圖即時播報。", false, true);
   }
 
   startBeaconToTarget() {
@@ -1367,7 +1392,7 @@ class NmapWebApp {
 
   // ========== 前進路徑走廊店家與路口到達即時導引 ==========
   checkProximityAlerts(data) {
-    if (!data || !data.is_loaded) return;
+    if (!data || !data.is_loaded || this.isDetailModalOpen || window.isDetailModalOpen) return;
     const now = Date.now();
 
     // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 2.0 ~ 18.0 公尺，側向 <= 14.0 公尺)
@@ -2743,6 +2768,11 @@ window.onHeadingUpdate = function(headingDegrees) {
                 window.app.audio.playSettledChime();
             }
             
+            // 若正開啟地標詳細資訊視窗，暫停轉向語音播報以避免打擾閱讀
+            if (window.isDetailModalOpen || (window.app && window.app.isDetailModalOpen)) {
+                return;
+            }
+
             // 轉動播報開關：僅當使用者開啟「轉動手機即時播報方位」時，才透過 Google 內建原生 TTS 發聲！
             // 絕不調用 TalkBack / announceForAccessibility，確保 TalkBack 在轉向時徹底靜音無干擾。
             if (settings.turnAnnounce) {

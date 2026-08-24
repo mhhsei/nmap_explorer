@@ -26,6 +26,7 @@ from nmap.spatial.street_view import StreetViewAnalyzer
 from nmap.spatial.geometry import bearing_to_cardinal
 from nmap.data.google_places import GooglePlacesClient
 from nmap.simulation.engine import SimulationEngine
+from nmap.spatial.poi_detail_fetcher import PoiDetailFetcher
 
 app = Bottle()
 agent = ExplorerAgent(enable_sound=False) # WebUI uses Web Audio API on frontend
@@ -34,6 +35,7 @@ reporter = NVDAReporter()
 street_analyzer = StreetViewAnalyzer()
 google_places = GooglePlacesClient()
 simulation = SimulationEngine()
+poi_detail_fetcher = PoiDetailFetcher()
 
 WEB_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -661,23 +663,24 @@ def refresh_pois():
     })
 
 
-@app.route("/api/db_status", method=["GET"])
-def db_status():
+@app.route("/api/poi_detail", method=["GET", "POST"])
+def get_poi_detail():
     """
-    【查詢本地圖資資料庫狀態】
+    【免 API Key 即時獲取地標詳細營業時間、電話與無障礙設施】
     """
-    db_path, _ = agent.world_model.poi_fetcher._resolve_db_paths()
-    exists = db_path is not None and os.path.exists(db_path)
-    size_mb = 0.0
-    if exists:
-        size_mb = round(os.path.getsize(db_path) / (1024.0 * 1024.0), 1)
+    name = request.params.get("name", "")
+    lat_str = request.params.get("lat")
+    lon_str = request.params.get("lon")
+    address = request.params.get("address", "")
+    floor = request.params.get("floor", "1F")
 
+    lat = float(lat_str) if lat_str else None
+    lon = float(lon_str) if lon_str else None
+
+    details = poi_detail_fetcher.fetch_poi_details(name, lat, lon, address, floor)
     return json_response({
         "success": True,
-        "has_database": exists,
-        "db_path": db_path or "",
-        "size_mb": size_mb,
-        "current_poi_count": len(agent.world_model.pois) if agent.is_loaded else 0
+        "details": details
     })
 
 
