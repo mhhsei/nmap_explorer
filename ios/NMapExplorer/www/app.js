@@ -1230,14 +1230,14 @@ class NmapWebApp {
         const rightVal = (doors.right || doors.right_side_estimate || "").trim();
         const concise = (doors.concise_door || "").trim();
         
-        if (leftVal && rightVal) {
-          doorStr = `，左側${leftVal}，右側${rightVal}`;
-        } else if (leftVal) {
-          doorStr = `，左側${leftVal}`;
-        } else if (rightVal) {
-          doorStr = `，右側${rightVal}`;
+        let doorParts = [];
+        if (leftVal) doorParts.push(`左側${leftVal}`);
+        if (rightVal) doorParts.push(`右側${rightVal}`);
+        
+        if (doorParts.length > 0) {
+          doorStr = doorParts.join("，");
         } else if (concise) {
-          doorStr = `，${concise}`;
+          doorStr = concise;
         } else {
           doorStr = "";
         }
@@ -1250,7 +1250,10 @@ class NmapWebApp {
         const exactDeg = Math.round(((headingDeg % 360.0) + 360.0) % 360.0);
         const gpsStr = `GPS座標：${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}`;
         
-        const txt = `走在【${street}】${doorStr}。面向${dirStr} (${exactDeg}°)。${gpsStr}。`;
+        const txt = doorStr 
+          ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。${gpsStr}。`
+          : `走在【${street}】。面向${dirStr} (${exactDeg}°)。${gpsStr}。`;
+
         
         this.audio.playSpatialTone(480, 'triangle', 0, 0, -0.8, 0.12);
         this.updateLiveLog(`【目前位置】\n${txt}`, false, true);
@@ -1291,25 +1294,50 @@ class NmapWebApp {
       });
   }
 
-  // ========== 接近感知播報 (店家 3~5m / 接近與通過路口 / 20s 靜默路名門牌) ==========
+  cleanPoiName(rawName) {
+    if (!rawName) return "";
+    let name = String(rawName).trim();
+    const seps = ['/', '|', '丨', '｜'];
+    for (const sep of seps) {
+      if (name.includes(sep)) {
+        const parts = name.split(sep);
+        if (parts[0].trim()) {
+          name = parts[0].trim();
+          break;
+        }
+      }
+    }
+    name = name.replace(/[（\(【\[].*?(推薦|官方|粉絲團|批發|教學|清粉刺|皮膚管理|體驗|專用|營業時間|用品|潤滑).*?[）\)】\]]/g, "");
+    name = name.replace(/[_xX×].*?(推薦|總監|設計師|老師|教學|美學).*/g, "");
+    return name.trim() || String(rawName).trim();
+  }
+
+  // ========== 接近感知播報 (店家 2.5~6m / 接近與通過路口 / 20s 靜默路名門牌) ==========
   checkProximityAlerts(data) {
     if (!data || !data.is_loaded) return;
     const now = Date.now();
 
-    // 1. 接近中的店家（以即時推算之方位與距離判斷，嚴格限制在 2.5 ~ 6.0 公尺前夕才播報）
+    // 1. 接近中的店家（視野錐 120° 過濾：限制前方 2.5 ~ 6.0 公尺，排除後方干擾店家）
     const realtimePois = this.getRealtimePois();
     if (realtimePois && realtimePois.length > 0) {
       const nearbyPassing = realtimePois.filter((p) => {
         const d = p.distance_m;
+        const relBearing = Math.abs(p.relative_bearing_deg || 0);
         const dir = p.relative_direction || "";
-        // 2.0 ~ 6.0 公尺（即將經過前夕）才朗讀，且非背後
-        return d <= 6.0 && d >= 0.5 && (!dir.includes("後方") || d <= 3.0);
+        
+        // 嚴格過濾：只允許前方 120 度扇形 (relBearing <= 60°) 或 4 公尺內近距離側向 (relBearing <= 90°)
+        const isForwardCone = relBearing <= 60 || (relBearing <= 90 && d <= 4.0);
+        const isRear = dir.includes("後方") || relBearing > 95;
+        
+        return d <= 6.0 && d >= 1.0 && isForwardCone && !isRear;
       });
 
       if (nearbyPassing.length > 0) {
         for (const poi of nearbyPassing) {
-          const lastTime = this.announcedPoiCooldown.get(poi.name) || 0;
+          const cleanedName = this.cleanPoiName(poi.name);
+          const lastTime = this.announcedPoiCooldown.get(cleanedName) || this.announcedPoiCooldown.get(poi.name) || 0;
           if (now - lastTime > 60000) { // 60秒冷卻，避免同店家重複疲勞轟炸
+            this.announcedPoiCooldown.set(cleanedName, now);
             this.announcedPoiCooldown.set(poi.name, now);
 
             // 精確 3D 空間立體聲：以相對夾角精確計算左右耳座標 (x, z)
@@ -1319,9 +1347,9 @@ class NmapWebApp {
             const z = -distAudio * Math.cos(rad);
             this.audio.playSpatialTone(660, 'triangle', x, 0, z, 0.15);
 
-            // 省話模式：極簡只讀店名 + 即時動態方位 (如：「全家便利商店，右側」或「星巴克，左前方」)
+            // 省話模式：極簡只讀店名 + 即時動態方位 (如：「全家便利商店，左前方」)
             const dirText = poi.relative_direction ? `，${poi.relative_direction}` : "";
-            const msg = `${poi.name}${dirText}`;
+            const msg = `${cleanedName}${dirText}`;
             this.updateLiveLog(msg, false, true);
             this.lastSpeechTime = now;
             return; // 每次只報讀最接近的一間，避免語音塞車
@@ -1330,15 +1358,15 @@ class NmapWebApp {
       }
     }
 
-    // 2. 接近路口提示 (15公尺以內) 與 過了路口立即播報走在哪條馬路
+    // 2. 接近路口提示 (12公尺以內) 與 過了路口/沿著道路前進播報 (20秒冷卻防抖)
     if (data.intersection) {
       const juncType = data.intersection.junction_type;
       const juncDist = data.intersection.junction_distance_m;
       
-      // A. 接近路口（<= 15m）
-      if (juncType && juncType !== "直行道路" && juncDist !== null && juncDist <= 15.0) {
+      // A. 接近路口（<= 12m）
+      if (juncType && juncType !== "直行道路" && juncDist !== null && juncDist <= 12.0) {
         this.passedIntersectionTracking = true;
-        if (now - this.lastIntersectionAlertTime > 45000) { // 45秒冷卻
+        if (now - this.lastIntersectionAlertTime > 30000) { // 30秒冷卻
           this.lastIntersectionAlertTime = now;
           this.audio.playSpatialTone(550, 'sine', 0, 0, -1, 0.2);
 
@@ -1351,48 +1379,70 @@ class NmapWebApp {
           const msg = `📍 接近【${juncType}】（約 ${Math.round(juncDist)} 公尺）${roads}。`;
           this.updateLiveLog(msg, false, true);
           this.lastSpeechTime = now;
+          this.lastRoadAnnouncementTime = now;
           return;
         }
       }
       
-      // B. 過了路口（從 <=15m 走到 >18m 或路口消失）-> 馬上告訴使用者走在哪條馬路上
-      if (this.passedIntersectionTracking && (juncDist === null || juncDist > 18.0)) {
+      // B. 過了路口（從 <=12m 走到 >20m 遲滯閾值，避免巷弄邊緣抖動）
+      if (this.passedIntersectionTracking && (juncDist === null || juncDist > 20.0)) {
         this.passedIntersectionTracking = false;
-        this.lastSpeechTime = now;
-        this.audio.playArrival();
-        const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
-        const msg = `過路口，走在【${currentRoad}】`;
-        this.updateLiveLog(msg, false, true);
-        return;
+        if (now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
+          this.lastRoadAnnouncementTime = now;
+          this.lastSpeechTime = now;
+          this.audio.playArrival();
+          const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
+          const msg = `沿著【${currentRoad}】前進`;
+          this.updateLiveLog(msg, false, true);
+          return;
+        }
       }
     }
 
-    // 3. 轉彎進入新路名即時播報
+    // 3. 轉彎進入新路名防抖播報 (至少連續 2 筆 GPS 穩定判定，且 20 秒冷卻)
     if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
       const st = data.road_info.street_name;
-      if (this.currentStreetName !== null && st !== this.currentStreetName) {
+      if (this.currentStreetName === null) {
         this.currentStreetName = st;
-        this.lastSpeechTime = now;
-        this.audio.playArrival();
-        this.updateLiveLog(`進入【${this.currentStreetName}】`, false, true);
-        return;
-      } else if (this.currentStreetName === null) {
-        this.currentStreetName = st;
+      } else if (st !== this.currentStreetName) {
+        if (this.consecutiveRoadCandidate === st) {
+          this.consecutiveRoadCount = (this.consecutiveRoadCount || 0) + 1;
+        } else {
+          this.consecutiveRoadCandidate = st;
+          this.consecutiveRoadCount = 1;
+        }
+
+        // 連續 2 次 GPS 確認換路，避免經過巷口瞬切抖動
+        if (this.consecutiveRoadCount >= 2 && (now - (this.lastRoadAnnouncementTime || 0) >= 20000)) {
+          this.currentStreetName = st;
+          this.consecutiveRoadCandidate = null;
+          this.consecutiveRoadCount = 0;
+          this.lastRoadAnnouncementTime = now;
+          this.lastSpeechTime = now;
+          this.audio.playArrival();
+          this.updateLiveLog(`進入【${this.currentStreetName}】`, false, true);
+          return;
+        }
+      } else {
+        this.consecutiveRoadCandidate = null;
+        this.consecutiveRoadCount = 0;
       }
     }
 
     // 4. 若都沒有店家 / 語音安靜超過 20 秒，精簡播報當前走在哪條路上與大約門牌號碼
-    if (now - this.lastSpeechTime >= 20000) {
+    if (now - this.lastSpeechTime >= 20000 && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
       if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
         this.lastSpeechTime = now;
+        this.lastRoadAnnouncementTime = now;
         const street = data.road_info.street_name;
         const door = (data.door_estimates && data.door_estimates.concise_door) ? data.door_estimates.concise_door : "";
-        const msg = door ? `${street}，${door}` : `走在${street}`;
+        const msg = door ? `沿著【${street}】前進，${door}` : `沿著【${street}】前進`;
         this.audio.playSpatialTone(480, 'sine', 0, 0, -1, 0.1);
         this.updateLiveLog(msg, false, true);
       }
     }
   }
+
 
   // ========== 策略 1：店家深度探查 ==========
   announceInspectPOI() {

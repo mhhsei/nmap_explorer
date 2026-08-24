@@ -464,12 +464,33 @@ class WorldModel:
     def get_left_right_side_scan(self, lat: float, lon: float, heading_deg: float, radius_m: float = 60.0) -> Dict[str, Any]:
         """
         【左右兩側門牌號碼與相鄰巷弄掃描】
-        作用：依據使用者朝向，區分左側（相對方位 < 0）與右側（相對方位 >= 0）的門牌與巷弄。
+        作用：依據道路法向量與使用者朝向，精準區分道路實體左側與右側的門牌與巷弄。
         """
         left_numbers = []
         right_numbers = []
         left_alleys = []
         right_alleys = []
+
+        # 1. 尋找最近道路與道路方向向量 (用於穩定左右側劃分)
+        nearest_road, _ = self.find_nearest_road(lat, lon)
+        road_seg = None
+        if nearest_road and nearest_road.get("geometry") and len(nearest_road["geometry"]) >= 2:
+            geom = nearest_road["geometry"]
+            # 找出距離目前位置最近的線段
+            best_d = 999.0
+            for i in range(len(geom) - 1):
+                p1, p2 = geom[i], geom[i+1]
+                mid_lat = (p1[0] + p2[0]) / 2.0
+                mid_lon = (p1[1] + p2[1]) / 2.0
+                d = haversine_distance(lat, lon, mid_lat, mid_lon)
+                if d < best_d:
+                    best_d = d
+                    # 確保線段向量與使用者前進方向同向
+                    seg_bearing = calculate_bearing(p1[0], p1[1], p2[0], p2[1])
+                    if abs(relative_bearing(heading_deg, seg_bearing)) > 90:
+                        road_seg = (p2, p1)
+                    else:
+                        road_seg = (p1, p2)
 
         for h in self.house_numbers:
             dist = haversine_distance(lat, lon, h["lat"], h["lon"])
@@ -488,7 +509,17 @@ class WorldModel:
                     "relative_direction": rel_dir
                 }
 
-                if rel_b < 0:
+                # 優先使用道路法向量外積判斷左右，抗手機朝向震盪
+                if road_seg:
+                    p1, p2 = road_seg
+                    dx = p2[1] - p1[1]
+                    dy = p2[0] - p1[0]
+                    cp = dx * (h["lat"] - p1[0]) - dy * (h["lon"] - p1[1])
+                    is_left = (cp > 0)
+                else:
+                    is_left = (rel_b < 0)
+
+                if is_left:
                     left_numbers.append(item)
                 else:
                     right_numbers.append(item)
@@ -553,23 +584,46 @@ class WorldModel:
         left_nums = [int(re.search(r"\d+", n).group()) for n in scan["left_side"]["house_numbers"] if re.search(r"\d+", n)]
         right_nums = [int(re.search(r"\d+", n).group()) for n in scan["right_side"]["house_numbers"] if re.search(r"\d+", n)]
 
-        if left_nums:
+        left_desc = ""
+        right_desc = ""
+
+        if left_nums and right_nums:
+            min_l, max_l = min(left_nums), max(left_nums)
+            min_r, max_r = min(right_nums), max(right_nums)
+            left_desc = f"門牌 {min_l}號" if min_l == max_l else f"門牌 {min_l}~{max_l}號"
+            right_desc = f"門牌 {min_r}號" if min_r == max_r else f"門牌 {min_r}~{max_r}號"
+            
+            l_odd = all(n % 2 != 0 for n in left_nums)
+            l_even = all(n % 2 == 0 for n in left_nums)
+            r_odd = all(n % 2 != 0 for n in right_nums)
+            r_even = all(n % 2 == 0 for n in right_nums)
+            
+            if l_odd: left_desc += " (單號)"
+            elif l_even: left_desc += " (雙號)"
+            
+            if r_even: right_desc += " (雙號)"
+            elif r_odd: right_desc += " (單號)"
+        elif left_nums:
             min_l, max_l = min(left_nums), max(left_nums)
             left_desc = f"門牌 {min_l}號" if min_l == max_l else f"門牌 {min_l}~{max_l}號"
-            left_type = "雙號" if all(n % 2 == 0 for n in left_nums) else ("單號" if all(n % 2 != 0 for n in left_nums) else "")
-            if left_type:
-                left_desc += f" ({left_type})"
-        else:
-            left_desc = ""
-
-        if right_nums:
+            l_odd = all(n % 2 != 0 for n in left_nums)
+            if l_odd:
+                left_desc += " (單號)"
+                right_desc = "對側估算為雙號"
+            else:
+                left_desc += " (雙號)"
+                right_desc = "對側估算為單號"
+        elif right_nums:
             min_r, max_r = min(right_nums), max(right_nums)
             right_desc = f"門牌 {min_r}號" if min_r == max_r else f"門牌 {min_r}~{max_r}號"
-            right_type = "雙號" if all(n % 2 == 0 for n in right_nums) else ("單號" if all(n % 2 != 0 for n in right_nums) else "")
-            if right_type:
-                right_desc += f" ({right_type})"
-        else:
-            right_desc = ""
+            r_even = all(n % 2 == 0 for n in right_nums)
+            if r_even:
+                right_desc += " (雙號)"
+                left_desc = "對側估算為單號"
+            else:
+                right_desc += " (單號)"
+                left_desc = "對側估算為雙號"
+
 
         # 尋找距離目前位置最近的實體門牌號碼
         closest_door = None

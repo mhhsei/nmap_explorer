@@ -103,7 +103,8 @@ class RealPoiFetcher:
             
             results = []
             for item in items:
-                name = item.get('name')
+                raw_n = item.get('name')
+                name = self.clean_poi_name(raw_n) if raw_n else ""
                 item_lat = item.get('lat')
                 item_lng = item.get('lng')
                 # 確保資料具備完整的名稱與經緯度，才能放入空間索引中
@@ -126,6 +127,28 @@ class RealPoiFetcher:
         except Exception as e:
             print(f"iFoodie fetch error page {page}: {e}")
             return []
+
+    @staticmethod
+    def clean_poi_name(raw_name: str) -> str:
+        """智慧淨化 POI 店名，剔除過長的行銷標籤、斜線與廣告詞彙"""
+        if not raw_name:
+            return ""
+        name = str(raw_name).strip()
+        
+        # 1. 拆解斜線、豎線等複合標籤 (取主要商標名)
+        for sep in ['/', '|', '丨', '｜']:
+            if sep in name:
+                parts = name.split(sep)
+                if parts[0].strip():
+                    name = parts[0].strip()
+                    
+        # 2. 去除括號內的廣告/行銷字串
+        name = re.sub(r'[（\(【\[].*?(推薦|官方|粉絲團|批發|教學|清粉刺|皮膚管理|體驗|專用|營業時間|用品|潤滑).*?[）\)】\]]', '', name)
+        
+        # 3. 去除 _設計師 / x總監等後綴
+        name = re.sub(r'[_xX×].*?(推薦|總監|設計師|老師|教學|美學).*', '', name)
+        
+        return name.strip() or raw_name.strip()
 
     def _fetch_overture_local(self, lat: float, lon: float, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
@@ -154,15 +177,18 @@ class RealPoiFetcher:
             
             rows = c.fetchall()
             for r in rows:
+                c_name = self.clean_poi_name(r[1])
+                if not c_name:
+                    continue
                 results.append({
                     "id": f"overture_{r[0]}",
-                    "name": r[1],
+                    "name": c_name,
                     "category": r[2] or "poi",
                     "lat": float(r[3]),
                     "lon": float(r[4]),
                     "tags": {
                         "amenity": r[2] or "place",
-                        "name": r[1],
+                        "name": c_name,
                         "source": "overture"
                     }
                 })
@@ -172,6 +198,7 @@ class RealPoiFetcher:
             print(f"Overture DB error: {e}")
             
         return results
+
 
     def _fetch_gov_local(self, lat: float, lon: float, radius_deg: float = 0.008) -> List[Dict[str, Any]]:
         """
@@ -197,19 +224,23 @@ class RealPoiFetcher:
             
             rows = c.fetchall()
             for r in rows:
+                c_name = self.clean_poi_name(r[1])
+                if not c_name:
+                    continue
                 results.append({
                     "id": f"gov_{r[0]}",
-                    "name": r[1],
+                    "name": c_name,
                     "category": r[2],
                     "lat": float(r[3]),
                     "lon": float(r[4]),
                     "tags": {
                         "amenity": r[2],
-                        "name": r[1],
+                        "name": c_name,
                         "source": r[5] or "gov"
                     }
                 })
             conn.close()
+
         except Exception as e:
             print(f"Gov DB error: {e}")
             
