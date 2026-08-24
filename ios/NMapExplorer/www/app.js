@@ -1330,24 +1330,51 @@ class NmapWebApp {
     });
   }
 
+  cleanPoiDisplayName(name) {
+    if (!name) return "未命名設施";
+    let clean = name.trim();
+    for (const sep of ['|', '｜', ' - ', '—', '_']) {
+      if (clean.includes(sep)) {
+        const parts = clean.split(sep).map(s => s.trim()).filter(Boolean);
+        if (parts.length > 0 && parts[0].length >= 2) {
+          clean = parts[0];
+          break;
+        }
+      }
+    }
+    if (clean.includes('-') && clean.length > 12) {
+      const parts = clean.split('-').map(s => s.trim()).filter(Boolean);
+      if (parts.length > 0 && parts[0].length >= 2) {
+        clean = parts[0];
+      }
+    }
+    return clean.replace(/[～~]+/g, ' ').trim();
+  }
+
   announceAllPOIs() {
     const doAnnounce = () => {
       const realtimePois = this.getRealtimePois();
       if (!realtimePois || realtimePois.length === 0) {
-        this.updateLiveLog("【周遭掃描】100 公尺內無特別設施標籤。", false, true);
+        this.updateLiveLog("【周遭掃描】150 公尺內無特別設施標籤。", false, true);
         return;
       }
       
-      this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
+      if (this.audio) this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
       
-      let msg = `【周遭共發現 ${realtimePois.length} 家店】\n`;
+      const closeCount = realtimePois.filter(p => p.distance_m <= 35).length;
+      const foodCount = realtimePois.filter(p => ['restaurant', 'fast_food', 'food', 'bakery', 'cafe', 'breakfast', 'tea', 'diner'].some(k => (p.category || '').toLowerCase().includes(k))).length;
+      const shopCount = realtimePois.filter(p => ['convenience', 'supermarket', 'shop', 'market', 'store', 'mall'].some(k => (p.category || '').toLowerCase().includes(k))).length;
+      
+      let summaryStr = `【周遭 150 公尺共發現 ${realtimePois.length} 處店家與地標】（35米內近處 ${closeCount} 家，美食 ${foodCount} 家，超商 ${shopCount} 家）\n`;
+      
       const lines = realtimePois.map(p => {
           const cat = this.translateCategory(p.category);
-          return `${p.name} (${p.relative_direction} ${p.distance_m}m，${cat})`;
+          const cleanName = this.cleanPoiDisplayName(p.name);
+          const clock = p.clock_position || p.clock_direction || "前方";
+          return `${cleanName}（${clock} ${p.distance_m}m，${cat}）`;
       });
       
-      msg += lines.join("\n");
-      this.updateLiveLog(msg, false, true);
+      this.updateLiveLog(summaryStr + lines.join("\n"), false, true);
     };
 
     const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
