@@ -175,7 +175,7 @@ class PedestrianKalmanFilter {
         return isInitialized
     }
 
-    fun reset() {
+    func reset() {
         isInitialized = false
     }
 }
