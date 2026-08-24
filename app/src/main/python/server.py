@@ -54,7 +54,7 @@ def serve_static(filename):
     return static_file(filename, root=WEB_ROOT)
 
 
-def build_status_dict(include_full_report: bool = True) -> dict:
+def build_status_dict(include_full_report: bool = True, heading_deg: float = None, lat: float = None, lon: float = None) -> dict:
     """
     【單次管線構建地圖綜合狀態 (Single-Pass World Status Builder)】
     作用：
@@ -69,13 +69,21 @@ def build_status_dict(include_full_report: bool = True) -> dict:
             "message": "尚未初始化地圖起點。請在上方搜尋列輸入地址。"
         }
 
-    road_info = agent.world_model.get_road_info(agent.lat, agent.lon, agent.heading_deg)
-    pois = agent.world_model.get_nearby_pois(agent.lat, agent.lon, agent.heading_deg, radius_m=100.0)
-    buildings = agent.world_model.get_nearby_buildings(agent.lat, agent.lon, agent.heading_deg, radius_m=50.0)
-    intersection = agent.intersection_analyzer.analyze(agent.lat, agent.lon, agent.heading_deg, agent.world_model, curr_road_info=road_info)
-    door_estimates = agent.world_model.get_interpolated_door_numbers(agent.lat, agent.lon, agent.heading_deg)
+    cur_lat = lat if lat is not None else agent.lat
+    cur_lon = lon if lon is not None else agent.lon
+    cur_head = heading_deg if heading_deg is not None else agent.heading_deg
+
+    agent.lat = cur_lat
+    agent.lon = cur_lon
+    agent.heading_deg = cur_head
+
+    road_info = agent.world_model.get_road_info(cur_lat, cur_lon, cur_head)
+    pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=120.0)
+    buildings = agent.world_model.get_nearby_buildings(cur_lat, cur_lon, cur_head, radius_m=50.0)
+    intersection = agent.intersection_analyzer.analyze(cur_lat, cur_lon, cur_head, agent.world_model, curr_road_info=road_info)
+    door_estimates = agent.world_model.get_interpolated_door_numbers(cur_lat, cur_lon, cur_head)
     concise_report = reporter.generate_concise_report(agent, road_info=road_info, pois=pois, intersection=intersection)
-    street_scene = street_analyzer.analyze_scene(agent.lat, agent.lon, agent.heading_deg, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
+    street_scene = street_analyzer.analyze_scene(cur_lat, cur_lon, cur_head, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
 
     if include_full_report:
         full_report = reporter.generate_full_report(
@@ -95,9 +103,9 @@ def build_status_dict(include_full_report: bool = True) -> dict:
         "is_loaded": True,
         "is_overseas": getattr(agent, "is_overseas", False),
         "location_label": agent.location_label,
-        "lat": agent.lat,
-        "lon": agent.lon,
-        "heading_deg": agent.heading_deg,
+        "lat": cur_lat,
+        "lon": cur_lon,
+        "heading_deg": cur_head,
         "step_count": agent.step_count,
         "road_info": road_info,
         "pois": pois,
@@ -110,14 +118,22 @@ def build_status_dict(include_full_report: bool = True) -> dict:
     }
 
 
-@app.route("/api/status", method="GET")
+@app.route("/api/status", method=["GET", "POST"])
 def get_status():
     """
     【取得當前地圖全景狀態 (Get Current World Status)】
-    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 100 米有什麼店、前方路口長怎樣、門牌幾號」。
-    回傳完整的綜合資訊 JSON，讓前端畫面與語音朗讀可以一瞬間獲取最新現況。
+    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 120 米有什麼店、前方路口長怎樣、門牌幾號」。
+    支援動態即時朝向與座標參數。
     """
-    return json_response(build_status_dict(include_full_report=True))
+    h = request.query.get("heading_deg") or (request.json.get("heading_deg") if request.json else None)
+    lat = request.query.get("lat") or (request.json.get("lat") if request.json else None)
+    lon = request.query.get("lon") or (request.json.get("lon") if request.json else None)
+
+    h_val = float(h) if (h is not None and str(h).strip() != "") else None
+    lat_val = float(lat) if (lat is not None and str(lat).strip() != "") else None
+    lon_val = float(lon) if (lon is not None and str(lon).strip() != "") else None
+
+    return json_response(build_status_dict(include_full_report=True, heading_deg=h_val, lat=lat_val, lon=lon_val))
 
 
 @app.route("/api/poi_detail", method=["GET", "POST"])
@@ -330,12 +346,28 @@ def sync():
 def turn():
     """
     【旋轉探索者朝向 (Turn/Face)】
-    作用：支援左轉、右轉、迴轉，或是直接轉向特定絕對方位（東、南、西、北）。
+    作用：支援左轉、右轉、迴轉，或是直接轉向特定絕對方位（東、南、西、北）或精確角度（heading_deg）。
     """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
     data = request.json or {}
+    
+    # 支援直接傳入即時旋轉角度 (heading_deg)
+    if "heading_deg" in data:
+        try:
+            h_deg = float(data["heading_deg"])
+            agent.heading_deg = (h_deg + 360.0) % 360.0
+            if "lat" in data and data["lat"] is not None:
+                agent.lat = float(data["lat"])
+            if "lon" in data and data["lon"] is not None:
+                agent.lon = float(data["lon"])
+            status_data = build_status_dict(include_full_report=False, heading_deg=agent.heading_deg, lat=agent.lat, lon=agent.lon)
+            status_data["action_message"] = f"已轉向至 {round(agent.heading_deg, 1)}°"
+            return json_response(status_data)
+        except Exception as e:
+            pass
+
     target = data.get("target", "right")
 
     if target in ["north", "east", "south", "west"]:
@@ -391,11 +423,24 @@ def get_intersection():
     """
     【前方路口安全分析 (Intersection Safety Analysis)】
     作用：詳細分析前方路口的分支走向、道路名稱、是否有行人斑馬線與號誌，產出報讀摘要。
+    支援即時朝向與座標參數。
     """
     if not agent.is_loaded:
         return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
 
-    analysis = agent.intersection_analyzer.analyze(agent.lat, agent.lon, agent.heading_deg, agent.world_model)
+    h = request.query.get("heading_deg") or (request.json.get("heading_deg") if request.json else None)
+    lat = request.query.get("lat") or (request.json.get("lat") if request.json else None)
+    lon = request.query.get("lon") or (request.json.get("lon") if request.json else None)
+
+    h_val = float(h) if (h is not None and str(h).strip() != "") else agent.heading_deg
+    lat_val = float(lat) if (lat is not None and str(lat).strip() != "") else agent.lat
+    lon_val = float(lon) if (lon is not None and str(lon).strip() != "") else agent.lon
+
+    agent.heading_deg = h_val
+    agent.lat = lat_val
+    agent.lon = lon_val
+
+    analysis = agent.intersection_analyzer.analyze(lat_val, lon_val, h_val, agent.world_model)
     report = analysis.get("detailed_report") or analysis.get("safety_summary") or "前方路口分析完成。"
     return json_response({
         "success": True,

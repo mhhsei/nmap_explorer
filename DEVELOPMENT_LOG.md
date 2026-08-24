@@ -48,7 +48,12 @@
 
 ## 📝 變更日誌 (Changelog)
 
-### [v1.0.1 - 2026-08-24] - 核心效能大躍進 (95%加速)、室內靜止防飄 (ZUPT 鎖定)、轉向原生零延遲播報、偏好設定與離線 POI 瞬間載入
+### [v1.0.1 - 2026-08-24] - 核心效能大躍進 (95%加速)、室內靜止防飄 (ZUPT 鎖定)、轉向即時動態方位聯動、偏好設定與離線 POI 瞬間載入
+- **🧭 轉身時動態相對方位 100% 正確聯動 (`app.js`, `server.py`, `LocationSensorBridge.kt`)**:
+  1. **即時動態計算左右兩側店家 (`announceLeftRightSweep`)**：修正以往讀取舊靜態陣列的問題，改由 `getRealtimePois()` 依據使用者當前即時朝向（`localHeading`）動態推算所有店家的相對左右側與鐘點方位。轉身 180° 時，原本在右側的店家立即自動切換為左側。
+  2. **前方路口與門牌查詢動態朝向傳遞 (`announceUpcomingIntersection` & `announceRoadAndDoorNumbers`)**：向後端請求時主動帶入當前即時朝向參數（`heading_deg`），後端即時更新 Agent 姿態並計算精確的路口各分支走向與門牌單雙號分配。
+  3. **朝向背景防抖同步 (`/api/turn`)**：轉向時以 150ms 節流自動將最新真北朝向同步至 Python 後端 Agent，確保整個數位孿生世界模型隨時與現實方向一致。
+  4. **靜止偵測器門檻優化與重複回調過濾**：放寬手持原地旋轉之變異數門檻（0.20），並消除 FusedLocationProvider 與 LocationManager 在同一微秒內的重複觸發，確保靜止時 100% 穩定鎖定原點。
 - **⚡ 離線資料庫 (~210MB, 1600+ 筆 POI) 0.002 秒瞬間同步載入 (`world_model.py` & `real_poi_fetcher.py`)**:
   1. 新增 `fetch_offline_pois()`，將本地 `overture_places.db` 與 `gov_places.db` 之讀取移至 `build_from_osm` 主運算週期中同步執行（耗時僅約 2ms）。
   2. 徹底消除以往因等待線上食記網路爬蟲（2~3 秒）導致冷啟動前數秒僅有 5 筆 OSM 原始地標的延遲問題，第一毫秒即可完整辨識周遭所有真實店名與設施。

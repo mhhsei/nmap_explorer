@@ -73,8 +73,8 @@ class StationaryMotionDetector(
         private set
 
     companion object {
-        /** 加速度模長變異數靜止門檻 (m^2/s^4)：靜止手持時通常 < 0.045 */
-        const val ACC_VAR_STATIONARY_THRESHOLD = 0.045f
+        /** 加速度模長變異數靜止門檻 (m^2/s^4)：手持、坐著或原地轉向時通常 < 0.20 */
+        const val ACC_VAR_STATIONARY_THRESHOLD = 0.20f
 
         /** 步伐逾時時間 (毫秒)：超過 1.4 秒沒有踩出下一步，判定可能已停下腳步 */
         const val STEP_TIMEOUT_MS = 1400L
@@ -135,14 +135,14 @@ class StationaryMotionDetector(
         val now = getNowMs()
         val stepTimedOut = (now - lastStepTimestampMs) > STEP_TIMEOUT_MS
 
-        // 3. 靜止條件綜合仲裁：加速度極度平穩且逾時未邁步
-        val isPhysicallyStill = (accVariance < ACC_VAR_STATIONARY_THRESHOLD) && stepTimedOut
+        // 3. 靜止條件綜合仲裁：加速度平穩且逾時未邁步（手持轉身或坐姿均視為靜止）
+        val isPhysicallyStill = (accVariance < ACC_VAR_STATIONARY_THRESHOLD) && stepTimedOut && (currentGpsSpeedMps < 1.2f)
 
         if (isPhysicallyStill) {
             if (currentState != MotionState.STATIONARY_LOCKED) {
                 updateState(MotionState.STATIONARY_LOCKED)
             }
-        } else if (accVariance > 0.35f || !stepTimedOut) {
+        } else if (accVariance > 0.60f || !stepTimedOut) {
             if (currentState != MotionState.PEDESTRIAN_WALKING) {
                 updateState(MotionState.PEDESTRIAN_WALKING)
             }
@@ -752,6 +752,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         // 捨棄極度低精度的訊號 (> 50m)
         if (location.hasAccuracy() && location.accuracy > 50f && lastEmittedLocation != null) {
+            return
+        }
+
+        // 去除重複回調（避免 FusedLocationProvider 與 LocationManager 同一微秒雙重觸發）
+        val last = lastEmittedLocation
+        if (last != null && location.latitude == last.latitude && location.longitude == last.longitude && location.time == last.time) {
             return
         }
 

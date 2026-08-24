@@ -1223,7 +1223,11 @@ class NmapWebApp {
       this.updateLiveLog(msg, false, true);
     };
 
-    fetch("/api/status")
+    const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
+    const curLat = this.localLat !== null ? this.localLat : (this.serverLat || "");
+    const curLon = this.localLon !== null ? this.localLon : (this.serverLon || "");
+
+    fetch(`/api/status?heading_deg=${curHead}&lat=${curLat}&lon=${curLon}`)
       .then(res => res.json())
       .then(data => {
         if (data.success && data.pois) {
@@ -1237,7 +1241,11 @@ class NmapWebApp {
   }
 
   announceRoadAndDoorNumbers() {
-    fetch("/api/status")
+    const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
+    const curLat = this.localLat !== null ? this.localLat : (this.serverLat || "");
+    const curLon = this.localLon !== null ? this.localLon : (this.serverLon || "");
+
+    fetch(`/api/status?heading_deg=${curHead}&lat=${curLat}&lon=${curLon}`)
       .then((res) => res.json())
       .then((data) => {
         if (!data.success) return;
@@ -1268,16 +1276,15 @@ class NmapWebApp {
         this.currentRoadName = street;
         this.lastSpokenDoor = doorStr;
 
-        const headingDeg = (data.heading_deg !== undefined && data.heading_deg !== null) ? data.heading_deg : (this.localHeading || 0);
+        const headingDeg = (data.heading_deg !== undefined && data.heading_deg !== null) ? data.heading_deg : (curHead || 0);
         const dirStr = this.getCardinalDirection(headingDeg);
         const exactDeg = Math.round(((headingDeg % 360.0) + 360.0) % 360.0);
-        const gpsStr = `GPS座標：${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}`;
+        const gpsStr = (data.lat && data.lon) ? `GPS座標：${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}` : "";
         
         const txt = doorStr 
           ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。${gpsStr}。`
           : `走在【${street}】。面向${dirStr} (${exactDeg}°)。${gpsStr}。`;
 
-        
         this.audio.playSpatialTone(480, 'triangle', 0, 0, -0.8, 0.12);
         this.updateLiveLog(`【目前位置】\n${txt}`, false, true);
       })
@@ -1301,7 +1308,11 @@ class NmapWebApp {
   // ========== 前方路口資訊與分支走向 (按鍵 I / 前方路口按鈕) ==========
   announceUpcomingIntersection() {
     this.updateLiveLog("正在分析前方路口與分支走向...", false, true);
-    fetch("/api/intersection")
+    const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
+    const curLat = this.localLat !== null ? this.localLat : (this.serverLat || "");
+    const curLon = this.localLon !== null ? this.localLon : (this.serverLon || "");
+
+    fetch(`/api/intersection?heading_deg=${curHead}&lat=${curLat}&lon=${curLon}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.success && data.report) {
@@ -1532,20 +1543,21 @@ class NmapWebApp {
 
   // ========== 策略 2：L 鍵 — 左右兩側店家掃描 ==========
   announceLeftRightSweep() {
-    if (!this.lastPois || this.lastPois.length === 0) {
-      this.updateLiveLog("【L 左右掃描】周遭無店家。", false, true);
+    const realtimePois = this.getRealtimePois();
+    if (!realtimePois || realtimePois.length === 0) {
+      this.updateLiveLog("【左右兩側店家掃描】周遭無店家。", false, true);
       return;
     }
 
-    const leftPois = this.lastPois
+    const leftPois = realtimePois
       .filter(p => p.relative_direction && p.relative_direction.includes("左"))
       .sort((a, b) => a.distance_m - b.distance_m);
 
-    const rightPois = this.lastPois
+    const rightPois = realtimePois
       .filter(p => p.relative_direction && p.relative_direction.includes("右"))
       .sort((a, b) => a.distance_m - b.distance_m);
 
-    const frontPois = this.lastPois
+    const frontPois = realtimePois
       .filter(p => p.relative_direction && !p.relative_direction.includes("左") && !p.relative_direction.includes("右"))
       .sort((a, b) => a.distance_m - b.distance_m);
 
@@ -2639,7 +2651,23 @@ window.onHeadingUpdate = function(headingDegrees) {
         window.lastHapticCardinal = -1;
     }
     
-    // 4. 16 方位極速語音回報（完全不走螢幕報讀排隊佇列，可由偏好設定開關）
+    // 4. 背景防抖同步朝向至後端 Agent (150ms 節流，確保路口分析與門牌推算 100% 吻合)
+    if (window.headingSyncTimer) clearTimeout(window.headingSyncTimer);
+    window.headingSyncTimer = setTimeout(() => {
+        const curLat = (window.app && window.app.localLat !== null) ? window.app.localLat : window.lastGpsLat;
+        const curLon = (window.app && window.app.localLon !== null) ? window.app.localLon : window.lastGpsLon;
+        fetch("/api/turn", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                heading_deg: headingDegrees,
+                lat: curLat,
+                lon: curLon
+            })
+        }).catch(() => {});
+    }, 150);
+
+    // 5. 16 方位極速語音回報（完全不走螢幕報讀排隊佇列，可由偏好設定開關）
     if (window.app && window.app.isReady !== false) {
         const dirStr = window.app.getCardinalDirection(headingDegrees);
         
@@ -2665,6 +2693,11 @@ window.onHeadingUpdate = function(headingDegrees) {
                         window.speechSynthesis.speak(u);
                     } catch (e) {}
                 }
+            }
+
+            // 轉向後若有周遭資料，微延遲觸發接近感知檢查
+            if (window.app.lastData && window.app.checkProximityAlerts) {
+                window.app.checkProximityAlerts(window.app.lastData);
             }
         }
     }
