@@ -193,20 +193,21 @@ class PoiDetailFetcher:
         except Exception:
             ssl_ctx = None
 
-        def fetch_yahoo():
-            url = f"https://tw.search.yahoo.com/search?p={encoded}"
+        # 來源 1：Google 搜尋與 Google Maps 摘要
+        def fetch_google():
+            url = f"https://www.google.com/search?q={encoded}+google+maps&hl=zh-TW"
             try:
                 req = urllib.request.Request(url, headers=headers)
                 kwargs = {"timeout": 1.2}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
-                    html = r.read().decode('utf-8', errors='ignore')
-                    return html
+                    return r.read().decode('utf-8', errors='ignore')
             except Exception as e:
-                print(f"[FETCH YAHOO ERROR] {e}")
+                print(f"[FETCH GOOGLE ERROR] {e}")
                 return ""
 
+        # 來源 2：Bing 台灣商家資料
         def fetch_bing():
             url = f"https://www.bing.com/search?q={encoded}&setlang=zh-Hant-TW"
             try:
@@ -215,18 +216,31 @@ class PoiDetailFetcher:
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
-                    html = r.read().decode('utf-8', errors='ignore')
-                    return html
+                    return r.read().decode('utf-8', errors='ignore')
             except Exception as e:
                 print(f"[FETCH BING ERROR] {e}")
                 return ""
 
+        # 來源 3：Yahoo 台灣在地商圈
+        def fetch_yahoo():
+            url = f"https://tw.search.yahoo.com/search?p={encoded}"
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                kwargs = {"timeout": 1.2}
+                if ssl_ctx:
+                    kwargs["context"] = ssl_ctx
+                with urllib.request.urlopen(req, **kwargs) as r:
+                    return r.read().decode('utf-8', errors='ignore')
+            except Exception as e:
+                print(f"[FETCH YAHOO ERROR] {e}")
+                return ""
+
         combined_html = ""
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(fetch_yahoo), executor.submit(fetch_bing)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(fetch_google), executor.submit(fetch_bing), executor.submit(fetch_yahoo)]
                 try:
-                    for f in concurrent.futures.as_completed(futures, timeout=1.5):
+                    for f in concurrent.futures.as_completed(futures, timeout=1.4):
                         try:
                             res = f.result()
                             if res:

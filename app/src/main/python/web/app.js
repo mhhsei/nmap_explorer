@@ -125,6 +125,18 @@ class WebAudioEngine {
     } catch (e) {}
   }
 
+  playSearchCompleteTone() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      this.playSpatialTone(784, 'sine', 0, 0, -1, 0.08); // G5
+      setTimeout(() => {
+        this.playSpatialTone(1046.5, 'sine', 0, 0, -1, 0.15); // C6
+      }, 90);
+    } catch (e) {}
+  }
+
   playVirtualPanChime() {
     if (!this.enabled) return;
     this.initContext();
@@ -1227,26 +1239,12 @@ class NmapWebApp {
       .then(data => {
         if (data.success && data.details) {
           renderModalContent(data.details, false);
-          const extraInfo = [];
-          if (data.details.opening_hours) extraInfo.push(data.details.opening_hours.replace(/[🟢🔴]/g, '').trim());
-          if (data.details.phone) extraInfo.push(`電話 ${data.details.phone}`);
-          if (data.details.wheelchair && data.details.wheelchair !== "無障礙狀態未知") extraInfo.push(data.details.wheelchair);
-          if (data.details.rating) extraInfo.push(`評價 ${data.details.rating}`);
           
-          if (extraInfo.length > 0) {
-            const reportStr = `【${poi.name} 即時資訊】：${extraInfo.join("，")}。`;
-            this.updateLiveLog(reportStr, false, true);
-            // 直接觸發原生語音朗讀最新即時狀態
-            if (window.AndroidBridge && window.AndroidBridge.speakTtsDirect) {
-              window.AndroidBridge.speakTtsDirect(reportStr, false);
-            } else if (window.speechSynthesis) {
-              try {
-                const u = new SpeechSynthesisUtterance(reportStr);
-                u.lang = 'zh-TW';
-                window.speechSynthesis.speak(u);
-              } catch(e) {}
-            }
+          // 搜尋完成播放清脆提示音，不強制語音打斷 TalkBack，讓使用者依喜好自然聽讀
+          if (this.audio && this.audio.playSearchCompleteTone) {
+            this.audio.playSearchCompleteTone();
           }
+          this.updateLiveLog(`【${poi.name}】已取得最新營業與電話資訊。`, false, false);
         }
       })
       .catch(err => {
