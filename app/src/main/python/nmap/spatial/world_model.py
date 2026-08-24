@@ -452,6 +452,7 @@ class WorldModel:
                               ("左側" if rel_bearing < 292.5 else "左前方"))))))
 
                     results.append({
+                        "id": f"bldg_{b_name}_{round(b_lat,4)}",
                         "name": b_name,
                         "category": "landmark_and_historical_building",
                         "lat": b_lat,
@@ -459,8 +460,14 @@ class WorldModel:
                         "distance_m": round(dist_m, 1),
                         "bearing_deg": round(brng, 1),
                         "relative_bearing_deg": round(rel_bearing, 1),
+                        "clock_position": f"{clock_hr}點鐘方向",
                         "clock_direction": f"{clock_hr}點鐘方向",
                         "relative_direction": rel_dir,
+                        "phone": "",
+                        "website": "",
+                        "opening_hours": "常態開放",
+                        "wheelchair": "♿ 具備 1 樓平整入口",
+                        "level": "1F",
                         "floor": "1F",
                         "tags": {"building": "residential"}
                     })

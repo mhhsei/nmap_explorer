@@ -189,7 +189,11 @@ class NVDAReporter:
                 if p.get("phone"):
                     extra_flags.append(f"電話:{p['phone']}")
                 flag_str = f" [{', '.join(extra_flags)}]" if extra_flags else ""
-                return f"  • {p['name']}：位於 {p['clock_position']} ({p['relative_direction']})，距離 {p['distance_m']} 公尺{flag_str}"
+                clock_str = p.get("clock_position") or p.get("clock_direction") or "前方"
+                rel_dir_str = p.get("relative_direction") or "前方"
+                poi_name = p.get("name") or "未命名設施"
+                dist_str = p.get("distance_m", 0)
+                return f"  • {poi_name}：位於 {clock_str} ({rel_dir_str})，距離 {dist_str} 公尺{flag_str}"
 
             if food_list:
                 lines.append(f"\n🍔 餐飲美食 ({len(food_list)} 處)：")
