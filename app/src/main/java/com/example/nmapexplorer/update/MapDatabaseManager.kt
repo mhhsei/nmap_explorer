@@ -200,21 +200,31 @@ class MapDatabaseManager(private val context: Context) {
             output.close()
             input.close()
 
-            // 下載成功後原子重命名
-            if (targetFile.exists()) {
-                targetFile.delete()
-            }
-            if (!tempFile.renameTo(targetFile)) {
-                // 若 rename 失敗，手動複製
-                tempFile.copyTo(targetFile, overwrite = true)
+            // 判斷是否為 ZIP 壓縮檔（魔法位元組 PK\x03\x04），若是則自動解壓縮出 overture_places.db
+            val isZip = isZipArchive(tempFile)
+            if (isZip) {
+                Log.i(tag, "Downloaded archive is a ZIP file. Extracting overture_places.db...")
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                extractZipDatabase(tempFile, targetFile)
                 tempFile.delete()
+            } else {
+                // 原生 SQLite .db 檔案，直接原子重命名
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                if (!tempFile.renameTo(targetFile)) {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
             }
 
             withContext(Dispatchers.Main) {
                 onProgress(100)
             }
 
-            Log.i(tag, "Offline map database downloaded successfully: ${targetFile.length()} bytes")
+            Log.i(tag, "Offline map database ready: ${targetFile.length()} bytes")
             Result.success(targetFile)
         } catch (e: Exception) {
             Log.e(tag, "Download database error", e)
@@ -231,6 +241,45 @@ class MapDatabaseManager(private val context: Context) {
             file.delete()
         } else {
             true
+        }
+    }
+
+    /**
+     * 檢查檔案是否為 ZIP 封存檔 (Magic Bytes PK\x03\x04)
+     */
+    private fun isZipArchive(file: File): Boolean {
+        if (!file.exists() || file.length() < 4) return false
+        return try {
+            java.io.FileInputStream(file).use { fis ->
+                val b1 = fis.read()
+                val b2 = fis.read()
+                val b3 = fis.read()
+                val b4 = fis.read()
+                b1 == 0x50 && b2 == 0x4B && b3 == 0x03 && b4 == 0x04
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 從 ZIP 封存檔中解壓縮出目標資料庫檔案
+     */
+    private fun extractZipDatabase(zipFile: File, targetFile: File) {
+        java.util.zip.ZipFile(zipFile).use { zf ->
+            val entries = zf.entries()
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                if (!entry.isDirectory && (entry.name.endsWith(".db", ignoreCase = true) || entry.name.contains("overture_places", ignoreCase = true))) {
+                    zf.getInputStream(entry).use { input ->
+                        java.io.FileOutputStream(targetFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    Log.i(tag, "Successfully extracted ${entry.name} (${targetFile.length()} bytes) from zip")
+                    return
+                }
+            }
         }
     }
 }
