@@ -45,7 +45,9 @@ class PedestrianKalmanFilter {
     private var lockedLat: Double = 0.0
     private var lockedLon: Double = 0.0
 
-    private var lastTimestamp: TimeInterval = 0
+    private var consecutiveRejections = 0
+    private var lastRejectedZx = 0.0
+    private var lastRejectedZy = 0.0
 
     func filter(lat: Double, lon: Double, accuracy: Double, speed: Double, timestamp: TimeInterval, motionState: MotionState) -> (lat: Double, lon: Double) {
         if !isInitialized {
@@ -71,7 +73,7 @@ class PedestrianKalmanFilter {
 
         var dt = timestamp - lastTimestamp
         lastTimestamp = timestamp
-        if dt <= 0.0 || dt > 10.0 { dt = 1.0 }
+        if dt <= 0.0 || dt > 5.0 { dt = 1.0 }
 
         let radLat = anchorLat * .pi / 180.0
         let mPerLat = 111139.0
@@ -92,29 +94,54 @@ class PedestrianKalmanFilter {
             p11 = 4.0
             lockedLat = lat
             lockedLon = lon
+            consecutiveRejections = 0
             return (lat, lon)
         }
 
-        // 乘車模式預測步驟
-        if motionState == .vehicularTransit {
-            x += vx * dt
-            y += vy * dt
-            p00 += p22 * dt * dt + 1.0 * dt
-            p11 += p33 * dt * dt + 1.0 * dt
-        }
+        // 全時注入過程雜訊 Q，防止協方差塌陷
+        let qPos = (motionState == .vehicularTransit) ? 4.0 : 1.8
+        let qVel = (motionState == .vehicularTransit) ? 2.0 : 0.8
 
-        let baseR = max(pow(accuracy, 2), 3.0)
+        x += vx * dt
+        y += vy * dt
+        p00 += p22 * dt * dt + qPos * dt
+        p11 += p33 * dt * dt + qPos * dt
+        p22 += qVel * dt
+        p33 += qVel * dt
 
-        // 馬氏距離新息門控
+        let baseR = max(pow(accuracy, 1.8) * 0.7, 3.0)
+
+        // 馬氏距離新息門控與連續異常自動拉回
         let innovX = zx - x
         let innovY = zy - y
         let sX = p00 + baseR
         let sY = p11 + baseR
         let mahalanobisSq = (innovX * innovX / sX) + (innovY * innovY / sY)
 
-        let maxGate = (motionState == .vehicularTransit) ? 16.0 : 5.991
+        let maxGate = (motionState == .vehicularTransit) ? 64.0 : 16.0
         if mahalanobisSq > maxGate {
-            return getCurrentGeoLocation()
+            let distToLastRej = sqrt((zx - lastRejectedZx) * (zx - lastRejectedZx) + (zy - lastRejectedZy) * (zy - lastRejectedZy))
+            if distToLastRej < 15.0 {
+                consecutiveRejections += 1
+            } else {
+                consecutiveRejections = 1
+            }
+            lastRejectedZx = zx
+            lastRejectedZy = zy
+
+            if consecutiveRejections >= 2 {
+                x = zx
+                y = zy
+                vx = 0.0
+                vy = 0.0
+                p00 = baseR
+                p11 = baseR
+                consecutiveRejections = 0
+            } else {
+                return getCurrentGeoLocation()
+            }
+        } else {
+            consecutiveRejections = 0
         }
 
         let k0 = p00 / sX
@@ -129,13 +156,12 @@ class PedestrianKalmanFilter {
         vx = (k0 * innovX) / dt
         vy = (k1 * innovY) / dt
 
-        if motionState == .pedestrianWalking {
-            let curSpd = sqrt(vx * vx + vy * vy)
-            if curSpd > 4.5 {
-                let scale = 4.5 / curSpd
-                vx *= scale
-                vy *= scale
-            }
+        let maxSpeed = (motionState == .vehicularTransit) ? 25.0 : 4.0
+        let curSpd = sqrt(vx * vx + vy * vy)
+        if curSpd > maxSpeed {
+            let scale = maxSpeed / curSpd
+            vx *= scale
+            vy *= scale
         }
 
         let current = getCurrentGeoLocation()
@@ -155,8 +181,8 @@ class PedestrianKalmanFilter {
         vx = dx / 0.6
         vy = dy / 0.6
 
-        p00 += 0.25
-        p11 += 0.25
+        p00 += 0.5
+        p11 += 0.5
 
         let current = getCurrentGeoLocation()
         lockedLat = current.lat

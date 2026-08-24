@@ -1346,83 +1346,113 @@ class NmapWebApp {
     return name.trim() || String(rawName).trim();
   }
 
-  // ========== 接近感知播報 (店家 2.5~6m / 接近與通過路口 / 20s 靜默路名門牌) ==========
+  // ========== 前進路徑走廊店家與路口到達即時導引 ==========
   checkProximityAlerts(data) {
     if (!data || !data.is_loaded) return;
     const now = Date.now();
 
-    // 1. 接近中的店家（視野錐 120° 過濾：限制前方 2.5 ~ 6.0 公尺，排除後方干擾店家）
+    // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 2.0 ~ 18.0 公尺，側向 <= 14.0 公尺)
     const realtimePois = this.getRealtimePois();
     if (realtimePois && realtimePois.length > 0) {
-      const nearbyPassing = realtimePois.filter((p) => {
+      const corridorPois = realtimePois.filter((p) => {
         const d = p.distance_m;
         const relBearing = Math.abs(p.relative_bearing_deg || 0);
         const dir = p.relative_direction || "";
         
-        // 嚴格過濾：只允許前方 120 度扇形 (relBearing <= 60°) 或 4 公尺內近距離側向 (relBearing <= 90°)
-        const isForwardCone = relBearing <= 60 || (relBearing <= 90 && d <= 4.0);
-        const isRear = dir.includes("後方") || relBearing > 95;
-        
-        return d <= 6.0 && d >= 1.0 && isForwardCone && !isRear;
+        // 嚴格前向/側向走廊：排除後方與夾角 > 95° 的店家
+        const isForwardOrSide = !dir.includes("後方") && relBearing <= 90;
+        return d <= 18.0 && d >= 2.0 && isForwardOrSide;
       });
 
-      if (nearbyPassing.length > 0) {
-        for (const poi of nearbyPassing) {
+      if (corridorPois.length > 0) {
+        // 分別找出左側與右側最靠前的最近店家
+        const leftCandidate = corridorPois.find(p => (p.relative_direction || "").includes("左"));
+        const rightCandidate = corridorPois.find(p => (p.relative_direction || "").includes("右"));
+        const frontCandidate = corridorPois.find(p => !(p.relative_direction || "").includes("左") && !(p.relative_direction || "").includes("右"));
+
+        const candidates = [leftCandidate, rightCandidate, frontCandidate].filter(Boolean).sort((a, b) => a.distance_m - b.distance_m);
+
+        for (const poi of candidates) {
           const cleanedName = this.cleanPoiName(poi.name);
           const lastTime = this.announcedPoiCooldown.get(cleanedName) || this.announcedPoiCooldown.get(poi.name) || 0;
-          if (now - lastTime > 60000) { // 60秒冷卻，避免同店家重複疲勞轟炸
+          if (now - lastTime > 40000) { // 40秒冷卻，避免同店家重複疲勞轟炸
             this.announcedPoiCooldown.set(cleanedName, now);
             this.announcedPoiCooldown.set(poi.name, now);
 
-            // 精確 3D 空間立體聲：以相對夾角精確計算左右耳座標 (x, z)
+            // 精確 3D 空間立體聲：以相對夾角計算左右耳座標 (x, z)
             const rad = (poi.relative_bearing_deg || 0) * Math.PI / 180.0;
             const distAudio = Math.max(0.5, Math.min(10.0, poi.distance_m || 3.0));
             const x = distAudio * Math.sin(rad);
             const z = -distAudio * Math.cos(rad);
             this.audio.playSpatialTone(660, 'triangle', x, 0, z, 0.15);
 
-            // 省話模式：極簡只讀店名 + 即時動態方位 (如：「全家便利商店，左前方」)
-            const dirText = poi.relative_direction ? `，${poi.relative_direction}` : "";
+            // 省話模式格式：[店名]，[方位] [距離]m (例如：「全家便利商店，左前方 8公尺」)
+            const dirText = poi.relative_direction ? `，${poi.relative_direction} ${Math.round(poi.distance_m)}公尺` : "";
             const msg = `${cleanedName}${dirText}`;
             this.updateLiveLog(msg, false, true);
             this.lastSpeechTime = now;
-            return; // 每次只報讀最接近的一間，避免語音塞車
+            break; // 每次只報讀最急需的一間，避免語音塞車
           }
         }
       }
     }
 
-    // 2. 接近路口提示 (12公尺以內) 與 過了路口/沿著道路前進播報 (20秒冷卻防抖)
+    // 2. 路口到達狀態機 (Junction State Machine: 6~18m 接近中 / <6m 正通過 / >20m 沿著前進)
     if (data.intersection) {
       const juncType = data.intersection.junction_type;
       const juncDist = data.intersection.junction_distance_m;
-      
-      // A. 接近路口（<= 12m）
-      if (juncType && juncType !== "直行道路" && juncDist !== null && juncDist <= 12.0) {
-        this.passedIntersectionTracking = true;
-        if (now - this.lastIntersectionAlertTime > 30000) { // 30秒冷卻
-          this.lastIntersectionAlertTime = now;
-          this.audio.playSpatialTone(550, 'sine', 0, 0, -1, 0.2);
+      const isRealJunction = juncType && juncType !== "直行道路";
 
-          let roads = "";
-          const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "";
-          const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路");
-          if (filteredRoads.length > 0) {
-            roads = `，即將交會 ${filteredRoads.join("、")}`;
+      if (isRealJunction && juncDist !== null) {
+        // A. 接近路口 (6.0m ~ 18.0m)
+        if (juncDist <= 18.0 && juncDist >= 6.0) {
+          if (this.currentJunctionState !== "APPROACHING" && (now - (this.lastIntersectionAlertTime || 0) > 25000)) {
+            this.currentJunctionState = "APPROACHING";
+            this.lastIntersectionAlertTime = now;
+            this.audio.playSpatialTone(550, 'sine', 0, 0, -1, 0.2);
+
+            let roads = "";
+            const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "";
+            const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路");
+            if (filteredRoads.length > 0) {
+              roads = `（即將交會 ${filteredRoads.join("、")}）`;
+            }
+            const msg = `📍 前方 ${Math.round(juncDist)} 公尺有【${juncType}】${roads}。`;
+            this.updateLiveLog(msg, false, true);
+            this.lastSpeechTime = now;
+            this.lastRoadAnnouncementTime = now;
+            return;
           }
-          const msg = `📍 接近【${juncType}】（約 ${Math.round(juncDist)} 公尺）${roads}。`;
-          this.updateLiveLog(msg, false, true);
-          this.lastSpeechTime = now;
-          this.lastRoadAnnouncementTime = now;
-          return;
+        }
+        
+        // B. 踏入 / 正通過路口 (< 6.0m)
+        else if (juncDist < 6.0) {
+          if (this.currentJunctionState !== "PASSING") {
+            this.currentJunctionState = "PASSING";
+            this.audio.playArrival();
+            const msg = `📍 正通過【${juncType}】。`;
+            this.updateLiveLog(msg, false, true);
+            this.lastSpeechTime = now;
+            this.lastRoadAnnouncementTime = now;
+            return;
+          }
+        }
+        
+        // C. 通過後繼續前進 (> 20.0m)
+        else if (juncDist > 20.0 && this.currentJunctionState === "PASSING") {
+          this.currentJunctionState = "IDLE";
+          if (now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
+            this.lastRoadAnnouncementTime = now;
+            this.lastSpeechTime = now;
+            this.audio.playArrival();
+            const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
+            const msg = `沿著【${currentRoad}】前進`;
+            this.updateLiveLog(msg, false, true);
+            return;
+          }
         }
       }
-      
-      // B. 過了路口（從 <=12m 走到 >20m 遲滯閾值，避免巷弄邊緣抖動）
-      if (this.passedIntersectionTracking && (juncDist === null || juncDist > 20.0)) {
-        this.passedIntersectionTracking = false;
-        if (now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
-          this.lastRoadAnnouncementTime = now;
+    }
           this.lastSpeechTime = now;
           this.audio.playArrival();
           const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
@@ -2798,8 +2828,8 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
                     window.app.checkProximityAlerts(data);
                 }
 
-                // 首度定位或大跳躍播報
-                if (dist > 50 || dist === 999999) {
+                // 僅在首度啟動完成定位時播報起點摘要
+                if (dist === 999999) {
                     const overseasMsg = data.is_overseas ? "【⚠️ 偵測到海外地區：已啟用全球線上圖資模式】" : "";
                     const report = `${overseasMsg}${data.concise_report || data.full_report || "已更新 GPS 定位。"}`;
                     window.app.updateLiveLog(report, false, true);

@@ -196,6 +196,11 @@ class PedestrianKalmanFilter {
 
     private var lastTimestampNanos: Long = 0
 
+    // 新息門控防鎖死機制變數
+    private var consecutiveRejections = 0
+    private var lastRejectedZx = 0.0
+    private var lastRejectedZy = 0.0
+
     /**
      * 步態推進 (Predict Step - 由步伐事件驅動)
      * 作用：當使用者走一步時，由 Weinberg 自適應步長模型平滑推算前進。
@@ -212,8 +217,8 @@ class PedestrianKalmanFilter {
         vx = dx / 0.6 // 假設一步約 0.6 秒
         vy = dy / 0.6
 
-        p00 += 0.25
-        p11 += 0.25
+        p00 += 0.5
+        p11 += 0.5
 
         val (curLat, curLon) = getCurrentGeoLocation()
         lockedLat = curLat
@@ -268,7 +273,7 @@ class PedestrianKalmanFilter {
 
         var dt = (timestampNanos - lastTimestampNanos) / 1_000_000_000.0
         lastTimestampNanos = timestampNanos
-        if (dt <= 0.0 || dt > 10.0) dt = 1.0
+        if (dt <= 0.0 || dt > 5.0) dt = 1.0
 
         // 將經緯度轉換為局部平面直角座標（等距圓柱投影，單位：公尺）
         val radLat = Math.toRadians(anchorLat)
@@ -290,34 +295,59 @@ class PedestrianKalmanFilter {
             p11 = 4.0
             lockedLat = rawLat
             lockedLon = rawLon
+            consecutiveRejections = 0
             return Pair(rawLat, rawLon)
         }
 
-        // 2. 狀態預測步驟 (乘車模式依速度推算，步行模式由步態推算)
-        if (motionState == MotionState.VEHICULAR_TRANSIT) {
-            x += vx * dt
-            y += vy * dt
-            p00 += p22 * dt * dt + 1.0 * dt
-            p11 += p33 * dt * dt + 1.0 * dt
-        }
+        // 2. 狀態預測步驟：全時注入健康過程雜訊 Q，徹底杜絕協方差塌陷 (Covariance Collapse) 與座標凍結！
+        val qPos = if (motionState == MotionState.VEHICULAR_TRANSIT) 4.0 else 1.8
+        val qVel = if (motionState == MotionState.VEHICULAR_TRANSIT) 2.0 else 0.8
 
-        // 3. 自適應測量雜訊協方差 R（以 GPS 精度平方為基準）
-        var baseR = max(accuracyMeters.toDouble().pow(2.0), 3.0)
+        x += vx * dt
+        y += vy * dt
+        p00 += p22 * dt * dt + qPos * dt
+        p11 += p33 * dt * dt + qPos * dt
+        p22 += qVel * dt
+        p33 += qVel * dt
+
+        // 3. 自適應測量雜訊協方差 R（以 GPS 精度為基準，確保高精度 GPS 能在 0.5s 內敏銳跟隨）
+        var baseR = max(accuracyMeters.toDouble().pow(1.8) * 0.7, 3.0)
         if (hasDualFrequencyL5) baseR *= 0.5
-        if (isMultipath) baseR *= 8.0
+        if (isMultipath) baseR *= 4.0
 
-        // 4. 馬氏距離新息門控 (Mahalanobis Innovation Gating)
+        // 4. 馬氏距離新息門控 (Mahalanobis Innovation Gating) 與防鎖死連續異常復位
         val innovX = zx - x
         val innovY = zy - y
         val sX = p00 + baseR
         val sY = p11 + baseR
         val mahalanobisSq = (innovX * innovX / sX) + (innovY * innovY / sY)
 
-        // 乘車模式放寬門檻以容許車輛快速轉向與加速；步行模式以 95% 卡方檢定 (5.991) 嚴格過濾
-        val maxGate = if (motionState == MotionState.VEHICULAR_TRANSIT) 16.0 else 5.991
+        val maxGate = if (motionState == MotionState.VEHICULAR_TRANSIT) 64.0 else 16.0
         if (mahalanobisSq > maxGate) {
-            // 判定為大樓折射瞬移跳點，拒絕更新測量
-            return getCurrentGeoLocation()
+            val distToLastRej = sqrt((zx - lastRejectedZx) * (zx - lastRejectedZx) + (zy - lastRejectedZy) * (zy - lastRejectedZy))
+            if (distToLastRej < 15.0) {
+                consecutiveRejections++
+            } else {
+                consecutiveRejections = 1
+            }
+            lastRejectedZx = zx
+            lastRejectedZy = zy
+
+            if (consecutiveRejections >= 2) {
+                // 連續收到一致的新位置，代表使用者真實前進而非單點跳躍，快速平滑拉至新位置
+                x = zx
+                y = zy
+                vx = 0.0
+                vy = 0.0
+                p00 = baseR
+                p11 = baseR
+                consecutiveRejections = 0
+            } else {
+                // 單點折射瞬移雜訊，予以過濾
+                return getCurrentGeoLocation()
+            }
+        } else {
+            consecutiveRejections = 0
         }
 
         // 5. 計算卡爾曼增益並更新狀態
@@ -333,14 +363,13 @@ class PedestrianKalmanFilter {
         vx = (k0 * innovX) / dt
         vy = (k1 * innovY) / dt
 
-        // 步行模式速度鉗制 (最高 4.5 m/s)
-        if (motionState == MotionState.PEDESTRIAN_WALKING) {
-            val curSpd = sqrt(vx * vx + vy * vy)
-            if (curSpd > 4.5) {
-                val scale = 4.5 / curSpd
-                vx *= scale
-                vy *= scale
-            }
+        // 速度鉗制防護
+        val maxSpeed = if (motionState == MotionState.VEHICULAR_TRANSIT) 25.0 else 4.0
+        val curSpd = sqrt(vx * vx + vy * vy)
+        if (curSpd > maxSpeed) {
+            val scale = maxSpeed / curSpd
+            vx *= scale
+            vy *= scale
         }
 
         val (outLat, outLon) = getCurrentGeoLocation()
@@ -357,7 +386,10 @@ class PedestrianKalmanFilter {
     }
 
     fun isFilterInitialized(): Boolean = isInitialized
-    fun reset() { isInitialized = false }
+    fun reset() {
+        isInitialized = false
+        consecutiveRejections = 0
+    }
 }
 
 
@@ -406,6 +438,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var stepDetectorSensor: Sensor? = null
     private var maxAccInWindow = 9.8f
     private var minAccInWindow = 9.8f
+    private var lastSoftwareStepMs = 0L
+    private var lastAccMag = 9.8f
 
     // 行人卡爾曼濾波器與靜止偵測器實例
     private val kalmanFilter = PedestrianKalmanFilter()
@@ -691,6 +725,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val mag = sqrt(ax * ax + ay * ay + az * az)
             if (mag > maxAccInWindow) maxAccInWindow = mag
             if (mag < minAccInWindow) minAccInWindow = mag
+
+            // 軟體波峰計步備援 (當硬體 STEP_DETECTOR 在手持時未觸發時自動補足)
+            val nowUptime = SystemClock.uptimeMillis()
+            if (mag > 11.2f && (mag - lastAccMag) > 1.2f && (nowUptime - lastSoftwareStepMs) > 330L) {
+                lastSoftwareStepMs = nowUptime
+                onStepDetected()
+            }
+            lastAccMag = mag
 
             // 灌入靜止偵測器進行即時滑動變異數計算
             stationaryDetector.feedAccelerometer(ax, ay, az, lastGpsSpeedMps)
