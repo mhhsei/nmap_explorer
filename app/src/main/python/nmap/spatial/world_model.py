@@ -384,41 +384,73 @@ class WorldModel:
         """
         【查詢半徑 radius_m 內的所有店家、設施與地標大樓】
         作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的完整 POI 列表。
-        精準依據座標去重，確保範圍內所有店家、連鎖分店、社區大樓與設施完整呈現。
+        精準依據 3.0 公尺閾值去重同名實體，並將無名建築過濾或轉正為門牌地址，徹底消滅無意義的 apartments 雜訊。
         """
         results = []
         radius_deg = radius_m / 111139.0
         bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
-        seen_keys = set()
         category_lower = category.lower() if category else None
 
+        generic_tags = {
+            "apartments", "apartment", "residential", "commercial", "yes", "building", 
+            "house", "hotel", "office", "retail", "roof", "terrace", "dormitory", 
+            "school", "public", "industrial", "garages", "shed", "service", "detached",
+            "construction", "civic", "hospital", "kindergarten", "kiosk", "warehouse",
+            "建築物", "無名大樓", "房屋"
+        }
+
+        def resolve_building_display_name(bldg_obj) -> str:
+            t = bldg_obj.get("tags", {}) if isinstance(bldg_obj, dict) else getattr(bldg_obj, "tags", {})
+            n = bldg_obj.get("name") if isinstance(bldg_obj, dict) else getattr(bldg_obj, "name", "")
+            if not n:
+                n = t.get("name") or t.get("name:zh") or t.get("description") or ""
+            clean_n = str(n).strip()
+            if not clean_n or clean_n.lower() in generic_tags or clean_n in ("建築物", "無名大樓", "房屋"):
+                street = t.get("addr:street") or t.get("street") or ""
+                hn = t.get("addr:housenumber") or t.get("housenumber") or ""
+                if street and hn:
+                    return f"{street}{hn}號 (大樓)"
+                elif hn:
+                    return f"{hn}號 (大樓)"
+                return ""
+            return clean_n
+
         with self.rtree_lock:
+            # 1. 檢索周遭店家與離線地標
             for item in self.poi_rtree.intersection(bounds, objects=True):
                 poi = item.object
                 poi_name = poi.name or poi.tags.get("legal_name") or poi.tags.get("brand") or poi.category
                 if not poi_name:
                     continue
 
+                clean_poi_name = str(poi_name).strip()
+                if clean_poi_name.lower() in generic_tags:
+                    continue
+
                 if category_lower:
-                    if category_lower not in poi.category.lower() and category_lower not in poi_name.lower():
+                    if category_lower not in poi.category.lower() and category_lower not in clean_poi_name.lower():
                         continue
 
-                # 依據名稱與座標 (精確度約 11 公尺) 去重，防止同一實體重複，但保留不同分店與不同地點
-                loc_key = (poi_name, round(poi.lat, 4), round(poi.lon, 4))
-                if loc_key in seen_keys:
+                # 同名店家 3.0 公尺以內去重判定（距離 <= 3.0m 視為同一店家/重複標記；> 3.0m 視為不同分店或出入口）
+                is_dup = False
+                for existing in results:
+                    if existing.get("name") == clean_poi_name:
+                        if haversine_distance(poi.lat, poi.lon, existing["lat"], existing["lon"]) <= 3.0:
+                            is_dup = True
+                            break
+                if is_dup:
                     continue
 
                 rel = poi.calculate_relative(lat, lon, heading_deg)
                 if rel["distance_m"] <= radius_m:
-                    seen_keys.add(loc_key)
                     if not rel.get("name"):
-                        rel["name"] = poi_name
+                        rel["name"] = clean_poi_name
                     results.append(rel)
 
-            # 同步納入周遭具名社區大樓與地標建築物（如：宏國青山、大旭地社區等）
+            # 2. 同步納入周遭具名社區大樓與地標建築物（如：宏國青山、大旭地社區等）
             for b_item in self.building_rtree.intersection(bounds, objects=True):
                 bldg = b_item.object
-                b_name = bldg.get("name") if isinstance(bldg, dict) else getattr(bldg, "name", None)
+                b_name = resolve_building_display_name(bldg)
                 if not b_name:
                     continue
                 
@@ -430,13 +462,18 @@ class WorldModel:
                     b_lat = bldg.get("lat") if isinstance(bldg, dict) else getattr(bldg, "lat", lat)
                     b_lon = bldg.get("lon") if isinstance(bldg, dict) else getattr(bldg, "lon", lon)
 
-                loc_key = (b_name, round(b_lat, 4), round(b_lon, 4))
-                if loc_key in seen_keys:
+                # 同名地標/大樓 3.0 公尺以內去重
+                is_dup = False
+                for existing in results:
+                    if existing.get("name") == b_name:
+                        if haversine_distance(b_lat, b_lon, existing["lat"], existing["lon"]) <= 3.0:
+                            is_dup = True
+                            break
+                if is_dup:
                     continue
 
                 dist_m = haversine_distance(lat, lon, b_lat, b_lon)
                 if dist_m <= radius_m:
-                    seen_keys.add(loc_key)
                     brng = calculate_bearing(lat, lon, b_lat, b_lon)
                     rel_bearing = (brng - heading_deg + 360.0) % 360.0
                     clock_hr = int((rel_bearing + 15) // 30) % 12
