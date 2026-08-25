@@ -507,10 +507,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }
 
         try {
-            // 4. 啟動 Google Play 融合定位 (Fused Location Provider)
+            // 4. 啟動 Google Play 融合定位 (Fused Location Provider: 強制 0m 距離門檻與 0ms 延遲，杜絕系統節流)
             val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
                 .setMinUpdateIntervalMillis(500L)
-                .setMinUpdateDistanceMeters(0.5f)
+                .setMinUpdateDistanceMeters(0.0f)
+                .setMaxUpdateDelayMillis(0L)
+                .setWaitForAccurateLocation(false)
                 .build()
 
             fusedLocationClient.requestLocationUpdates(
@@ -537,13 +539,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 }
             }
 
-            // 5. 備援原生 LocationManager（GPS + Network 雙通道）
+            // 5. 備援原生 LocationManager（GPS + Network 雙通道，同樣設定 0m 門檻）
             locationManager?.let { lm ->
                 if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                    lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0.5f, this, Looper.getMainLooper())
+                    lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0.0f, this, Looper.getMainLooper())
                 }
                 if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                    lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0.5f, this, Looper.getMainLooper())
+                    lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0.0f, this, Looper.getMainLooper())
                 }
             }
         } catch (e: SecurityException) {
@@ -676,9 +678,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             userStepLengthM = 0.8f * userStepLengthM + 0.2f * max(0.45f, min(0.85f, estimatedSL))
         }
 
-        // 若 GPS 中斷超過 1.2 秒且濾波器已初始化：在騎樓/地下道啟動 PDR 平滑推算
+        // 若 GPS 中斷超過 0.8 秒且濾波器已初始化：在騎樓/地下道/兩次GPS間隙啟動 PDR 平滑推算，消滅滯後
         val timeSinceGps = now - lastGpsFixTimeMs
-        if (timeSinceGps > 1200L && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
+        if (timeSinceGps > 800L && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
             val (pdrLat, pdrLon) = kalmanFilter.advanceStep(userStepLengthM.toDouble(), smoothedHeading.toDouble())
             val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
             val humanLog = "[$timeStr] [騎樓PDR計步] 座標: ($pdrLat, $pdrLon) | 自適應步長: ${String.format(Locale.US, "%.2f", userStepLengthM)}m | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}°"
@@ -726,9 +728,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             if (mag > maxAccInWindow) maxAccInWindow = mag
             if (mag < minAccInWindow) minAccInWindow = mag
 
-            // 軟體波峰計步備援 (當硬體 STEP_DETECTOR 在手持時未觸發時自動補足)
+            // 軟體波峰計步備援 (手持手機平穩行走靈敏度調校：峰值 > 10.4 m/s²，間隔 > 300ms)
             val nowUptime = SystemClock.uptimeMillis()
-            if (mag > 11.2f && (mag - lastAccMag) > 1.2f && (nowUptime - lastSoftwareStepMs) > 330L) {
+            if (mag > 10.4f && (mag - lastAccMag) > 0.6f && (nowUptime - lastSoftwareStepMs) > 300L) {
                 lastSoftwareStepMs = nowUptime
                 onStepDetected()
             }

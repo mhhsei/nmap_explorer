@@ -57,21 +57,21 @@ class NVDAReporter:
             parts.append(f"進入【{street_name}】。")
             self.last_street = street_name
 
-        # 2. 路口動態接近與經過提醒
+        # 2. 路口動態接近與經過提醒（6.0m ~ 28.0m 提前預警，< 6.0m 提示正通過）
         is_intersection = intersection.get('junction_type') not in ["直行道路", None]
         has_junc_alert = False
         if is_intersection:
             dist = intersection.get('junction_distance_m', 0)
             jtype = intersection.get('junction_type', '路口')
-            if dist is not None and dist <= 5.0:
+            if dist is not None and dist < 6.0:
                 parts.append(f"📍 正通過【{jtype}】。")
                 has_junc_alert = True
-            elif dist is not None and dist <= 18.0:
+            elif dist is not None and dist <= 28.0:
                 parts.append(f"前方 {round(dist)} 公尺有【{jtype}】。")
                 has_junc_alert = True
 
-        # 3. 前方前進走廊左右店家提醒（限制前方 2.0 ~ 18.0 公尺，排除後方店家）
-        corridor_pois = [p for p in pois if p.get("distance_m", 999) <= 18.0 and p.get("distance_m", 0) >= 2.0 and "後方" not in p.get("relative_direction", "")]
+        # 3. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
+        corridor_pois = [p for p in pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
         if corridor_pois:

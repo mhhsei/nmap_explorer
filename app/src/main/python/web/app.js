@@ -1505,7 +1505,7 @@ class NmapWebApp {
     if (!data || !data.is_loaded || this.isDetailModalOpen || window.isDetailModalOpen) return;
     const now = Date.now();
 
-    // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 2.0 ~ 18.0 公尺，側向 <= 14.0 公尺)
+    // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 1.5 ~ 25.0 公尺，側向 <= 14.0 公尺，提前 20 秒預警)
     const realtimePois = this.getRealtimePois();
     if (realtimePois && realtimePois.length > 0) {
       const corridorPois = realtimePois.filter((p) => {
@@ -1515,7 +1515,7 @@ class NmapWebApp {
         
         // 嚴格前向/側向走廊：排除後方與夾角 > 95° 的店家
         const isForwardOrSide = !dir.includes("後方") && relBearing <= 90;
-        return d <= 18.0 && d >= 2.0 && isForwardOrSide;
+        return d <= 25.0 && d >= 1.5 && isForwardOrSide;
       });
 
       if (corridorPois.length > 0) {
@@ -1529,7 +1529,7 @@ class NmapWebApp {
         for (const poi of candidates) {
           const cleanedName = this.cleanPoiName(poi.name);
           const lastTime = this.announcedPoiCooldown.get(cleanedName) || this.announcedPoiCooldown.get(poi.name) || 0;
-          if (now - lastTime > 40000) { // 40秒冷卻，避免同店家重複疲勞轟炸
+          if (now - lastTime > 35000) { // 35秒冷卻，避免同店家重複疲勞轟炸
             this.announcedPoiCooldown.set(cleanedName, now);
             this.announcedPoiCooldown.set(poi.name, now);
 
@@ -1552,15 +1552,15 @@ class NmapWebApp {
       }
     }
 
-    // 2. 路口到達狀態機 (Junction State Machine: 6~18m 接近中 / <6m 正通過 / >20m 沿著前進)
+    // 2. 路口到達狀態機 (Junction State Machine: 6~28m 提前接近中 / <6m 正通過 / >30m 沿著前進)
     if (data.intersection) {
       const juncType = data.intersection.junction_type;
       const juncDist = data.intersection.junction_distance_m;
       const isRealJunction = juncType && juncType !== "直行道路";
 
       if (isRealJunction && juncDist !== null) {
-        // A. 接近路口 (6.0m ~ 18.0m)
-        if (juncDist <= 18.0 && juncDist >= 6.0) {
+        // A. 提前接近路口 (6.0m ~ 28.0m)
+        if (juncDist <= 28.0 && juncDist >= 6.0) {
           if (this.currentJunctionState !== "APPROACHING" && (now - (this.lastIntersectionAlertTime || 0) > 25000)) {
             this.currentJunctionState = "APPROACHING";
             this.lastIntersectionAlertTime = now;
@@ -1593,8 +1593,8 @@ class NmapWebApp {
           }
         }
         
-        // C. 通過後繼續前進 (> 20.0m)
-        else if (juncDist > 20.0 && this.currentJunctionState === "PASSING") {
+        // C. 通過後繼續前進 (> 30.0m)
+        else if (juncDist > 30.0 && this.currentJunctionState === "PASSING") {
           this.currentJunctionState = "IDLE";
           if (now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
             this.lastRoadAnnouncementTime = now;
