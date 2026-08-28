@@ -94,6 +94,26 @@
           <p id="desc-haptic-feedback" style="color:#94a3b8; font-size:0.92em; line-height:1.5; margin:0;">面向正北 (0°) 時發出雙重重震，每逢 16 方位齒輪刻度時輕震確認。</p>
         </fieldset>
 
+        <!-- 設定分類 3：物件辨識聽覺圖標（Earcons） -->
+        <fieldset style="border:1px solid #475569; border-radius:8px; padding:12px; margin:0;">
+          <legend style="color:#a5b4fc; font-weight:bold; font-size:1.1em; padding:0 6px;">🎵 物件辨識提示音 (Earcons)</legend>
+
+          <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; cursor:pointer; font-size:1.1em;">
+            <span id="label-earcon-enabled">朗讀前播放辨識短音效</span>
+            <input type="checkbox" id="setting-earcon-enabled" checked style="width:24px; height:24px; accent-color:#6366f1;" aria-labelledby="label-earcon-enabled" aria-describedby="desc-earcon-enabled">
+          </label>
+          <p id="desc-earcon-enabled" style="color:#94a3b8; font-size:0.92em; line-height:1.5; margin:0 0 12px 0;">在朗讀商店、地標、建築或交通設施前，先播放 0.1 秒專屬短音效，讓您瞬間分辨物件類型與方位。</p>
+
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px;">
+            <button type="button" id="btn-test-sound-shop" class="btn" style="background:#1e293b; border:1px solid #64748b; font-size:0.95em; padding:8px;" aria-label="試聽商店提示音">🏪 試聽：商店</button>
+            <button type="button" id="btn-test-sound-landmark" class="btn" style="background:#1e293b; border:1px solid #64748b; font-size:0.95em; padding:8px;" aria-label="試聽地標提示音">🏛️ 試聽：地標</button>
+            <button type="button" id="btn-test-sound-building" class="btn" style="background:#1e293b; border:1px solid #64748b; font-size:0.95em; padding:8px;" aria-label="試聽建築提示音">🏢 試聽：建築</button>
+            <button type="button" id="btn-test-sound-transit" class="btn" style="background:#1e293b; border:1px solid #64748b; font-size:0.95em; padding:8px;" aria-label="試聽交通設施提示音">🚏 試聽：交通</button>
+            <button type="button" id="btn-test-sound-junction" class="btn" style="background:#1e293b; border:1px solid #64748b; font-size:0.95em; padding:8px;" aria-label="試聽路口提示音">📍 試聽：路口</button>
+            <button type="button" id="btn-test-sound-warning" class="btn" style="background:#1e293b; border:1px solid #64748b; font-size:0.95em; padding:8px;" aria-label="試聽警示提示音">⚠️ 試聽：警示</button>
+          </div>
+        </fieldset>
+
       </div>
 
       <div style="display:grid; grid-template-columns:1fr; gap:10px;">

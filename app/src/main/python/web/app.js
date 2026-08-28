@@ -33,6 +33,9 @@ class WebAudioEngine {
         this.ctx = new AudioCtx();
       }
     }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
   }
 
   // 非同步載入並解碼真實的音效檔案 (.wav)
@@ -52,13 +55,14 @@ class WebAudioEngine {
       });
   }
 
-  // Item 3.3: 3D Spatial HRTF PannerNode Audio Cue
-  playSpatialTone(frequency = 440, type = 'sine', x = 0, y = 0, z = -1, duration = 0.15) {
+  // Item 3.3: 3D Spatial HRTF PannerNode Audio Cue (硬體時鐘微秒級精確排程)
+  playSpatialTone(frequency = 440, type = 'sine', x = 0, y = 0, z = -1, duration = 0.15, startTimeOffset = 0, volume = 0.3) {
     if (!this.enabled) return;
     this.initContext();
     if (!this.ctx) return;
 
     try {
+      const t0 = this.ctx.currentTime + Math.max(0, startTimeOffset);
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       const panner = this.ctx.createPanner();
@@ -70,25 +74,25 @@ class WebAudioEngine {
       panner.rolloffFactor = 1;
 
       if (panner.positionX) {
-        panner.positionX.setValueAtTime(x, this.ctx.currentTime);
-        panner.positionY.setValueAtTime(y, this.ctx.currentTime);
-        panner.positionZ.setValueAtTime(z, this.ctx.currentTime);
+        panner.positionX.setValueAtTime(x, t0);
+        panner.positionY.setValueAtTime(y, t0);
+        panner.positionZ.setValueAtTime(z, t0);
       } else {
         panner.setPosition(x, y, z);
       }
 
       osc.type = type;
-      osc.frequency.setValueAtTime(frequency, this.ctx.currentTime);
+      osc.frequency.setValueAtTime(frequency, t0);
 
-      gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+      gain.gain.setValueAtTime(volume, t0);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
 
       osc.connect(gain);
       gain.connect(panner);
       panner.connect(this.ctx.destination);
 
-      osc.start();
-      osc.stop(this.ctx.currentTime + duration);
+      osc.start(t0);
+      osc.stop(t0 + duration);
     } catch (e) {}
   }
 
@@ -170,6 +174,196 @@ class WebAudioEngine {
         }, i * 70);
       });
     } catch (e) {}
+  }
+
+  // =========================================================================
+  // 🎵 視障無障礙專屬聽覺圖標庫 (Accessible Auditory Icons / Earcons)
+  // 目的：在語音朗讀前播放 100~250ms 短促清脆且具 3D 空間定位的聲音，
+  // 讓使用者大腦在 0.1 秒內瞬間辨識即將播報的設施類型（商店、地標、建築、交通設施等）
+  // =========================================================================
+
+  /**
+   * 🏪 商店 / 超商 / 餐飲 (Shop & Dining Earcon)
+   * 概念：便利商店開門鈴與收銀機叮咚雙音階（上升純五度雙音階，清脆純淨）
+   * 音符：E5 (659.3Hz) -> B5 (987.8Hz)，正弦波，總長約 210ms
+   */
+  playShopTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.playSpatialTone(659.3, 'sine', x, 0, z, 0.08, 0.00, 0.28);
+    this.playSpatialTone(987.8, 'sine', x, 0, z, 0.14, 0.07, 0.32);
+  }
+
+  /**
+   * 🏛️ 地標 / 景點 / 公園 / 宗教名勝 (Landmark & Public Facility Earcon)
+   * 概念：開闊宏揚的大調三和弦琶音鐘琴音（A大調三和弦迴響，象徵重要景觀與文教機構）
+   * 音符：A4 (440Hz) -> C#5 (554.4Hz) -> E5 (659.3Hz)，三角波+正弦波，總長約 260ms
+   */
+  playLandmarkTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.playSpatialTone(440.0, 'triangle', x, 0, z, 0.07, 0.00, 0.25);
+    this.playSpatialTone(554.4, 'triangle', x, 0, z, 0.08, 0.05, 0.28);
+    this.playSpatialTone(659.3, 'sine', x, 0, z, 0.16, 0.10, 0.30);
+  }
+
+  /**
+   * 🏢 建築物 / 社區 / 大樓 / 大廈 (Building & Residential Earcon)
+   * 概念：沉穩厚實的雙重建築基石敲擊音（Solid Knock），象徵穩固的社區大樓與公寓
+   * 音符：C4 (261.6Hz) -> G3 (196.0Hz)，三角波沉穩微重音，總長約 180ms
+   */
+  playBuildingTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.playSpatialTone(261.6, 'triangle', x, 0, z, 0.07, 0.00, 0.35);
+    this.playSpatialTone(196.0, 'triangle', x, 0, z, 0.12, 0.06, 0.38);
+  }
+
+  /**
+   * 🚏 交通設施 / 公車站 / 捷運出口 / 號誌 (Transit & Infrastructure Earcon)
+   * 概念：捷運刷卡與公車到站電子提示雙短嗶音（Double Electronic Beep），穿透力強、節奏分明
+   * 音符：A5 (880Hz) 雙短跳音，時長約 135ms
+   */
+  playTransitTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.playSpatialTone(880.0, 'sine', x, 0, z, 0.045, 0.00, 0.30);
+    this.playSpatialTone(880.0, 'sine', x, 0, z, 0.065, 0.07, 0.32);
+  }
+
+  /**
+   * 📍 路口 / 岔路 / 轉向交會 (Junction & Intersection Earcon)
+   * 概念：方向指引上滑水滴音（Frequency Sweep），象徵前進道路分岔與轉折
+   * 音符：520Hz 平滑滑音至 784Hz，時長約 110ms
+   */
+  playJunctionTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      const t0 = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const panner = this.ctx.createPanner();
+
+      panner.panningModel = 'HRTF';
+      if (panner.positionX) {
+        panner.positionX.setValueAtTime(x, t0);
+        panner.positionY.setValueAtTime(0, t0);
+        panner.positionZ.setValueAtTime(z, t0);
+      } else {
+        panner.setPosition(x, 0, z);
+      }
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(520, t0);
+      osc.frequency.exponentialRampToValueAtTime(784, t0 + 0.10);
+
+      gain.gain.setValueAtTime(0.3, t0);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
+
+      osc.connect(gain);
+      gain.connect(panner);
+      panner.connect(this.ctx.destination);
+
+      osc.start(t0);
+      osc.stop(t0 + 0.12);
+    } catch (e) {}
+  }
+
+  /**
+   * 🛣️ 沿著道路前進 / 門牌確認 (Road & Path Guidance Earcon)
+   * 概念：柔和舒適的步伐單音，象徵平穩前進
+   * 音符：440Hz 三角波微音，時長約 90ms
+   */
+  playRoadTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.playSpatialTone(440.0, 'triangle', x, 0, z, 0.09, 0.00, 0.22);
+  }
+
+  /**
+   * ⚠️ 警示 / 危險 / 障礙物 (Warning & Caution Earcon)
+   * 概念：下墜雙重警戒跳音，提示注意地面或障礙
+   * 音符：350Hz 鋸齒波下墜接 220Hz，時長約 150ms
+   */
+  playWarningTone(x = 0, z = -1) {
+    if (!this.enabled) return;
+    this.playSpatialTone(350.0, 'sawtooth', x, 0, z, 0.06, 0.00, 0.25);
+    this.playSpatialTone(220.0, 'triangle', x, 0, z, 0.12, 0.05, 0.28);
+  }
+
+  /**
+   * 【通用物件類別聽覺圖標統一分發器】
+   * 依據分類標籤自動派發對應專屬音效
+   */
+  playCategoryEarcon(category, x = 0, z = -1) {
+    if (!this.enabled) return;
+    const cat = (category || "").toLowerCase().trim();
+    switch (cat) {
+      case "shop":
+      case "store":
+      case "restaurant":
+      case "food":
+      case "cafe":
+      case "convenience":
+        this.playShopTone(x, z);
+        break;
+      case "landmark":
+      case "attraction":
+      case "park":
+      case "temple":
+      case "church":
+      case "historic":
+        this.playLandmarkTone(x, z);
+        break;
+      case "building":
+      case "residential":
+      case "apartments":
+      case "office":
+        this.playBuildingTone(x, z);
+        break;
+      case "transit":
+      case "bus":
+      case "subway":
+      case "train":
+      case "station":
+      case "crossing":
+      case "traffic":
+        this.playTransitTone(x, z);
+        break;
+      case "junction":
+      case "intersection":
+        this.playJunctionTone(x, z);
+        break;
+      case "road":
+      case "door":
+        this.playRoadTone(x, z);
+        break;
+      case "warning":
+      case "danger":
+      case "alert":
+        this.playWarningTone(x, z);
+        break;
+      default:
+        this.playShopTone(x, z);
+        break;
+    }
+  }
+
+  /**
+   * 【依據 POI 物件精準計算 3D 空間位置並播放對應類別之聽覺圖標】
+   */
+  playForPoi(poi) {
+    if (!this.enabled || !poi) return;
+    let x = 0, z = -1;
+    if (poi.relative_bearing_deg !== undefined) {
+      const rad = (poi.relative_bearing_deg || 0) * Math.PI / 180.0;
+      const distAudio = Math.max(0.5, Math.min(10.0, poi.distance_m || 3.0));
+      x = distAudio * Math.sin(rad);
+      z = -distAudio * Math.cos(rad);
+    } else if (poi.relative_direction) {
+      const coords = this.parseClockDirection(poi.relative_direction, poi.distance_m);
+      x = coords.x;
+      z = coords.z;
+    }
+    const cat = window.app && window.app.classifyPoiCategory ? window.app.classifyPoiCategory(poi) : "shop";
+    this.playCategoryEarcon(cat, x, z);
   }
 
   // 解析中文時鐘方位為立體聲 3D 座標 (x, z)
@@ -1226,9 +1420,13 @@ class NmapWebApp {
     modal.style.display = "flex";
     body.focus();
 
-    if (this.audio) this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.1);
+    if (this.audio) {
+      this.audio.playForPoi(poi);
+    }
     const spokenFloor = (poi.floor && poi.floor !== "1F") ? `，位於${poi.floor}` : "";
-    this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺。背景播報已暫停。`, false, true);
+    setTimeout(() => {
+      this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺。背景播報已暫停。`, false, true);
+    }, 180);
 
     // 非同步極速向後端獲取當日即時營業時間、電話與無障礙資訊 (< 0.55s)
     const encodedName = encodeURIComponent(poi.name || "");
@@ -1359,7 +1557,14 @@ class NmapWebApp {
         return;
       }
       
-      if (this.audio) this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
+      const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+      const nearest = realtimePois[0];
+      if (isEarconOn && this.audio && nearest) {
+        // 朗讀前精確播放最近設施之專屬 3D 空間音效 (商店/地標/建築/交通)
+        this.audio.playForPoi(nearest);
+      } else if (this.audio) {
+        this.audio.playSpatialTone(660, 'sine', 0, 0, -1, 0.15);
+      }
       
       const closeCount = realtimePois.filter(p => p.distance_m <= 35).length;
       const foodCount = realtimePois.filter(p => ['restaurant', 'fast_food', 'food', 'bakery', 'cafe', 'breakfast', 'tea', 'diner'].some(k => (p.category || '').toLowerCase().includes(k))).length;
@@ -1374,7 +1579,9 @@ class NmapWebApp {
           return `${cleanName}（${clock} ${p.distance_m}m，${cat}）`;
       });
       
-      this.updateLiveLog(summaryStr + lines.join("\n"), false, true);
+      setTimeout(() => {
+        this.updateLiveLog(summaryStr + lines.join("\n"), false, true);
+      }, (isEarconOn && nearest) ? 180 : 0);
     };
 
     const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
@@ -1439,8 +1646,15 @@ class NmapWebApp {
           ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。${gpsStr}。`
           : `走在【${street}】。面向${dirStr} (${exactDeg}°)。${gpsStr}。`;
 
-        this.audio.playSpatialTone(480, 'triangle', 0, 0, -0.8, 0.12);
-        this.updateLiveLog(`【目前位置】\n${txt}`, false, true);
+        const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+        if (isEarconOn && this.audio) {
+          this.audio.playRoadTone(0, -0.8);
+        } else if (this.audio) {
+          this.audio.playSpatialTone(480, 'triangle', 0, 0, -0.8, 0.12);
+        }
+        setTimeout(() => {
+          this.updateLiveLog(`【目前位置】\n${txt}`, false, true);
+        }, isEarconOn ? 180 : 0);
       })
       .catch(() => {
         this.updateLiveLog("【目前位置】無法取得最新資訊。", true, true);
@@ -1471,8 +1685,15 @@ class NmapWebApp {
       .then((data) => {
         if (data.success && data.report) {
           this.lastSpokenIntersection = data.report;
-          this.audio.playArrival();
-          this.updateLiveLog(data.report, false, true);
+          const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+          if (isEarconOn && this.audio) {
+            this.audio.playJunctionTone(0, -1);
+          } else if (this.audio) {
+            this.audio.playArrival();
+          }
+          setTimeout(() => {
+            this.updateLiveLog(data.report, false, true);
+          }, isEarconOn ? 180 : 0);
         } else {
           this.updateLiveLog(data.message || "前方路口資料讀取失敗。", true);
         }
@@ -1531,6 +1752,147 @@ class NmapWebApp {
     return name.trim() || String(rawName).trim();
   }
 
+  /**
+   * 【物件類別智慧研判器 (Object Category Classifier)】
+   * 將任意 POI、店家、地標或設施，精準分流為四大核心無障礙類別：
+   * 1. 'shop'：商店、餐飲、超商、購物、藥局、診所、生活服務
+   * 2. 'landmark'：歷史景點、公園、文教、宗教名勝、公家機關、醫院
+   * 3. 'building'：社區、集合住宅、大廈、純建築大樓
+   * 4. 'transit'：大眾運輸、公車站牌、捷運出口、火車、號誌、斑馬線
+   */
+  classifyPoiCategory(poi) {
+    if (!poi) return "shop";
+
+    const cat = ((poi.category || "") + " " + (poi.type || "")).toLowerCase();
+    const name = (poi.name || "").toLowerCase();
+    const tags = poi.tags || {};
+    const tagStr = JSON.stringify(tags).toLowerCase();
+
+    // 1. 交通設施 (Transit: 公車站、捷運站、火車站、號誌、斑馬線、停車場、轉運站)
+    if (
+      cat.includes("transit") || cat.includes("bus") || cat.includes("subway") ||
+      cat.includes("train") || cat.includes("railway") || cat.includes("platform") ||
+      cat.includes("stop_position") || cat.includes("station") || cat.includes("traffic") ||
+      cat.includes("crossing") || cat.includes("parking") ||
+      name.includes("公車站") || name.includes("站牌") || name.includes("捷運") ||
+      name.includes("出口") || name.includes("火車站") || name.includes("高鐵") ||
+      name.includes("客運") || name.includes("轉運站") || name.includes("號誌") ||
+      name.includes("斑馬線") || name.includes("人行道") ||
+      tagStr.includes("highway") || tagStr.includes("railway") || tagStr.includes("public_transport")
+    ) {
+      return "transit";
+    }
+
+    // 2. 地標景點與公眾文教機構 (Landmark: 歷史景點、公園、廟宇教堂、學校、政府機關、醫院、圖書館)
+    if (
+      cat.includes("landmark") || cat.includes("attraction") || cat.includes("historic") ||
+      cat.includes("monument") || cat.includes("viewpoint") || cat.includes("museum") ||
+      cat.includes("park") || cat.includes("temple") || cat.includes("church") ||
+      cat.includes("worship") || cat.includes("school") || cat.includes("university") ||
+      cat.includes("college") || cat.includes("library") || cat.includes("hospital") ||
+      cat.includes("police") || cat.includes("fire_station") || cat.includes("government") ||
+      cat.includes("townhall") || cat.includes("post_office") ||
+      name.includes("公園") || name.includes("廟") || name.includes("宮") ||
+      name.includes("寺") || name.includes("教堂") || name.includes("紀念館") ||
+      name.includes("博物館") || name.includes("美術館") || name.includes("學校") ||
+      name.includes("國小") || name.includes("國中") || name.includes("高中") ||
+      name.includes("大學") || name.includes("圖書館") || name.includes("醫院") ||
+      name.includes("分局") || name.includes("派出所") || name.includes("郵局") ||
+      name.includes("區公所") || name.includes("市府") || name.includes("戶政") ||
+      tagStr.includes("tourism") || tagStr.includes("historic") || tagStr.includes("leisure")
+    ) {
+      return "landmark";
+    }
+
+    // 3. 社區大樓與純建築物 (Building: 集合住宅、商辦大廈、社區大樓)
+    if (
+      cat.includes("building") || cat.includes("residential") || cat.includes("apartments") ||
+      cat.includes("dormitory") || cat.includes("house") ||
+      name.endsWith("大樓") || name.endsWith("大廈") || name.endsWith("社區") ||
+      name.endsWith("華廈") || name.endsWith("園區") || name.endsWith("公廈") ||
+      name.includes("公寓") || (poi.id && String(poi.id).startsWith("bldg_")) ||
+      tagStr.includes("building")
+    ) {
+      // 若名稱同時包含明顯店名（如「屈臣氏」、「全家」），優先歸為商店
+      const isActuallyShop = ["便利", "超商", "咖啡", "餐廳", "小吃", "門市", "店", "分行", "行", "堂", "館", "坊", "局"].some(k => name.includes(k));
+      if (!isActuallyShop) {
+        return "building";
+      }
+    }
+
+    // 4. 其餘均為商店、餐飲、服務與生活店家 (Shop: 餐廳、超商、百貨、藥局、診所、美髮...)
+    return "shop";
+  }
+
+  /**
+   * 【物件無障礙語音前置播報器 (Announce Object with Pre-Speech Earcon)】
+   * 核心功能：在語音朗讀前，先依據物件類別播放短促清晰之 3D 空間立體聲音效 (Earcon)，
+   * 延遲 180ms 音效鳴響完畢後，語音優雅切入，讓使用者 0.1 秒聽懂前方即將播報何種物件！
+   */
+  announceObject(poi, msg, isForce = false) {
+    if (!msg) return;
+    const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+
+    if (isEarconOn && this.audio) {
+      // 1. 在朗讀之前，精準於 3D 空間方位播放該類別之專屬短音效 (Earcon)
+      this.audio.playForPoi(poi);
+
+      // 2. 音效長度約 140~240ms，平滑延遲 180ms 後無縫切入語音朗讀，杜絕音效與人聲重疊吞字
+      setTimeout(() => {
+        this.updateLiveLog(msg, false, isForce);
+      }, 180);
+    } else {
+      this.updateLiveLog(msg, false, isForce);
+    }
+    this.lastSpeechTime = Date.now();
+  }
+
+  /**
+   * 【路口語音前置播報器】
+   */
+  announceJunction(msg, isApproaching = true) {
+    if (!msg) return;
+    const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+
+    if (isEarconOn && this.audio) {
+      if (isApproaching) {
+        this.audio.playJunctionTone(0, -1);
+      } else {
+        this.audio.playArrival();
+      }
+      setTimeout(() => {
+        this.updateLiveLog(msg, false, true);
+      }, 180);
+    } else {
+      this.updateLiveLog(msg, false, true);
+    }
+    this.lastSpeechTime = Date.now();
+    this.lastRoadAnnouncementTime = Date.now();
+  }
+
+  /**
+   * 【道路與門牌前置播報器】
+   */
+  announceRoad(msg, isNewStreet = false) {
+    if (!msg) return;
+    const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+
+    if (isEarconOn && this.audio) {
+      if (isNewStreet) {
+        this.audio.playJunctionTone(0, -1);
+      } else {
+        this.audio.playRoadTone(0, -1);
+      }
+      setTimeout(() => {
+        this.updateLiveLog(msg, false, true);
+      }, 180);
+    } else {
+      this.updateLiveLog(msg, false, true);
+    }
+    this.lastSpeechTime = Date.now();
+    this.lastRoadAnnouncementTime = Date.now();
+  }
+
   // ========== 前進路徑走廊店家與路口到達即時導引 ==========
   checkProximityAlerts(data) {
     if (!data || !data.is_loaded || this.isDetailModalOpen || window.isDetailModalOpen) return;
@@ -1570,19 +1932,13 @@ class NmapWebApp {
             this.announcedPoiCooldown.set(cleanedName, now);
             this.announcedPoiCooldown.set(poi.name, now);
 
-            // 精確 3D 空間立體聲：以相對夾角計算左右耳座標 (x, z)
-            const rad = (poi.relative_bearing_deg || 0) * Math.PI / 180.0;
-            const distAudio = Math.max(0.5, Math.min(10.0, poi.distance_m || 3.0));
-            const x = distAudio * Math.sin(rad);
-            const z = -distAudio * Math.cos(rad);
-            this.audio.playSpatialTone(660, 'triangle', x, 0, z, 0.15);
-
             // 省話模式格式：[店名] (樓層)，[方位 距離]m (例如：「全家便利商店，左前方 8公尺」或「祐安牙醫 (2樓)，右前方 12公尺」)
             const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
             const dirText = poi.relative_direction ? `，${poi.relative_direction} ${Math.round(poi.distance_m)}公尺` : "";
             const msg = `${cleanedName}${floorTag}${dirText}`;
-            this.updateLiveLog(msg, false, false);
-            this.lastSpeechTime = now;
+
+            // 在朗讀前播放該類別之短音效，並依相對方位給予 3D 立體聲
+            this.announceObject(poi, msg, false);
             return; // 報讀完店家後立即返回，絕不在同一個毫秒接續觸發路口廣播！
           }
         }
@@ -1601,7 +1957,6 @@ class NmapWebApp {
           if (this.currentJunctionState !== "APPROACHING" && (now - (this.lastIntersectionAlertTime || 0) > 25000)) {
             this.currentJunctionState = "APPROACHING";
             this.lastIntersectionAlertTime = now;
-            this.audio.playSpatialTone(550, 'sine', 0, 0, -1, 0.2);
 
             let roads = "";
             const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "";
@@ -1610,9 +1965,7 @@ class NmapWebApp {
               roads = `（即將交會 ${filteredRoads.join("、")}）`;
             }
             const msg = `📍 前方 ${Math.round(juncDist)} 公尺有【${juncType}】${roads}。`;
-            this.updateLiveLog(msg, false, true);
-            this.lastSpeechTime = now;
-            this.lastRoadAnnouncementTime = now;
+            this.announceJunction(msg, true);
             return;
           }
         }
@@ -1621,11 +1974,8 @@ class NmapWebApp {
         else if (juncDist < 6.0) {
           if (this.currentJunctionState !== "PASSING") {
             this.currentJunctionState = "PASSING";
-            this.audio.playArrival();
             const msg = `📍 正通過【${juncType}】。`;
-            this.updateLiveLog(msg, false, true);
-            this.lastSpeechTime = now;
-            this.lastRoadAnnouncementTime = now;
+            this.announceJunction(msg, false);
             return;
           }
         }
@@ -1634,12 +1984,9 @@ class NmapWebApp {
         else if (juncDist > 30.0 && this.currentJunctionState === "PASSING") {
           this.currentJunctionState = "IDLE";
           if (now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
-            this.lastRoadAnnouncementTime = now;
-            this.lastSpeechTime = now;
-            this.audio.playArrival();
             const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
             const msg = `沿著【${currentRoad}】前進`;
-            this.updateLiveLog(msg, false, true);
+            this.announceRoad(msg, false);
             return;
           }
         }
@@ -1664,10 +2011,7 @@ class NmapWebApp {
           this.currentStreetName = st;
           this.consecutiveRoadCandidate = null;
           this.consecutiveRoadCount = 0;
-          this.lastRoadAnnouncementTime = now;
-          this.lastSpeechTime = now;
-          this.audio.playArrival();
-          this.updateLiveLog(`進入【${this.currentStreetName}】`, false, true);
+          this.announceRoad(`進入【${this.currentStreetName}】`, true);
           return;
         }
       } else {
@@ -1679,13 +2023,10 @@ class NmapWebApp {
     // 4. 若都沒有店家 / 語音安靜超過 20 秒，精簡播報當前走在哪條路上與大約門牌號碼
     if (now - this.lastSpeechTime >= 20000 && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
       if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
-        this.lastSpeechTime = now;
-        this.lastRoadAnnouncementTime = now;
         const street = data.road_info.street_name;
         const door = (data.door_estimates && data.door_estimates.concise_door) ? data.door_estimates.concise_door : "";
         const msg = door ? `沿著【${street}】前進，${door}` : `沿著【${street}】前進`;
-        this.audio.playSpatialTone(480, 'sine', 0, 0, -1, 0.1);
-        this.updateLiveLog(msg, false, true);
+        this.announceRoad(msg, false);
       }
     }
   }
@@ -1804,8 +2145,19 @@ class NmapWebApp {
       });
     }
 
-    this.updateLiveLog(lines.join("\n"), false, true);
-    if (this.liveLog && this.liveLog.firstElementChild) this.liveLog.firstElementChild.focus();
+    const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
+    if (isEarconOn && this.audio) {
+      if (leftPois.length > 0) {
+        this.audio.playShopTone(-1.5, -0.5);
+      } else if (rightPois.length > 0) {
+        this.audio.playShopTone(1.5, -0.5);
+      }
+    }
+
+    setTimeout(() => {
+      this.updateLiveLog(lines.join("\n"), false, true);
+      if (this.liveLog && this.liveLog.firstElementChild) this.liveLog.firstElementChild.focus();
+    }, isEarconOn ? 180 : 0);
 
     // 左右立體音效掃描
     this.audio.playSpatialTone(440, 'sine', -2, 0, -1, 0.1);
@@ -2529,7 +2881,8 @@ class NmapWebApp {
       turnAnnounce: true,         // 轉動手機即時播報方位 (Google TTS)
       turnTickSound: true,        // 轉向立體聲刻度音與微震 (Tick)
       autoPoiAnnounce: true,      // 接近店家自動提醒 (VoiceVista)
-      hapticFeedback: true        // 齒輪與正北重震觸覺
+      hapticFeedback: true,       // 齒輪與正北重震觸覺
+      earconEnabled: true         // 朗讀前播放物件辨識短音效 (Earcons)
     };
 
     try {
@@ -2566,11 +2919,13 @@ class NmapWebApp {
     const chkTick = document.getElementById("setting-tick-sound");
     const chkPoi = document.getElementById("setting-auto-poi-announce");
     const chkHaptic = document.getElementById("setting-haptic-feedback");
+    const chkEarcon = document.getElementById("setting-earcon-enabled");
 
     if (chkTurn) chkTurn.checked = !!this.settings.turnAnnounce;
     if (chkTick) chkTick.checked = !!this.settings.turnTickSound;
     if (chkPoi) chkPoi.checked = !!this.settings.autoPoiAnnounce;
     if (chkHaptic) chkHaptic.checked = !!this.settings.hapticFeedback;
+    if (chkEarcon) chkEarcon.checked = this.settings.earconEnabled !== false;
 
     modal.style.display = "flex";
 
@@ -2602,6 +2957,33 @@ class NmapWebApp {
     bindToggle(chkTick, "turnTickSound", "轉向立體聲刻度音與微震");
     bindToggle(chkPoi, "autoPoiAnnounce", "接近店家自動提醒");
     bindToggle(chkHaptic, "hapticFeedback", "正北重震與齒輪觸覺");
+    bindToggle(chkEarcon, "earconEnabled", "朗讀前播放物件辨識短音效");
+
+    // 聽覺圖標試聽按鈕綁定（點選即播放專屬音效並報讀音效特徵）
+    const bindTestBtn = (btnId, playFn, descText) => {
+      const btn = document.getElementById(btnId);
+      if (!btn) return;
+      btn.onclick = () => {
+        playFn();
+        if (window.AndroidBridge && window.AndroidBridge.speak) {
+          window.AndroidBridge.speak(descText, true);
+        } else if (window.speechSynthesis) {
+          try {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(descText);
+            u.lang = 'zh-TW';
+            window.speechSynthesis.speak(u);
+          } catch(e) {}
+        }
+      };
+    };
+
+    bindTestBtn("btn-test-sound-shop", () => this.audio.playShopTone(0, -1), "播放商店提示音：上升純五度清脆叮咚聲。");
+    bindTestBtn("btn-test-sound-landmark", () => this.audio.playLandmarkTone(0, -1), "播放地標提示音：悠揚大調鐘鳴三和弦。");
+    bindTestBtn("btn-test-sound-building", () => this.audio.playBuildingTone(0, -1), "播放建築提示音：沉穩基石雙重敲擊。");
+    bindTestBtn("btn-test-sound-transit", () => this.audio.playTransitTone(0, -1), "播放交通設施提示音：電子提示雙短嗶音。");
+    bindTestBtn("btn-test-sound-junction", () => this.audio.playJunctionTone(0, -1), "播放路口提示音：方向躍升水滴滑音。");
+    bindTestBtn("btn-test-sound-warning", () => this.audio.playWarningTone(0, -1), "播放警示提示音：下墜雙重警戒跳音。");
 
     const closeBtn = document.getElementById("settings-modal-close-btn");
     const closeBottomBtn = document.getElementById("settings-modal-close-bottom-btn");

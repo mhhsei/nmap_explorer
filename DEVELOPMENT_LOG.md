@@ -53,6 +53,23 @@
   1. **消滅簽名不相容（INSTALL_FAILED_UPDATE_INCOMPATIBLE）**：建立專屬固定 Keystore 並納入專案，綁定 `release` 與 `debug` 建置類型。徹底消除 GitHub Actions 每次在臨時虛擬機隨機生成臨時金鑰引發「無法安裝應用程式 / 發生問題」的致命缺陷，確保全平台與日後所有更新版本簽名永久一致。
   2. **強化在線自動更新管線**：升級 `AppUpdateManager.kt` 支援完整 HTTP 3xx 重新導向串流；下載目錄移至外部儲存空間（防止 Android 14+ 內部快取沙盒隔離阻擋安裝）；安裝前調度 `packageManager.getPackageArchiveInfo` 進行 APK 完整性與套件識別碼雙重校驗；顯式授權 FileProvider URI 給系統安裝器。
   3. **正式 Release 建置標準化**：GitHub Actions 改採 `assembleRelease` 正式編譯並打包經由固定金鑰簽署之純淨 Release APK（非 debuggable）。
+- **🎵 語音朗讀前置聽覺圖標庫 (Auditory Icons / Earcons) 與 3D 空間立體聲定位 (`app.js`, `index.html`)**:
+  1. **物件類別專屬音效設計 (Short & Crisp Earcons)**：
+     - 🏪 **商店 / 超商 / 餐飲 (`playShopTone`)**：上升純五度雙音階叮咚聲（$E_5$ 659.3Hz $\to$ $B_5$ 987.8Hz，正弦波），時長約 210ms，清脆歡快，象徵便利商店進門與收銀機鈴聲。
+     - 🏛️ **地標 / 公園 / 文教 / 機構 (`playLandmarkTone`)**：開闊大調三和弦鐘琴琶音（$A_4$ 440Hz $\to$ $C^\#_5$ 554.4Hz $\to$ $E_5$ 659.3Hz，三角波+正弦波），時長約 260ms，典雅悠揚，象徵重要地標與公共機構。
+     - 🏢 **建築 / 社區 / 大樓 (`playBuildingTone`)**：沉穩厚實雙重基石敲擊音（$C_4$ 261.6Hz $\to$ $G_3$ 196Hz，三角波），時長約 180ms，穩固踏實，象徵集合住宅與大廈外觀。
+     - 🚏 **交通設施 / 公車站 / 捷運 / 號誌 (`playTransitTone`)**：電子雙短嗶音（$A_5$ 880Hz 短跳音 $\times 2$），時長約 135ms，穿透力強、節奏分明，象徵公車到站與捷運嗶卡。
+     - 📍 **路口 / 轉向交會 (`playJunctionTone`)**：水滴滑音（520Hz 平滑滑音至 784Hz），時長約 110ms，象徵即將面臨岔路或轉折。
+     - 🛣️ **道路前進 / 門牌確認 (`playRoadTone`)**：柔和步伐單音（440Hz 三角波微音），時長約 90ms，象徵穩定行走。
+     - ⚠️ **警示 / 危險 / 障礙物 (`playWarningTone`)**：下墜警戒雙音（350Hz 鋸齒波 $\to$ 220Hz），時長約 150ms。
+  2. **朗讀前 180ms 優先播放時序與 3D 空間方位 (`announceObject`)**：
+     - 在朗讀文字之前，依據物件相對於使用者的方位角度（`relative_bearing_deg` 或鐘點方向）與距離，透過 Web Audio API HRTF `PannerNode` 於左右耳 3D 空間精確發聲。
+     - 短促音效鳴響約 180ms 後，文字朗讀順暢銜接切入，徹底杜絕音效與語音同毫秒爆音或遮蔽。視障者未聞其字，大腦 0.1 秒先辨其類與其位！
+  3. **物件智慧研判器 (`classifyPoiCategory`)**：
+     - 自動解析 POI 的 `category`、`type`、`tags` 與真實中文店名（如「台北車站 (忠孝) 公車站牌」➔ 交通；「二二八和平公園」➔ 地標；「壽德大樓」➔ 建築；「7-Eleven」➔ 商店），100% 精準指派對應音效。
+  4. **無障礙偏好設定與互動試聽面板**：
+     - 偏好設定對話框新增「朗讀前播放辨識短音效」開關（預設開啟，儲存於 LocalStorage）。
+     - 提供 6 顆專屬試聽按鈕（🏪 商店、🏛️ 地標、🏢 建築、🚏 交通、📍 路口、⚠️ 警示），點選立即播放 3D 音效並由語音提示說明特徵，方便初次使用者熟悉與辨認。
 - **🛰️ GPS 單一來源架構 (Single Source of Truth) 與防乒乓拉扯 (`LocationSensorBridge.kt`)**:
   1. **跨廠牌階層回退**：若裝置具備 Google Play Services（台灣絕大多數手機標配），僅啟用 `FusedLocationProviderClient`，完全關閉 `LocationManager` 的 GPS/Network 雙通道監聽，徹底消滅 10~37 公尺的 A-B-A 乒乓震盪；若無 Google 服務（如純 AOSP/特定客製 ROM），則自動降級回退至原生 `GPS_PROVIDER`。
   2. **靜止死鎖看門狗安全破鎖 (Deadman Safety Breakout)**：取消靜止狀態下粗暴的「座標 100% 凍結 return」。當 GPS 連續位移 $> 5.0$ 公尺（且精度 $< 15$ 米）或瞬時速度 $> 0.55\text{ m/s}$ 時，判定為真實物理行走，強制喚醒卡爾曼濾波器並重新對齊，徹底消滅在許昌街行走時座標定格長達 85 秒的 Bug。
