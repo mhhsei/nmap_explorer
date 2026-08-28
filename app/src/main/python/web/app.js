@@ -613,6 +613,13 @@ class NmapWebApp {
     this.canvasCtx = this.radarCanvas ? this.radarCanvas.getContext("2d") : null;
     this.streetSummary = document.getElementById("street-scene-summary");
     this.streetTagsContainer = document.getElementById("street-tags-container");
+
+    // 預設將所有對話框設為完全隱藏與 inert，杜絕冷啟動時 TalkBack 誤掃描
+    document.querySelectorAll(".modal-overlay").forEach(m => {
+      m.style.display = "none";
+      m.setAttribute("aria-hidden", "true");
+      m.setAttribute("inert", "");
+    });
   }
 
   bindEvents() {
@@ -819,10 +826,18 @@ class NmapWebApp {
     if (poiNavNmapBtn) poiNavNmapBtn.addEventListener("click", () => this.startBeaconToTarget());
     if (poiNavGmapsBtn) poiNavGmapsBtn.addEventListener("click", () => this.launchGoogleMapsNavigation());
 
-    // ESC key closes modal
+    // ESC key closes any active modal
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        this.closePoiModal();
+        if (this.activeModal) {
+          const m = this.activeModal;
+          this.closeModal(m);
+          if (m && m.id === "poi-detail-modal") {
+            this.closePoiModal();
+          }
+        } else {
+          this.closePoiModal();
+        }
       }
     });
 
@@ -1212,7 +1227,8 @@ class NmapWebApp {
               e.preventDefault();
               e.stopPropagation();
             }
-            this.showPoiDetail(matchedPoi);
+            this.lastPoiTriggerElement = li;
+            this.showPoiDetail(matchedPoi, li);
           };
 
           li.onclick = triggerOpen;
@@ -1417,8 +1433,7 @@ class NmapWebApp {
     };
 
     renderModalContent({}, true);
-    modal.style.display = "flex";
-    body.focus();
+    this.openModal("poi-detail-modal", (typeof triggerEl !== "undefined" && triggerEl) ? triggerEl : (this.lastPoiTriggerElement || document.activeElement));
 
     if (this.audio) {
       this.audio.playForPoi(poi);
@@ -1454,8 +1469,7 @@ class NmapWebApp {
   closePoiModal() {
     this.isDetailModalOpen = false;
     window.isDetailModalOpen = false;
-    const modal = document.getElementById("poi-detail-modal");
-    if (modal) modal.style.display = "none";
+    this.closeModal("poi-detail-modal");
     this.updateLiveLog("已關閉地標詳情，恢復地圖即時播報。", false, true);
   }
 
@@ -2752,6 +2766,148 @@ class NmapWebApp {
     }
   }
 
+  // =========================================================================
+  // 🛡️ WCAG 2.2 AAA 無障礙模態對話框管理器 (Accessible Modal Shield & Focus Trap)
+  // 核心任務：
+  // 1. 開啟對話框時，將主畫面容器 (#main-content) 設為 inert 與 aria-hidden="true"，
+  //    徹底杜絕 TalkBack 單指左右滑動穿透至前一層背景內容。
+  // 2. 建立焦點鎖定圈 (Focus Trap)，Tab / Shift+Tab 鍵循環不脫逸。
+  // 3. 關閉對話框時，解除背景鎖定並精準讓焦點歸位至觸發按鈕。
+  // =========================================================================
+
+  openModal(modalId, triggerElement = null) {
+    const modal = typeof modalId === 'string' ? document.getElementById(modalId) : modalId;
+    if (!modal) return;
+
+    this.activeModal = modal;
+    if (triggerElement) {
+      this.lastFocusedElement = triggerElement;
+    } else if (document.activeElement && document.activeElement !== document.body) {
+      this.lastFocusedElement = document.activeElement;
+    }
+
+    // 1. 徹底屏蔽主畫面容器：TalkBack / NVDA 100% 無法讀取、滑動或聚焦非對話框內容
+    const mainContent = document.getElementById("main-content");
+    if (mainContent) {
+      mainContent.setAttribute("aria-hidden", "true");
+      mainContent.setAttribute("inert", "");
+      mainContent.style.pointerEvents = "none";
+    }
+
+    // 2. 將其他非當前對話框全部隱藏並設為 inert
+    document.querySelectorAll(".modal-overlay").forEach(m => {
+      if (m !== modal) {
+        m.style.display = "none";
+        m.setAttribute("aria-hidden", "true");
+        m.setAttribute("inert", "");
+      }
+    });
+
+    // 3. 顯示並活化當前對話框
+    modal.removeAttribute("aria-hidden");
+    modal.removeAttribute("inert");
+    modal.style.display = "flex";
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("role", "dialog");
+
+    // 4. 啟用焦點鎖定圈 (Focus Trap)
+    this.setupFocusTrap(modal);
+
+    // 5. 將焦點移至對話框標題或第一個可聚焦元件
+    setTimeout(() => {
+      const focusTarget = modal.querySelector("h2, [tabindex='0'], button:not(.btn-close), input");
+      if (focusTarget && typeof focusTarget.focus === "function") {
+        focusTarget.focus();
+      }
+    }, 80);
+  }
+
+  closeModal(modalId) {
+    const modal = typeof modalId === 'string' ? document.getElementById(modalId) : modalId;
+    if (!modal) return;
+
+    // 1. 解除焦點鎖定圈
+    this.removeFocusTrap(modal);
+
+    // 2. 關閉並凍結此對話框
+    modal.style.display = "none";
+    modal.setAttribute("aria-hidden", "true");
+    modal.setAttribute("inert", "");
+
+    if (this.activeModal === modal) {
+      this.activeModal = null;
+    }
+
+    // 3. 若無其他對話框開啟，徹底還原主畫面可存取性
+    const anyOtherOpen = Array.from(document.querySelectorAll(".modal-overlay")).some(m => m.style.display === "flex");
+    if (!anyOtherOpen) {
+      const mainContent = document.getElementById("main-content");
+      if (mainContent) {
+        mainContent.removeAttribute("aria-hidden");
+        mainContent.removeAttribute("inert");
+        mainContent.style.pointerEvents = "";
+      }
+
+      // 4. 焦點精準回歸觸發來源按鈕
+      if (this.lastFocusedElement && typeof this.lastFocusedElement.focus === "function") {
+        try {
+          this.lastFocusedElement.focus();
+        } catch (e) {}
+        this.lastFocusedElement = null;
+      }
+    }
+  }
+
+  setupFocusTrap(modal) {
+    this.removeFocusTrap(modal);
+
+    const focusableSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    modal._focusTrapHandler = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeModal(modal);
+        if (modal.id === "poi-detail-modal") {
+          this.closePoiModal();
+        }
+        return;
+      }
+
+      if (e.key !== "Tab") return;
+
+      const focusable = Array.from(modal.querySelectorAll(focusableSelector)).filter(el => {
+        return el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement;
+      });
+
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first || !modal.contains(document.activeElement)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last || !modal.contains(document.activeElement)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    modal.addEventListener("keydown", modal._focusTrapHandler);
+  }
+
+  removeFocusTrap(modal) {
+    if (modal && modal._focusTrapHandler) {
+      modal.removeEventListener("keydown", modal._focusTrapHandler);
+      modal._focusTrapHandler = null;
+    }
+  }
+
   // 顯示無障礙更新對話框 (Show Accessible Update Dialog)
   showUpdateDialog(latestVer, title, downloadUrl, notes) {
     const modal = document.getElementById("update-modal");
@@ -2762,7 +2918,7 @@ class NmapWebApp {
     if (!modal || !body) return;
 
     body.innerHTML = `<p><strong>最新版本：v${latestVer}</strong></p><p><strong>${title || '新版本發布'}</strong></p><div style="max-height:120px;overflow-y:auto;color:#cbd5e1;font-size:0.95em;margin-top:6px;white-space:pre-line;">${notes || "無更新日誌說明"}</div>`;
-    modal.style.display = "flex";
+    this.openModal(modal, document.getElementById("ui-btn-check-update"));
     if (progContainer) progContainer.style.display = "none";
 
     if (confirmBtn) {
@@ -2777,7 +2933,7 @@ class NmapWebApp {
     }
     if (cancelBtn) {
       cancelBtn.onclick = () => {
-        modal.style.display = "none";
+        this.closeModal(modal);
       };
     }
   }
@@ -2828,21 +2984,17 @@ class NmapWebApp {
       if (dlBtn) dlBtn.innerText = "立即下載離線圖資包 (95 MB)";
     }
 
-    modal.style.display = "flex";
+    this.openModal(modal, document.getElementById("ui-btn-map-db"));
     if (progContainer) progContainer.style.display = "none";
 
     // 聚焦與無障礙報讀
     if (window.AndroidBridge && window.AndroidBridge.speak) {
       if (dbExists) {
-        window.AndroidBridge.speak(`離線商工稅籍資料庫已就緒，大小 ${dbSize}。版本 v1.0.3。`, false);
+        window.AndroidBridge.speak(`離線商工稅籍資料庫已就緒，大小 ${dbSize}。`, false);
       } else {
-        window.AndroidBridge.speak("離線圖資管理已開啟。尚未下載全台離線圖資，可點選立即下載離線圖資包。", false);
+        window.AndroidBridge.speak("離線圖資管理。尚未下載離線圖資，可點選下載圖資包。", false);
       }
     }
-    setTimeout(() => {
-      const titleEl = document.getElementById("map-db-modal-title");
-      if (titleEl) titleEl.focus();
-    }, 100);
 
     if (dlBtn) {
       dlBtn.onclick = () => {
@@ -2855,7 +3007,6 @@ class NmapWebApp {
       };
     }
 
-
     if (delBtn) {
       delBtn.onclick = () => {
         if (window.AndroidBridge && window.AndroidBridge.deleteOfflineDatabase) {
@@ -2867,7 +3018,7 @@ class NmapWebApp {
 
     if (closeBtn) {
       closeBtn.onclick = () => {
-        modal.style.display = "none";
+        this.closeModal(modal);
       };
     }
   }
@@ -2878,11 +3029,11 @@ class NmapWebApp {
    */
   initSettings() {
     const DEFAULT_SETTINGS = {
-      turnAnnounce: true,         // 轉動手機即時播報方位 (Google TTS)
-      turnTickSound: true,        // 轉向立體聲刻度音與微震 (Tick)
-      autoPoiAnnounce: true,      // 接近店家自動提醒 (VoiceVista)
-      hapticFeedback: true,       // 齒輪與正北重震觸覺
-      earconEnabled: true         // 朗讀前播放物件辨識短音效 (Earcons)
+      turnAnnounce: true,         // 轉向報讀方位
+      turnTickSound: true,        // 轉向指針聲與微震
+      autoPoiAnnounce: true,      // 靠近店家自動提醒
+      hapticFeedback: true,       // 正北與刻度震動
+      earconEnabled: true         // 朗讀前先播提示音
     };
 
     try {
@@ -2907,9 +3058,9 @@ class NmapWebApp {
   /**
    * 【開啟偏好設定無障礙對話框 (Accessible Settings Modal)】
    * 作用：
-   * 1. 支援 NVDA / TalkBack 焦點捕捉與 Esc 關閉。
-   * 2. 提供核取方塊即時反饋語音，雙擊切換時清楚報讀「已開啟」或「已關閉」。
-   * 3. 模組化結構，未來可隨時擴充新功能設定項。
+   * 1. 將主畫面徹底設為 inert 與 aria-hidden="true"，TalkBack 單指滑動 100% 留在對話框內。
+   * 2. 說明文字簡潔明瞭，台灣高中生與一般使用者一目了然。
+   * 3. 雙擊切換時清楚報讀「已開啟」或「已關閉」。
    */
   showSettingsModal() {
     const modal = document.getElementById("settings-modal");
@@ -2927,19 +3078,15 @@ class NmapWebApp {
     if (chkHaptic) chkHaptic.checked = !!this.settings.hapticFeedback;
     if (chkEarcon) chkEarcon.checked = this.settings.earconEnabled !== false;
 
-    modal.style.display = "flex";
+    // 開啟模態對話框並完全鎖定主畫面背景
+    this.openModal(modal, document.getElementById("ui-btn-settings"));
 
-    // TalkBack / 螢幕閱讀器友善引導
+    // TalkBack / 螢幕閱讀器友善引導（簡潔親切）
     if (window.AndroidBridge && window.AndroidBridge.speak) {
-      window.AndroidBridge.speak("偏好設定已開啟。可上下滑動瀏覽設定項目，雙擊切換開關。", false);
+      window.AndroidBridge.speak("偏好設定。左右滑動瀏覽，點兩下切換開關。", false);
     }
 
-    setTimeout(() => {
-      const titleEl = document.getElementById("settings-modal-title");
-      if (titleEl) titleEl.focus();
-    }, 100);
-
-    // 綁定核取方塊切換監聽（即時存檔並提供語音回饋）
+    // 綁定核取方塊切換監聽（即時存檔並提供語音回饋，字詞簡潔）
     const bindToggle = (chkEl, key, labelName) => {
       if (!chkEl) return;
       chkEl.onchange = () => {
@@ -2953,13 +3100,13 @@ class NmapWebApp {
       };
     };
 
-    bindToggle(chkTurn, "turnAnnounce", "轉動手機即時播報方位");
-    bindToggle(chkTick, "turnTickSound", "轉向立體聲刻度音與微震");
-    bindToggle(chkPoi, "autoPoiAnnounce", "接近店家自動提醒");
-    bindToggle(chkHaptic, "hapticFeedback", "正北重震與齒輪觸覺");
-    bindToggle(chkEarcon, "earconEnabled", "朗讀前播放物件辨識短音效");
+    bindToggle(chkTurn, "turnAnnounce", "轉向報讀方位");
+    bindToggle(chkTick, "turnTickSound", "轉向指針聲與微震");
+    bindToggle(chkPoi, "autoPoiAnnounce", "靠近店家自動提醒");
+    bindToggle(chkHaptic, "hapticFeedback", "正北與刻度震動");
+    bindToggle(chkEarcon, "earconEnabled", "朗讀前先播提示音");
 
-    // 聽覺圖標試聽按鈕綁定（點選即播放專屬音效並報讀音效特徵）
+    // 聽覺圖標試聽按鈕綁定（點選即播放專屬音效並報讀精簡特徵）
     const bindTestBtn = (btnId, playFn, descText) => {
       const btn = document.getElementById(btnId);
       if (!btn) return;
@@ -2978,19 +3125,17 @@ class NmapWebApp {
       };
     };
 
-    bindTestBtn("btn-test-sound-shop", () => this.audio.playShopTone(0, -1), "播放商店提示音：上升純五度清脆叮咚聲。");
-    bindTestBtn("btn-test-sound-landmark", () => this.audio.playLandmarkTone(0, -1), "播放地標提示音：悠揚大調鐘鳴三和弦。");
-    bindTestBtn("btn-test-sound-building", () => this.audio.playBuildingTone(0, -1), "播放建築提示音：沉穩基石雙重敲擊。");
-    bindTestBtn("btn-test-sound-transit", () => this.audio.playTransitTone(0, -1), "播放交通設施提示音：電子提示雙短嗶音。");
-    bindTestBtn("btn-test-sound-junction", () => this.audio.playJunctionTone(0, -1), "播放路口提示音：方向躍升水滴滑音。");
-    bindTestBtn("btn-test-sound-warning", () => this.audio.playWarningTone(0, -1), "播放警示提示音：下墜雙重警戒跳音。");
+    bindTestBtn("btn-test-sound-shop", () => this.audio.playShopTone(0, -1), "商店音效：清脆門鈴聲。");
+    bindTestBtn("btn-test-sound-landmark", () => this.audio.playLandmarkTone(0, -1), "地標音效：悠揚鐘琴聲。");
+    bindTestBtn("btn-test-sound-building", () => this.audio.playBuildingTone(0, -1), "建築音效：沉穩敲擊聲。");
+    bindTestBtn("btn-test-sound-transit", () => this.audio.playTransitTone(0, -1), "交通音效：捷運公車嗶嗶聲。");
+    bindTestBtn("btn-test-sound-junction", () => this.audio.playJunctionTone(0, -1), "路口音效：水滴滑音。");
+    bindTestBtn("btn-test-sound-warning", () => this.audio.playWarningTone(0, -1), "警示音效：注意障礙警示音。");
 
     const closeBtn = document.getElementById("settings-modal-close-btn");
     const closeBottomBtn = document.getElementById("settings-modal-close-bottom-btn");
     const closeModal = () => {
-      modal.style.display = "none";
-      const settingsBtn = document.getElementById("ui-btn-settings");
-      if (settingsBtn) settingsBtn.focus();
+      this.closeModal(modal);
     };
 
     if (closeBtn) closeBtn.onclick = closeModal;

@@ -288,6 +288,23 @@ body {
   color: var(--text-muted);
 }
 
+/* 主畫面內容容器 (用於對話框開啟時完整鎖定與無障礙隔離) */
+.main-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 當任何對話框開啟時，主畫面完全鎖死、TalkBack 徹底無法滑動與穿透 */
+.main-content[inert],
+.main-content[aria-hidden="true"] {
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
 /* Modal Dialog - 100% Solid Shield to Prevent Any Homepage Bleed-Through */
 .modal-overlay {
   position: fixed;
