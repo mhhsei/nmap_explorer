@@ -49,6 +49,10 @@
 ## 📝 變更日誌 (Changelog)
 
 ### [v1.0.5 - 2026-08-28] - Android 全廠牌高相容性適應、GPS 乒乓與卡爾曼死鎖消除、16 方位遲滯防抖、門牌單雙號互補仲裁、拓撲路口度數修正與語音排程器
+- **🔑 永久固定簽名金鑰與全方位 APK 自動更新修復 (`nmap_keystore.jks`, `AppUpdateManager.kt`, `build.gradle.kts`, `build-and-release.yml`)**:
+  1. **消滅簽名不相容（INSTALL_FAILED_UPDATE_INCOMPATIBLE）**：建立專屬固定 Keystore 並納入專案，綁定 `release` 與 `debug` 建置類型。徹底消除 GitHub Actions 每次在臨時虛擬機隨機生成臨時金鑰引發「無法安裝應用程式 / 發生問題」的致命缺陷，確保全平台與日後所有更新版本簽名永久一致。
+  2. **強化在線自動更新管線**：升級 `AppUpdateManager.kt` 支援完整 HTTP 3xx 重新導向串流；下載目錄移至外部儲存空間（防止 Android 14+ 內部快取沙盒隔離阻擋安裝）；安裝前調度 `packageManager.getPackageArchiveInfo` 進行 APK 完整性與套件識別碼雙重校驗；顯式授權 FileProvider URI 給系統安裝器。
+  3. **正式 Release 建置標準化**：GitHub Actions 改採 `assembleRelease` 正式編譯並打包經由固定金鑰簽署之純淨 Release APK（非 debuggable）。
 - **🛰️ GPS 單一來源架構 (Single Source of Truth) 與防乒乓拉扯 (`LocationSensorBridge.kt`)**:
   1. **跨廠牌階層回退**：若裝置具備 Google Play Services（台灣絕大多數手機標配），僅啟用 `FusedLocationProviderClient`，完全關閉 `LocationManager` 的 GPS/Network 雙通道監聽，徹底消滅 10~37 公尺的 A-B-A 乒乓震盪；若無 Google 服務（如純 AOSP/特定客製 ROM），則自動降級回退至原生 `GPS_PROVIDER`。
   2. **靜止死鎖看門狗安全破鎖 (Deadman Safety Breakout)**：取消靜止狀態下粗暴的「座標 100% 凍結 return」。當 GPS 連續位移 $> 5.0$ 公尺（且精度 $< 15$ 米）或瞬時速度 $> 0.55\text{ m/s}$ 時，判定為真實物理行走，強制喚醒卡爾曼濾波器並重新對齊，徹底消滅在許昌街行走時座標定格長達 85 秒的 Bug。

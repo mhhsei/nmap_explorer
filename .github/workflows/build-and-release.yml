@@ -43,8 +43,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Android APK (Debug & Release)
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build Android APK (Release & Debug)
+        run: ./gradlew assembleRelease assembleDebug --stacktrace
 
       - name: Prepare Release APK Artifacts
         run: |
@@ -57,12 +57,18 @@ jobs:
             TAG_NAME="v1.0.0"
           fi
           
-          # 將建置完成的 APK 複製並重新命名為友善名稱（固定通用名稱與版本號名稱均提供）
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+          # 優先使用正式 Release APK（經由固定金鑰簽署，非 debuggable）
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk release_assets/nmap_explorer.apk
+            cp app/build/outputs/apk/release/app-release.apk release_assets/nmap_explorer_${TAG_NAME}.apk
+            cp app/build/outputs/apk/release/app-release.apk release_assets/app-release.apk
+          elif [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
             cp app/build/outputs/apk/debug/app-debug.apk release_assets/nmap_explorer.apk
             cp app/build/outputs/apk/debug/app-debug.apk release_assets/nmap_explorer_${TAG_NAME}.apk
-            cp app/build/outputs/apk/debug/app-debug.apk release_assets/app-debug.apk
             cp app/build/outputs/apk/debug/app-debug.apk release_assets/app-release.apk
+          fi
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk release_assets/app-debug.apk
           fi
 
       - name: Upload APK to Release

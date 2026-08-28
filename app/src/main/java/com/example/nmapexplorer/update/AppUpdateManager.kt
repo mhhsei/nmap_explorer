@@ -15,6 +15,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -180,7 +181,12 @@ class AppUpdateManager(private val context: Context) {
         onProgress: (percentage: Int) -> Unit = {}
     ): Result<File> = withContext(Dispatchers.IO) {
         try {
-            val updateDir = File(context.cacheDir, "updates").apply { mkdirs() }
+            // 優先使用外部儲存下載目錄，防止內部快取目錄在 Android 14+ 觸發嚴格沙盒權限隔離
+            val updateDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(context.cacheDir, "updates")
+            if (!updateDir.exists()) {
+                updateDir.mkdirs()
+            }
             val destinationFile = File(updateDir, targetFileName)
             if (destinationFile.exists()) {
                 destinationFile.delete()
@@ -191,7 +197,7 @@ class AppUpdateManager(private val context: Context) {
             var redirectCount = 0
             val maxRedirects = 8
 
-            // 追蹤 301/302/303/307 轉址（GitHub Releases 託管於 AWS S3）
+            // 追蹤 3xx 轉址（GitHub Releases 託管於 AWS S3，含 301, 302, 303, 307, 308）
             while (true) {
                 val url = URL(currentUrl)
                 connection = url.openConnection() as HttpURLConnection
@@ -201,11 +207,7 @@ class AppUpdateManager(private val context: Context) {
                 connection.setRequestProperty("User-Agent", "NMapExplorer-AndroidApp")
 
                 val status = connection.responseCode
-                if (status == HttpURLConnection.HTTP_MOVED_PERM ||
-                    status == HttpURLConnection.HTTP_MOVED_TEMP ||
-                    status == HttpURLConnection.HTTP_SEE_OTHER ||
-                    status == 307
-                ) {
+                if (status in 300..399) {
                     val newUrl = connection.getHeaderField("Location")
                     if (newUrl != null && redirectCount < maxRedirects) {
                         currentUrl = newUrl
@@ -243,6 +245,9 @@ class AppUpdateManager(private val context: Context) {
             output.close()
             input.close()
 
+            // 確保檔案屬性為全域可讀，供系統 PackageInstaller 正確解析
+            destinationFile.setReadable(true, false)
+
             withContext(Dispatchers.Main) {
                 onProgress(100)
             }
@@ -256,8 +261,9 @@ class AppUpdateManager(private val context: Context) {
     /**
      * 【喚起 Android 系統安裝器進行自動更新】
      * 作用：
-     * 1. 檢查 Android 8.0+ 的「安裝未知應用程式」權限，若未開啟則引導開啟。
-     * 2. 透過 FileProvider 安全提供 content:// URI 授權，自動啟動安裝畫面。
+     * 1. 深度校驗 APK 完整性，防止下載不完全或非 APK 檔案引發不明錯誤。
+     * 2. 檢查 Android 8.0+ 的「安裝未知應用程式」權限，若未開啟則引導開啟。
+     * 3. 透過 FileProvider 安全提供 content:// URI 授權，並顯式授權給系統安裝套件。
      */
     fun installUpdate(apkFile: File): Result<Unit> {
         return try {
@@ -265,7 +271,16 @@ class AppUpdateManager(private val context: Context) {
                 return Result.failure(Exception("APK 安裝檔不存在或檔案損毀"))
             }
 
-            // Android 8.0 (API 26) 以上需要確認未知來源安裝權限
+            // 1. 深度驗證 APK 檔案完整度與合法性
+            val packageInfo = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
+            if (packageInfo == null) {
+                return Result.failure(Exception("APK 安裝檔損毀或未下載完全，請重新點選更新"))
+            }
+            if (packageInfo.packageName != context.packageName) {
+                return Result.failure(Exception("下載之安裝檔與本應用程式套件識別碼不符 (${packageInfo.packageName})"))
+            }
+
+            // 2. Android 8.0 (API 26) 以上確認未知來源安裝權限
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!context.packageManager.canRequestPackageInstalls()) {
                     val manageIntent = Intent(
@@ -281,16 +296,25 @@ class AppUpdateManager(private val context: Context) {
                 }
             }
 
-            // 產生 FileProvider URI
+            // 3. 確保檔案具備讀取權限
+            apkFile.setReadable(true, false)
+
+            // 4. 產生 FileProvider URI
             val authority = "${context.packageName}.fileprovider"
             val apkUri: Uri = FileProvider.getUriForFile(context, authority, apkFile)
 
             val installIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(apkUri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                if (context !is Activity) {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+
+            // 5. 顯式授權 URI 給所有可處理 PackageInstaller 的系統應用（防禦 Android 14+ 權限傳遞問題）
+            val resInfoList = context.packageManager.queryIntentActivities(installIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            for (resolveInfo in resInfoList) {
+                val pkgName = resolveInfo.activityInfo.packageName
+                context.grantUriPermission(pkgName, apkUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
             context.startActivity(installIntent)
