@@ -3,6 +3,7 @@ package com.example.nmapexplorer
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.speech.tts.TextToSpeech
@@ -37,6 +38,12 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     private var tts: TextToSpeech? = null
     private var isTtsReady = false
 
+    // 語音防剪音與防抖狀態追蹤
+    private var lastSpokenText: String = ""
+    private var lastSpokenTimeMs: Long = 0L
+    private var lastTtsDirectText: String = ""
+    private var lastTtsDirectTimeMs: Long = 0L
+
     init {
         try {
             // 初始化 Android 原生 TTS 語音引擎（優先設定台灣中文，並提升語速至 1.25x 達成極速響應）
@@ -62,22 +69,30 @@ class WebAppInterface(private val context: Context, private val webView: WebView
      * 作用：
      * 1. 專用於「手機轉動即時羅盤方位播報」。
      * 2. 100% 繞過 TalkBack 系統無障礙事件隊列 (QUEUE)，杜絕 TalkBack 的排隊延遲、卡頓與吞字。
-     * 3. 使用 TextToSpeech.QUEUE_FLUSH 瞬間中斷並立即播報最新方位，達成「有轉動就馬上播報」。
+     * 3. 具備 600ms 防抖時間，杜絕邊界連續觸發引發的抽搐。
      * 
      * @param text 要朗讀的文字 (如「正北」、「北北東」)
-     * @param interrupt 是否立即插播（預設 true，立即中斷前一句）
+     * @param interrupt 是否立即插播（預設 true）
      */
     @JavascriptInterface
     fun speakTtsDirect(text: String, interrupt: Boolean = true) {
         if (text.isBlank()) return
-        Log.d(tag, "speakTtsDirect: $text (interrupt=$interrupt)")
+        val now = SystemClock.uptimeMillis()
+        val elapsed = now - lastTtsDirectTimeMs
+        // 防抖：相同方位在 1000ms 內、或任何方位在 350ms 內不重覆發音，杜絕機關槍殘音
+        if (text == lastTtsDirectText && elapsed < 1000L) return
+        if (elapsed < 350L) return
+
+        lastTtsDirectText = text
+        lastTtsDirectTimeMs = now
+        Log.i(tag, "[TTS_DIRECT] text='$text', elapsed=${elapsed}ms")
+
         (context as? android.app.Activity)?.runOnUiThread {
             try {
                 if (isTtsReady && tts != null) {
                     val queueMode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                     tts?.speak(text, queueMode, null, "turn_${System.currentTimeMillis()}")
                 } else {
-                    // 若 TTS 尚未就緒，暫時以 announceForAccessibility 作為保底
                     webView?.announceForAccessibility(text)
                 }
             } catch (e: Exception) {
@@ -87,22 +102,41 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     }
 
     /**
-     * 原生即時語音朗讀通道 (Native Speech Broadcast)
+     * 原生即時語音朗讀通道 (Native Speech Broadcast with Smart Sequencer)
      * 
      * 作用：徹底解決 WebView 網頁 aria-live 在手機頻繁旋轉時容易漏讀或消音的問題。
      * 1. 若 TalkBack 開啟中：直接向系統無障礙服務發送 announceForAccessibility 原生事件。
      * 2. 若 TalkBack 未開啟：透過原生 TTS 引擎直接發聲。
+     * 3. 智慧排隊機制：一般店家與路況語音若在 800ms 內接連抵達，自動平滑排隊 (QUEUE_ADD)，
+     *    只有危險警告或使用者主動點擊時才執行插播 (QUEUE_FLUSH)，根除 2ms 剪音吞字 Bug！
      * 
      * @param text 要朗讀的文字
-     * @param interrupt 是否立即插播（中斷先前未讀完的語音）
+     * @param interrupt 是否立即插播
      */
     @JavascriptInterface
     fun speak(text: String, interrupt: Boolean = true) {
         if (text.isBlank()) return
-        Log.d(tag, "speak: $text (interrupt=$interrupt)")
+        val now = SystemClock.uptimeMillis()
+        val elapsed = now - lastSpokenTimeMs
+
+        // 避免完全相同字串在 1.5 秒內跳針重覆朗讀
+        if (text == lastSpokenText && elapsed < 1500L) {
+            Log.d(tag, "[SPEECH_DROPPED_DUPLICATE] '$text' (elapsed=${elapsed}ms)")
+            return
+        }
+
+        // 智慧型插播判定：
+        // 若為急迫警報或手動點擊（如包含 ⚠️、危險、目前位置），立即插播；
+        // 若為一般例行店家/路口通知且上一句剛發聲 (< 800ms)，強制改為平滑排隊，杜絕被下一句腰斬！
+        val isEmergency = text.startsWith("⚠️") || text.contains("危險") || text.startsWith("【目前位置】")
+        val effectiveInterrupt = if (isEmergency) true else (interrupt && elapsed > 800L)
+
+        lastSpokenText = text
+        lastSpokenTimeMs = now
+        Log.i(tag, "[SPEECH_DISPATCH] text='$text', requestedInterrupt=$interrupt, effectiveInterrupt=$effectiveInterrupt, elapsed=${elapsed}ms")
+
         (context as? android.app.Activity)?.runOnUiThread {
             try {
-                // 1. 向 Android 無障礙服務 (TalkBack / 螢幕報讀器) 發送最高優先權廣播事件
                 val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
                 if (am?.isEnabled == true) {
                     val event = android.view.accessibility.AccessibilityEvent.obtain(
@@ -114,13 +148,13 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     am.sendAccessibilityEvent(event)
                 }
 
-                // 2. 同步調用 WebView announceForAccessibility
+                // 同步調用 WebView announceForAccessibility
                 webView?.announceForAccessibility(text)
 
-                // 3. 若未啟用觸控瀏覽輔助，透過原生 TTS 引擎發聲
+                // 若未啟用觸控瀏覽輔助，透過原生 TTS 引擎發聲
                 val isTouchExploration = am?.isEnabled == true && am.isTouchExplorationEnabled
                 if (!isTouchExploration && isTtsReady) {
-                    val queueMode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                    val queueMode = if (effectiveInterrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                     tts?.speak(text, queueMode, null, "nmap_${System.currentTimeMillis()}")
                 }
             } catch (e: Exception) {
@@ -423,8 +457,8 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 "{\"info\": \"No sensor fixes recorded\"}"
             }
 
-            // 7. 6_system_logcat.txt (系統底層日誌)
-            val process = Runtime.getRuntime().exec("logcat -d -v time")
+            // 7. 6_system_logcat.txt (系統底層日誌，擷取最近 5000 行完整歷程)
+            val process = Runtime.getRuntime().exec("logcat -d -v time -t 5000")
             val logText = process.inputStream.bufferedReader().readText()
 
             // 將全部診斷檔案壓縮進動態命名的 ZIP 檔中

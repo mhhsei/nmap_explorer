@@ -84,6 +84,8 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
     buildings = agent.world_model.get_nearby_buildings(cur_lat, cur_lon, cur_head, radius_m=50.0)
     intersection = agent.intersection_analyzer.analyze(cur_lat, cur_lon, cur_head, agent.world_model, curr_road_info=road_info)
     door_estimates = agent.world_model.get_interpolated_door_numbers(cur_lat, cur_lon, cur_head)
+    if road_info is not None:
+        road_info["door_numbers"] = door_estimates.get("concise_door", "")
     concise_report = reporter.generate_concise_report(agent, road_info=road_info, pois=pois, intersection=intersection)
     street_scene = street_analyzer.analyze_scene(cur_lat, cur_lon, cur_head, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
 
@@ -569,7 +571,7 @@ def check_update():
     """
     import urllib.request
     import json
-    current_version = "1.0.4"
+    current_version = "1.0.5"
     try:
         api_url = "https://api.github.com/repos/mhhsei/nmap_explorer/releases/latest"
         req = urllib.request.Request(

@@ -20,6 +20,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.webkit.WebView
 import androidx.core.content.ContextCompat
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -135,16 +137,21 @@ class StationaryMotionDetector(
         val now = getNowMs()
         val stepTimedOut = (now - lastStepTimestampMs) > STEP_TIMEOUT_MS
 
-        // 3. 靜止條件綜合仲裁：加速度平穩且逾時未邁步（手持轉身或坐姿均視為靜止）
-        val isPhysicallyStill = (accVariance < ACC_VAR_STATIONARY_THRESHOLD) && stepTimedOut && (currentGpsSpeedMps < 1.2f)
+        // 3. 步行與靜止條件綜合仲裁：
+        // 判定步行：若 GPS 明確有移動速度 (> 0.55 m/s, ~2 km/h)，或加速度有行走波動 (> 0.32)，或剛踩出步伐
+        val isWalkingIndicated = (currentGpsSpeedMps >= 0.55f) || (accVariance > 0.32f) || !stepTimedOut
+        // 判定靜止：加速度極平穩、逾時未邁步、且 GPS 車速極低 (< 0.4 m/s)
+        val isPhysicallyStill = (accVariance < ACC_VAR_STATIONARY_THRESHOLD) && stepTimedOut && (currentGpsSpeedMps < 0.4f)
 
-        if (isPhysicallyStill) {
-            if (currentState != MotionState.STATIONARY_LOCKED) {
-                updateState(MotionState.STATIONARY_LOCKED)
-            }
-        } else if (accVariance > 0.60f || !stepTimedOut) {
+        if (isWalkingIndicated) {
             if (currentState != MotionState.PEDESTRIAN_WALKING) {
+                Log.i("LocationSensorBridge", "[MOTION_STATE_CHANGE] ${currentState.name} -> PEDESTRIAN_WALKING (accVar=${String.format(Locale.US, "%.3f", accVariance)}, speed=${String.format(Locale.US, "%.2f", currentGpsSpeedMps)}m/s, stepTimedOut=$stepTimedOut)")
                 updateState(MotionState.PEDESTRIAN_WALKING)
+            }
+        } else if (isPhysicallyStill) {
+            if (currentState != MotionState.STATIONARY_LOCKED) {
+                Log.i("LocationSensorBridge", "[MOTION_STATE_CHANGE] ${currentState.name} -> STATIONARY_LOCKED (accVar=${String.format(Locale.US, "%.3f", accVariance)}, speed=${String.format(Locale.US, "%.2f", currentGpsSpeedMps)}m/s, stepTimedOut=$stepTimedOut)")
+                updateState(MotionState.STATIONARY_LOCKED)
             }
         }
     }
@@ -264,11 +271,37 @@ class PedestrianKalmanFilter {
             return Pair(rawLat, rawLon)
         }
 
-        // 1. 【室內/原地靜止模式】：100% 凍結座標，完全阻絕 GPS 跳動！
+        // 1. 【室內/原地靜止防抖與看門狗安全破鎖 (Safety Breakout)】
         if (motionState == MotionState.STATIONARY_LOCKED) {
-            vx = 0.0
-            vy = 0.0
-            return Pair(lockedLat, lockedLon)
+            val radLat = Math.toRadians(lockedLat)
+            val mPerLat = 111139.0
+            val mPerLon = 111139.0 * cos(radLat)
+            val distFromLocked = sqrt(
+                ((rawLon - lockedLon) * mPerLon).pow(2) +
+                ((rawLat - lockedLat) * mPerLat).pow(2)
+            )
+
+            // 破鎖仲裁：若物理位移 > 5.0m 且 GPS 精度合理 (< 15m)，或移動速度 > 0.55m/s：
+            // 代表使用者已開始走動或先前鎖定在雜訊點，立即解除座標凍結重新對齊！
+            if ((distFromLocked > 5.0 && accuracyMeters < 15.0f) || (speedMps > 0.55f && accuracyMeters < 15.0f)) {
+                Log.w("LocationSensorBridge", "[KALMAN_BREAKOUT] Stationary lock broken by displacement: dist=${String.format(Locale.US, "%.1f", distFromLocked)}m, speed=${speedMps}m/s, acc=${accuracyMeters}m")
+                anchorLat = rawLat
+                anchorLon = rawLon
+                x = 0.0
+                y = 0.0
+                vx = 0.0
+                vy = 0.0
+                p00 = 4.0
+                p11 = 4.0
+                lockedLat = rawLat
+                lockedLon = rawLon
+                consecutiveRejections = 0
+                return Pair(rawLat, rawLon)
+            } else {
+                vx = 0.0
+                vy = 0.0
+                return Pair(lockedLat, lockedLon)
+            }
         }
 
         var dt = (timestampNanos - lastTimestampNanos) / 1_000_000_000.0
@@ -468,19 +501,27 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         isRunning = true
         Log.i(tag, "Starting sensors with 9-axis fusion, True North correction, GNSS SNR filtering, Dual-Frequency L5, Stationary Lock, and Weinberg PDR...")
 
-        // 1. 優先使用硬體 9 軸旋轉向量感測器 (TYPE_ROTATION_VECTOR)
+        // 1. 方位感測器 4 級適應鏈 (4-Tier Orientation Sensor Degradation Stack)
         val rotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        val geoRotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR)
         if (rotVectorSensor != null) {
             hasRotationVector = true
             sensorManager.registerListener(this, rotVectorSensor, SensorManager.SENSOR_DELAY_GAME)
-            Log.i(tag, "Using hardware 9-axis TYPE_ROTATION_VECTOR for responsive heading.")
+            Log.i(tag, "[Heading Sensor] Tier 1: Hardware 9-axis TYPE_ROTATION_VECTOR registered (Best accuracy & zero drift).")
+        } else if (geoRotVectorSensor != null) {
+            hasRotationVector = true
+            sensorManager.registerListener(this, geoRotVectorSensor, SensorManager.SENSOR_DELAY_GAME)
+            Log.i(tag, "[Heading Sensor] Tier 2: TYPE_GEOMAGNETIC_ROTATION_VECTOR registered (Sensor hub fusion, gyro-free).")
         } else {
-            // 若無 9 軸感測器，降級使用加速度計 + 磁力計
+            // 若無硬體旋轉向量，降級使用加速度計 + 磁力計軟體向量融合
             hasRotationVector = false
-            sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.also {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+            val magSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+            if (magSensor != null) {
+                sensorManager.registerListener(this, magSensor, SensorManager.SENSOR_DELAY_GAME)
+                Log.i(tag, "[Heading Sensor] Tier 3: TYPE_MAGNETIC_FIELD registered (Software complementary filter).")
+            } else {
+                Log.w(tag, "[Heading Sensor] Tier 4: No compass hardware. Will rely on GPS Course-over-ground bearing when walking.")
             }
-            Log.i(tag, "Fallback to Accelerometer + Magnetometer.")
         }
 
         // 常態監聽加速度計，用於靜止偵測與 Weinberg 步長動態自適應推算
@@ -492,7 +533,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         stepDetectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         if (stepDetectorSensor != null) {
             sensorManager.registerListener(this, stepDetectorSensor, SensorManager.SENSOR_DELAY_FASTEST)
-            Log.i(tag, "Using hardware STEP_DETECTOR for arcade PDR navigation.")
+            Log.i(tag, "[Step Sensor] Hardware TYPE_STEP_DETECTOR registered for arcade PDR navigation.")
+        } else {
+            Log.i(tag, "[Step Sensor] Hardware STEP_DETECTOR unavailable; software accelerometer peak detection active.")
         }
 
         // 3. 註冊衛星狀態監聽器，即時監控訊噪比與 L5 雙頻衛星
@@ -507,45 +550,57 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }
 
         try {
-            // 4. 啟動 Google Play 融合定位 (Fused Location Provider: 強制 0m 距離門檻與 0ms 延遲，杜絕系統節流)
-            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
-                .setMinUpdateIntervalMillis(500L)
-                .setMinUpdateDistanceMeters(0.0f)
-                .setMaxUpdateDelayMillis(0L)
-                .setWaitForAccurateLocation(false)
-                .build()
-
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                locationCallback,
-                Looper.getMainLooper()
-            )
-
-            // 快速熱啟動：若有最後已知位置（10 分鐘內且精度 150m 內），立即用於初次定位暖機
-            fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-                location?.let {
-                    val ageNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
-                        SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos
-                    } else {
-                        (System.currentTimeMillis() - it.time) * 1_000_000L
-                    }
-                    val isUsable = it.hasAccuracy() && it.accuracy <= 150f && ageNanos < 600_000_000_000L // 10 分鐘內
-                    if (isUsable) {
-                        Log.i(tag, "Using initial warm-up lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s)")
-                        onLocationChanged(it)
-                    } else {
-                        Log.i(tag, "Waiting for fresh live GPS fix (lastLocation too old or inaccurate).")
-                    }
-                }
+            // 4. 單一資料來源架構 (Single Source of Truth)：
+            // 優先使用 Google Play Services 融合定位 (FusedLocationProviderClient)。
+            // 絕不同時註冊原生 LocationManager，徹底消除 A-B-A 乒乓拉扯震盪！
+            val isGmsAvailable = try {
+                GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
+            } catch (e: Throwable) {
+                false
             }
+            Log.i(tag, "[GPS_INIT] Google Play Services availability check: $isGmsAvailable")
 
-            // 5. 備援原生 LocationManager（GPS + Network 雙通道，同樣設定 0m 門檻）
-            locationManager?.let { lm ->
-                if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                    lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0.0f, this, Looper.getMainLooper())
+            if (isGmsAvailable) {
+                Log.i(tag, "[GPS_INIT] Activating Google FusedLocationProviderClient as Single Source of Truth.")
+                val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+                    .setMinUpdateIntervalMillis(500L)
+                    .setMinUpdateDistanceMeters(0.0f)
+                    .setMaxUpdateDelayMillis(0L)
+                    .setWaitForAccurateLocation(false)
+                    .build()
+
+                fusedLocationClient.requestLocationUpdates(
+                    locationRequest,
+                    locationCallback,
+                    Looper.getMainLooper()
+                )
+
+                // 快速熱啟動：若有最後已知位置（10 分鐘內且精度 150m 內），立即用於初次定位暖機
+                fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+                    location?.let {
+                        val ageNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+                            SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos
+                        } else {
+                            (System.currentTimeMillis() - it.time) * 1_000_000L
+                        }
+                        val isUsable = it.hasAccuracy() && it.accuracy <= 150f && ageNanos < 600_000_000_000L // 10 分鐘內
+                        if (isUsable) {
+                            Log.i(tag, "[GPS_WARMUP] Using initial warm-up lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s, Provider: ${it.provider})")
+                            onLocationChanged(it)
+                        } else {
+                            Log.i(tag, "[GPS_WARMUP] Waiting for fresh live GPS fix (lastLocation too old or inaccurate).")
+                        }
+                    }
                 }
-                if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                    lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0.0f, this, Looper.getMainLooper())
+            } else {
+                // 無 Google 服務之設備（純 AOSP、中國版本或華為無 GMS 設備）：自動降級回退至原生 LocationManager
+                Log.w(tag, "[GPS_INIT] GMS unavailable. Fallback to native LocationManager (GPS_PROVIDER).")
+                locationManager?.let { lm ->
+                    if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0.0f, this, Looper.getMainLooper())
+                    } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                        lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0.0f, this, Looper.getMainLooper())
+                    }
                 }
             }
         } catch (e: SecurityException) {
@@ -678,9 +733,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             userStepLengthM = 0.8f * userStepLengthM + 0.2f * max(0.45f, min(0.85f, estimatedSL))
         }
 
-        // 若 GPS 中斷超過 0.8 秒且濾波器已初始化：在騎樓/地下道/兩次GPS間隙啟動 PDR 平滑推算，消滅滯後
+        // 若 GPS 中斷超過 0.7 秒且濾波器已初始化：在騎樓/地下道/兩次GPS間隙啟動 PDR 平滑推算，消滅滯後
         val timeSinceGps = now - lastGpsFixTimeMs
-        if (timeSinceGps > 800L && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
+        if (timeSinceGps > 700L && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
             val (pdrLat, pdrLon) = kalmanFilter.advanceStep(userStepLengthM.toDouble(), smoothedHeading.toDouble())
             val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
             val humanLog = "[$timeStr] [騎樓PDR計步] 座標: ($pdrLat, $pdrLon) | 自適應步長: ${String.format(Locale.US, "%.2f", userStepLengthM)}m | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}°"
@@ -694,7 +749,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             }.toString()
             addTrajectoryLog(humanLog, ndjson)
 
-            Log.d(tag, "PDR Step Advance: ($pdrLat, $pdrLon) Step: ${userStepLengthM}m Heading: $smoothedHeading")
+            Log.i(tag, "[PDR_STEP] Advanced to ($pdrLat, $pdrLon), stride=${String.format(Locale.US, "%.2f", userStepLengthM)}m, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
             webView.post {
                 webView.evaluateJavascript(
                     "if (window.onLocationUpdate) window.onLocationUpdate(${pdrLat}, ${pdrLon}, 6.0, ${smoothedHeading}, 1.1);",
@@ -709,13 +764,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
      */
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) {
+            Log.d(tag, "[STEP_DETECTED] source=HardwareStepDetector")
             onStepDetected()
             return
         }
 
         val now = SystemClock.uptimeMillis()
 
-        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR || event.sensor.type == Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
         } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
             System.arraycopy(event.values, 0, accelerometerReading, 0, accelerometerReading.size)
@@ -728,10 +784,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             if (mag > maxAccInWindow) maxAccInWindow = mag
             if (mag < minAccInWindow) minAccInWindow = mag
 
-            // 軟體波峰計步備援 (手持手機平穩行走靈敏度調校：峰值 > 10.4 m/s²，間隔 > 300ms)
+            // 軟體波峰計步備援 (視障平穩行走調校：峰值 > 10.15 m/s²，增量 > 0.35 m/s²，間隔 > 280ms)
             val nowUptime = SystemClock.uptimeMillis()
-            if (mag > 10.4f && (mag - lastAccMag) > 0.6f && (nowUptime - lastSoftwareStepMs) > 300L) {
+            if (mag > 10.15f && (mag - lastAccMag) > 0.35f && (nowUptime - lastSoftwareStepMs) > 280L) {
                 lastSoftwareStepMs = nowUptime
+                Log.d(tag, "[STEP_DETECTED] source=SoftwarePeak, mag=${String.format(Locale.US, "%.2f", mag)}")
                 onStepDetected()
             }
             lastAccMag = mag
@@ -841,12 +898,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             hasDualFrequencyL5 = hasDualFrequencyL5
         )
 
+        val provider = location.provider ?: "fused"
+
         // 記錄人類可讀與結構化 NDJSON 日誌
         val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-        val humanLog = "[$timeStr] [GPS] 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 | 折射: $isUrbanCanyonMultipath"
+        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 | 折射: $isUrbanCanyonMultipath"
         val ndjson = org.json.JSONObject().apply {
             put("t", timeStr)
             put("evt", "GPS_FIX")
+            put("provider", provider)
             put("motion_state", motionState.name)
             put("raw_lat", rawLat)
             put("raw_lon", rawLon)
@@ -860,7 +920,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }.toString()
         addTrajectoryLog(humanLog, ndjson)
 
-        Log.d(tag, "GPS (Raw: $rawLat, $rawLon) -> (Kalman: $filteredLat, $filteredLon) State: $motionState Acc: $acc L5: $hasDualFrequencyL5 Multipath: $isUrbanCanyonMultipath")
+        Log.i(tag, "[GPS_FIX] provider=$provider, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
 
         // 呼叫前端 JavaScript onLocationUpdate 函式
         val effectiveSpeed = if (motionState == MotionState.STATIONARY_LOCKED) 0f else speed

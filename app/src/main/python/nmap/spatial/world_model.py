@@ -193,6 +193,26 @@ class WorldModel:
                 self.poi_rtree.insert(p_idx, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
             p_idx += 1
 
+            # 【方案 A 核心】：若 OSM POI 帶有門牌或地址標籤，同步納入門牌清單
+            p_tags = p.get("tags", {}) if isinstance(p, dict) else getattr(p, "tags", {})
+            p_hn = p_tags.get("addr:housenumber", "")
+            p_st = p_tags.get("addr:street", "")
+            if not p_hn and p_tags.get("address"):
+                m = re.search(r'([^\d市區鄉鎮]+?(?:路|街|大道|巷))?.*?(\d+(?:[之\-]\d+)?|[一二三四五六七八九十]+)號', p_tags["address"])
+                if m:
+                    p_st = p_st or m.group(1) or ""
+                    p_hn = m.group(2) or ""
+            if p_hn and not any(h.get("housenumber") == p_hn and h.get("lat") == sp.lat for h in self.house_numbers):
+                self.house_numbers.append({
+                    "id": p.get("id") if isinstance(p, dict) else getattr(p, "id", None),
+                    "housenumber": p_hn,
+                    "street": p_st,
+                    "name": sp.name,
+                    "lat": sp.lat,
+                    "lon": sp.lon,
+                    "tags": p_tags
+                })
+
         # 若公共運輸站點不在 POI 中，追加建置
         for ts in self.transit_stops:
             sp = SpatialPOI({
@@ -239,13 +259,19 @@ class WorldModel:
                     rev_brng = (brng + 180.0) % 360.0
                     self.road_graph.add_edge(v_id, u_id, weight=dist, name=road["name"], bearing=rev_brng, road=road)
 
-        # 構建路口節點索引 (degree >= 3 或端點)
+        # 構建路口節點空間索引：
+        # 關鍵修正：必須使用「無向實體相鄰鄰居數 (Physical Degree)」！
+        # 在 MultiDiGraph 中，雙向道路的直線中間點其有向度數為 4（2 入 2 出），過去被誤判為十字路口。
+        # 真正的實體路口，其不重複實體相鄰節點數必須 >= 3（3 為 T 字/岔路口，4 為十字路口，5+ 為多向圓環/路口）。
         j_idx = 0
-        for node_id, degree in self.road_graph.degree():
-            node_data = self.road_graph.nodes[node_id]
-            n_lat, n_lon = node_data["lat"], node_data["lon"]
-            self.junction_rtree.insert(j_idx, (n_lon, n_lat, n_lon, n_lat), obj=(node_id, degree, n_lat, n_lon))
-            j_idx += 1
+        for node_id in self.road_graph.nodes:
+            physical_neighbors = (set(self.road_graph.predecessors(node_id)) | set(self.road_graph.successors(node_id))) - {node_id}
+            physical_degree = len(physical_neighbors)
+            if physical_degree >= 3:
+                node_data = self.road_graph.nodes[node_id]
+                n_lat, n_lon = node_data["lat"], node_data["lon"]
+                self.junction_rtree.insert(j_idx, (n_lon, n_lat, n_lon, n_lat), obj=(node_id, physical_degree, n_lat, n_lon))
+                j_idx += 1
 
         # 構建大樓輪廓空間索引
         b_idx = 0
@@ -297,6 +323,23 @@ class WorldModel:
                             self.pois.append(sp)
                             self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
                             self.next_external_poi_id += 1
+
+                            # 【方案 A 核心】：將離線資料庫中帶有真實門牌地址的店家同步納入門牌空間索引
+                            p_tags = sp.tags
+                            p_hn = p_tags.get("addr:housenumber", "")
+                            p_st = p_tags.get("addr:street", "")
+                            if p_hn:
+                                hn_obj = {
+                                    "id": sp.id,
+                                    "housenumber": p_hn,
+                                    "street": p_st,
+                                    "name": sp.name,
+                                    "lat": sp.lat,
+                                    "lon": sp.lon,
+                                    "tags": p_tags
+                                }
+                                self.house_numbers.append(hn_obj)
+                                self.house_number_rtree.insert(len(self.house_numbers), (sp.lon, sp.lat, sp.lon, sp.lat), obj=hn_obj)
             except Exception as e:
                 import logging
                 logging.warning(f"Offline POI sync injection error: {e}")
@@ -346,6 +389,23 @@ class WorldModel:
                         self.poi_rtree.insert(self.next_external_poi_id, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
                         self.next_external_poi_id += 1
                         added_count += 1
+
+                        # 【方案 A 核心】：將離線資料庫中帶有真實門牌地址的店家同步納入門牌空間索引
+                        p_tags = sp.tags
+                        p_hn = p_tags.get("addr:housenumber", "")
+                        p_st = p_tags.get("addr:street", "")
+                        if p_hn:
+                            hn_obj = {
+                                "id": sp.id,
+                                "housenumber": p_hn,
+                                "street": p_st,
+                                "name": sp.name,
+                                "lat": sp.lat,
+                                "lon": sp.lon,
+                                "tags": p_tags
+                            }
+                            self.house_numbers.append(hn_obj)
+                            self.house_number_rtree.insert(len(self.house_numbers), (sp.lon, sp.lat, sp.lon, sp.lat), obj=hn_obj)
                         
             print(f"[WorldModel] Injected {added_count} new offline POIs into spatial index. Total: {len(self.pois)}")
         except Exception as e:
@@ -656,7 +716,8 @@ class WorldModel:
                 h_num = h["housenumber"]
 
                 item = {
-                    "number": h_num,
+                    "number": str(h_num).strip().rstrip("號"),
+                    "name": h.get("name", ""),
                     "street": h.get("street", ""),
                     "distance_m": round(dist, 1),
                     "clock": clock,
@@ -702,9 +763,26 @@ class WorldModel:
                         elif rel_b >= 0 and not any(a["name"] == name for a in right_alleys):
                             right_alleys.append(alley_item)
 
-        # 格式化輸出並去除重複門牌 (保留順序)
-        left_nums_str = list(dict.fromkeys(f"{x['number']}號" for x in left_numbers[:5]))
-        right_nums_str = list(dict.fromkeys(f"{x['number']}號" for x in right_numbers[:5]))
+        # 格式化輸出並去除重複門牌 (去重並附帶實體建築/店家名稱)
+        def format_side_hn(candidates):
+            seen_numbers = set()
+            result = []
+            for x in candidates:
+                num_clean = str(x['number']).strip().rstrip("號")
+                if not num_clean or num_clean in seen_numbers:
+                    continue
+                seen_numbers.add(num_clean)
+                hn = f"{num_clean}號"
+                if x.get("name"):
+                    result.append(f"{hn} ({x['name']})")
+                else:
+                    result.append(hn)
+                if len(result) >= 4:
+                    break
+            return result
+
+        left_nums_str = format_side_hn(left_numbers)
+        right_nums_str = format_side_hn(right_numbers)
 
         return {
             "left_side": {
@@ -719,80 +797,135 @@ class WorldModel:
 
     def get_interpolated_door_numbers(self, lat: float, lon: float, heading_deg: float) -> Dict[str, str]:
         """
-        【沿街動態門牌號碼內插與估算】
-        作用：當圖資門牌稀疏時，整合 POI 地址與門牌節點，估算左右兩側為「單號」或「雙號」區間，並找出最近的門牌號碼。
+        【真實門牌仲裁與線上動態補全 (方案 A + 方案 C)】
+        作用：
+        1. 【方案 A 本地真實門牌】：優先檢索周遭 45 米內本地真實門牌（含建物、店家登記門牌），依道路法向量區分左右側最近門牌。
+        2. 【方案 C 線上動態補全】：若本地無門牌，自動觸發線上高精度反查 (ArcGIS/NLSC) 並寫入持久快取，實現永久離線。
+        3. 【零猜測原則】：徹底移除數學內插估算，未獲取真實門牌前不臆測假號碼。
         """
-        # 匯總來自專屬門牌節點與 POI 地址標籤的所有門牌
-        all_hn = list(self.house_numbers)
-        for p in self.pois:
-            hn = p.tags.get("addr:housenumber") or ""
-            if hn and not any(h.get("housenumber") == hn for h in all_hn):
-                all_hn.append({
-                    "housenumber": hn,
-                    "street": p.tags.get("addr:street", ""),
-                    "lat": p.lat,
-                    "lon": p.lon
-                })
+        # 1. 取得當前道路資訊以進行同街比對
+        curr_road_info = self.get_road_info(lat, lon, heading_deg)
+        curr_street = curr_road_info.get("street_name", "")
 
-        scan = self.get_left_right_side_scan(lat, lon, heading_deg, radius_m=80.0)
-        left_nums = [int(re.search(r"\d+", n).group()) for n in scan["left_side"]["house_numbers"] if re.search(r"\d+", n)]
-        right_nums = [int(re.search(r"\d+", n).group()) for n in scan["right_side"]["house_numbers"] if re.search(r"\d+", n)]
+        # 2. 尋找最近道路幾何向量以穩定劃分左右側
+        nearest_road, _ = self.find_nearest_road(lat, lon)
+        road_seg = None
+        if nearest_road and nearest_road.get("geometry") and len(nearest_road["geometry"]) >= 2:
+            geom = nearest_road["geometry"]
+            best_d = 999.0
+            for i in range(len(geom) - 1):
+                p1, p2 = geom[i], geom[i+1]
+                mid_lat = (p1[0] + p2[0]) / 2.0
+                mid_lon = (p1[1] + p2[1]) / 2.0
+                d = haversine_distance(lat, lon, mid_lat, mid_lon)
+                if d < best_d:
+                    best_d = d
+                    seg_bearing = calculate_bearing(p1[0], p1[1], p2[0], p2[1])
+                    if abs(relative_bearing(heading_deg, seg_bearing)) > 90:
+                        road_seg = (p2, p1)
+                    else:
+                        road_seg = (p1, p2)
+
+        # 3. 【方案 A】：從門牌空間索引中檢索周圍 45 公尺內的實體門牌
+        radius_m = 45.0
+        radius_deg = radius_m / 111139.0
+        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+
+        left_candidates = []
+        right_candidates = []
+
+        for item in self.house_number_rtree.intersection(bounds, objects=True):
+            h = item.object
+            d = haversine_distance(lat, lon, h["lat"], h["lon"])
+            if d > radius_m:
+                continue
+
+            h_street = h.get("street", "")
+            # 優先過濾屬於當前道路的門牌（若無街道標籤，限距離 <= 18m 之鄰近點）
+            if curr_street and curr_street not in ["無名路", "未命名道路"]:
+                if h_street and curr_street not in h_street and h_street not in curr_street:
+                    continue
+                if not h_street and d > 18.0:
+                    continue
+
+            brng = calculate_bearing(lat, lon, h["lat"], h["lon"])
+            rel_b = relative_bearing(heading_deg, brng)
+
+            # 依道路幾何法向量外積判斷左右
+            if road_seg:
+                p1, p2 = road_seg
+                dx = p2[1] - p1[1]
+                dy = p2[0] - p1[0]
+                cp = dx * (h["lat"] - p1[0]) - dy * (h["lon"] - p1[1])
+                is_left = (cp > 0)
+            else:
+                is_left = (rel_b < 0)
+
+            clean_hn = str(h.get("housenumber", "")).strip().rstrip("號")
+            candidate = {
+                "number": clean_hn,
+                "name": h.get("name", ""),
+                "street": h_street,
+                "distance_m": d,
+                "lat": h["lat"],
+                "lon": h["lon"]
+            }
+
+            if is_left:
+                left_candidates.append(candidate)
+            else:
+                right_candidates.append(candidate)
+
+        left_candidates.sort(key=lambda x: x["distance_m"])
+        right_candidates.sort(key=lambda x: x["distance_m"])
 
         left_desc = ""
         right_desc = ""
+        concise_parts = []
 
-        if left_nums and right_nums:
-            min_l, max_l = min(left_nums), max(left_nums)
-            min_r, max_r = min(right_nums), max(right_nums)
-            left_desc = f"門牌 {min_l}號" if min_l == max_l else f"門牌 {min_l}~{max_l}號"
-            right_desc = f"門牌 {min_r}號" if min_r == max_r else f"門牌 {min_r}~{max_r}號"
-            
-            l_odd = all(n % 2 != 0 for n in left_nums)
-            l_even = all(n % 2 == 0 for n in left_nums)
-            r_odd = all(n % 2 != 0 for n in right_nums)
-            r_even = all(n % 2 == 0 for n in right_nums)
-            
-            if l_odd: left_desc += " (單號)"
-            elif l_even: left_desc += " (雙號)"
-            
-            if r_even: right_desc += " (雙號)"
-            elif r_odd: right_desc += " (單號)"
-        elif left_nums:
-            min_l, max_l = min(left_nums), max(left_nums)
-            left_desc = f"門牌 {min_l}號" if min_l == max_l else f"門牌 {min_l}~{max_l}號"
-            l_odd = all(n % 2 != 0 for n in left_nums)
-            if l_odd:
-                left_desc += " (單號)"
-                right_desc = "對側估算為雙號"
-            else:
-                left_desc += " (雙號)"
-                right_desc = "對側估算為單號"
-        elif right_nums:
-            min_r, max_r = min(right_nums), max(right_nums)
-            right_desc = f"門牌 {min_r}號" if min_r == max_r else f"門牌 {min_r}~{max_r}號"
-            r_even = all(n % 2 == 0 for n in right_nums)
-            if r_even:
-                right_desc += " (雙號)"
-                left_desc = "對側估算為單號"
-            else:
-                right_desc += " (單號)"
-                left_desc = "對側估算為雙號"
+        if left_candidates:
+            best_l = left_candidates[0]
+            l_num = best_l["number"]
+            l_name = f" ({best_l['name']})" if best_l.get("name") else ""
+            left_desc = f"門牌 {l_num}號{l_name}"
+            concise_parts.append(f"左側 {l_num}號{l_name}")
 
+        if right_candidates:
+            best_r = right_candidates[0]
+            r_num = best_r["number"]
+            r_name = f" ({best_r['name']})" if best_r.get("name") else ""
+            right_desc = f"門牌 {r_num}號{r_name}"
+            concise_parts.append(f"右側 {r_num}號{r_name}")
 
-        # 尋找距離目前位置最近的實體門牌號碼
-        closest_door = None
-        closest_dist = 999.0
-        for h in all_hn:
-            d = haversine_distance(lat, lon, h["lat"], h["lon"])
-            if d < closest_dist and h.get("housenumber"):
-                closest_dist = d
-                closest_door = h.get("housenumber")
+        concise_door = "，".join(concise_parts)
 
-        if closest_door and closest_dist <= 80.0:
-            clean_door = str(closest_door).strip().rstrip("號")
-            concise_door = f"約 {clean_door} 號附近"
-        else:
-            concise_door = ""
+        # 4. 【方案 C】：若本地兩側均無門牌，啟動線上官方反向地理編碼備援與持久化快取
+        if not left_desc and not right_desc:
+            try:
+                from nmap.data.cache import CacheManager
+                cache = CacheManager()
+                cache_key = f"doorplate:{round(lat, 5)}:{round(lon, 5)}"
+                cached = cache.get_geocode(cache_key)
+                if cached:
+                    c_hn = cached.get("housenumber", "")
+                    c_name = cached.get("name", "")
+                    c_st = cached.get("street", curr_street)
+                    name_str = f" ({c_name})" if c_name else ""
+                    if c_hn:
+                        concise_door = f"門牌 {c_hn}號{name_str} (官方資料)"
+                        left_desc = concise_door
+                else:
+                    # 快取無資料：非同步發起一次線上查詢，存入 nmap_cache.db 供下次瞬間命中
+                    def fetch_online_doorplate():
+                        try:
+                            from nmap.data.geocoders import NominatimClient
+                            client = NominatimClient(cache_manager=cache)
+                            client.get_doorplate_online(lat, lon)
+                        except Exception:
+                            pass
+                    threading.Thread(target=fetch_online_doorplate, daemon=True).start()
+            except Exception:
+                pass
 
         return {
             "left": left_desc,

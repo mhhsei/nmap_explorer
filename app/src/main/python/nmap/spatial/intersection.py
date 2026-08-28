@@ -8,6 +8,7 @@
    - 有聲號誌 (Acoustic Signals)：回報是否有布穀鳥聲、蟋蟀聲等無障礙有聲導引。
 3. 分支走向導覽：精確指出例如「2點鐘方向往北新路一段」、「9點鐘方向往中正路」。
 """
+import logging
 from typing import List, Dict, Any, Optional
 from nmap.spatial.geometry import (
     haversine_distance,
@@ -17,6 +18,8 @@ from nmap.spatial.geometry import (
     bearing_to_relative_direction
 )
 from nmap.spatial.world_model import WorldModel
+
+logger = logging.getLogger("IntersectionAnalyzer")
 
 
 class IntersectionAnalyzer:
@@ -101,28 +104,63 @@ class IntersectionAnalyzer:
             if dist <= max_distance_m:
                 t_brng = calculate_bearing(lat, lon, n_lat, n_lon)
                 rel_brng = relative_bearing(heading_deg, t_brng)
+                # 僅關注前方 90° 視角內，或極度接近 (< 15m) 的路口
                 if (abs(rel_brng) <= 90 or dist < 15.0) and dist < closest_junction_dist:
-                    if degree >= 3:
+                    physical_neighbors = (set(world_model.road_graph.predecessors(node_id)) | set(world_model.road_graph.successors(node_id))) - {node_id}
+                    real_degree = len(physical_neighbors)
+                    if real_degree >= 3:
                         closest_junction_dist = dist
-                        junction_type = "十字路口" if degree >= 4 else "T字/岔路口"
+                        junction_type = "十字路口" if real_degree >= 4 else "T字/岔路口"
                         
                         intersecting_roads.clear()
                         branches_info.clear()
-                        edges = world_model.road_graph.out_edges(node_id, data=True)
-                        for u, v, data in edges:
-                            road_name = data.get("name", "未命名道路")
-                            if road_name and road_name != curr_street and road_name != "未命名道路":
+                        visited_neighbors = set()
+
+                        for v in physical_neighbors:
+                            if v in visited_neighbors:
+                                continue
+                            visited_neighbors.add(v)
+
+                            # 獲取連接邊的屬性
+                            edge_data = None
+                            if world_model.road_graph.has_edge(node_id, v):
+                                edge_data = list(world_model.road_graph[node_id][v].values())[0]
+                            elif world_model.road_graph.has_edge(v, node_id):
+                                edge_data = list(world_model.road_graph[v][node_id].values())[0]
+
+                            raw_name = edge_data.get("name", "") if edge_data else ""
+                            if not raw_name or raw_name == "未命名道路":
+                                highway_type = edge_data.get("road", {}).get("highway", "") if edge_data else ""
+                                if highway_type in ["footway", "pedestrian", "path", "steps"]:
+                                    road_name = "人行通道"
+                                else:
+                                    road_name = "無名巷弄"
+                            else:
+                                road_name = raw_name
+
+                            if road_name and road_name != curr_street and not road_name.startswith("無名"):
                                 intersecting_roads.add(road_name)
-                            
+
                             v_data = world_model.road_graph.nodes[v]
                             v_lat, v_lon = v_data["lat"], v_data["lon"]
                             out_brng = calculate_bearing(n_lat, n_lon, v_lat, v_lon)
                             out_rel = relative_bearing(heading_deg, out_brng)
+                            
+                            clock_pos = bearing_to_clock_position(out_rel)
+                            rel_dir = bearing_to_relative_direction(out_rel)
+                            if abs(out_rel) >= 140:
+                                rel_dir = "正後方 (來時路)"
+
                             branches_info.append({
                                 "road_name": road_name,
-                                "relative_direction": bearing_to_relative_direction(out_rel),
-                                "clock_position": bearing_to_clock_position(out_rel)
+                                "relative_direction": rel_dir,
+                                "clock_position": clock_pos,
+                                "relative_angle": out_rel
                             })
+
+                        # 按相對角度排序：前向與側向分支優先，後方來時路放最後
+                        branches_info.sort(key=lambda b: abs(b.get("relative_angle", 0)))
+                        logger.info(f"[JUNCTION_DETECT] node={node_id}, degree={real_degree}, type={junction_type}, dist={dist:.1f}m, intersecting={list(intersecting_roads)}")
 
         # If crossing exists nearby, confirm junction presence
         if junction_type == "直行道路" and nearby_crossings:

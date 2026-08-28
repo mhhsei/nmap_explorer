@@ -239,6 +239,15 @@ class RealPoiFetcher:
                     floor = r[6] or "1F"
                     b_desc = r[7] or ""
                     
+                    # 【方案 A 核心】：解析真實店家地址中的路名與門牌號
+                    street_extracted = ""
+                    hn_extracted = ""
+                    if addr:
+                        match = re.search(r'([^\d市區鄉鎮]+?(?:路|街|大道|巷))?.*?(\d+(?:[之\-]\d+)?|[一二三四五六七八九十]+)號', addr)
+                        if match:
+                            street_extracted = match.group(1) or ""
+                            hn_extracted = match.group(2) or ""
+
                     results.append({
                         "id": f"places_{r[0]}",
                         "name": c_name,
@@ -256,6 +265,8 @@ class RealPoiFetcher:
                             "legal_name": legal_name,
                             "brand": brand,
                             "address": addr,
+                            "addr:street": street_extracted,
+                            "addr:housenumber": hn_extracted,
                             "floor": floor,
                             "business_desc": b_desc,
                             "source": "places"

@@ -1482,6 +1482,37 @@ class NmapWebApp {
       });
   }
 
+  /**
+   * 異常事件記錄器 (會匯入至 0_AI_QUICK_SUMMARY.json 的 anomalies_detected 陣列)
+   */
+  recordAnomaly(type, message, details = {}) {
+    const anomaly = {
+      timestamp: new Date().toISOString(),
+      type: type,
+      message: message,
+      details: details
+    };
+    if (!this.sessionAnomalies) this.sessionAnomalies = [];
+    this.sessionAnomalies.push(anomaly);
+    console.warn(`[ANOMALY_RECORDED] [${type}] ${message}`, details);
+  }
+
+  /**
+   * 判斷是否為無語音導航意義的雜訊設施 (如停車格、YouBike 等)
+   */
+  isIgnoredPoi(rawName, category) {
+    if (!rawName) return true;
+    const n = String(rawName).toLowerCase();
+    const c = String(category || "").toLowerCase();
+    if (n.includes("parking") || n.includes("停車格") || n.includes("停車位") || n.includes("parking space") || n.includes("收費停車場")) {
+      return true;
+    }
+    if (c.includes("parking") || c.includes("parking_space")) {
+      return true;
+    }
+    return false;
+  }
+
   cleanPoiName(rawName) {
     if (!rawName) return "";
     let name = String(rawName).trim();
@@ -1505,6 +1536,9 @@ class NmapWebApp {
     if (!data || !data.is_loaded || this.isDetailModalOpen || window.isDetailModalOpen) return;
     const now = Date.now();
 
+    // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次自動掃描，杜絕腰斬吞字！
+    if (now - (this.lastSpeechTime || 0) < 1800) return;
+
     // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 1.5 ~ 25.0 公尺，側向 <= 14.0 公尺，提前 20 秒預警)
     const realtimePois = this.getRealtimePois();
     if (realtimePois && realtimePois.length > 0) {
@@ -1513,6 +1547,9 @@ class NmapWebApp {
         const relBearing = Math.abs(p.relative_bearing_deg || 0);
         const dir = p.relative_direction || "";
         
+        // 排除停車格等雜訊設施
+        if (this.isIgnoredPoi(p.name, p.category)) return false;
+
         // 嚴格前向/側向走廊：排除後方與夾角 > 95° 的店家
         const isForwardOrSide = !dir.includes("後方") && relBearing <= 90;
         return d <= 25.0 && d >= 1.5 && isForwardOrSide;
@@ -1544,9 +1581,9 @@ class NmapWebApp {
             const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
             const dirText = poi.relative_direction ? `，${poi.relative_direction} ${Math.round(poi.distance_m)}公尺` : "";
             const msg = `${cleanedName}${floorTag}${dirText}`;
-            this.updateLiveLog(msg, false, true);
+            this.updateLiveLog(msg, false, false);
             this.lastSpeechTime = now;
-            break; // 每次只報讀最急需的一間，避免語音塞車
+            return; // 報讀完店家後立即返回，絕不在同一個毫秒接續觸發路口廣播！
           }
         }
       }
@@ -1817,6 +1854,8 @@ class NmapWebApp {
       "hardware": "五金行", "furniture": "傢俱行", "bed": "寢具店", "gift": "禮品店",
       "laundry": "洗衣店", "dry_cleaning": "乾洗店", "dry_cleaner": "乾洗店",
       "chemist": "藥妝店", "cosmetics": "化妝品店", "copyshop": "影印店",
+      "cosmetic and beauty supplies": "美妝保養用品", "beauty_salon": "美容美髮沙龍",
+      "hair_care": "美髮沙龍", "skin_care": "皮膚保養", "parking_space": "停車格",
       "locksmith": "開鎖刻印店", "shoe_repair": "修鞋店",
 
       // 醫療、健康與緊急設施
@@ -2000,8 +2039,22 @@ class NmapWebApp {
         "正西", "西北西", "西北", "北北西"
       ];
       const normalized = ((heading % 360.0) + 360.0) % 360.0;
-      const index = Math.round(normalized / 22.5) % 16;
-      return dirs16[index];
+
+      // Schmitt Trigger 遲滯防抖：每區間 22.5°，在邊界處加入 ±3.5° 遲滯死區
+      // 避免手機在方位交界處（如 123.75°）以 50Hz 頻率來回狂跳
+      if (this.currentCardinalIndex !== undefined && this.currentCardinalIndex !== null) {
+          const prevCenter = this.currentCardinalIndex * 22.5;
+          let diff = Math.abs(normalized - prevCenter);
+          if (diff > 180.0) diff = 360.0 - diff;
+          // 半寬 11.25° + 3.5° 遲滯 = 14.75°。若仍在該範圍內，鎖定原方位不動
+          if (diff <= 14.75) {
+              return dirs16[this.currentCardinalIndex];
+          }
+      }
+
+      const newIndex = Math.round(normalized / 22.5) % 16;
+      this.currentCardinalIndex = newIndex;
+      return dirs16[newIndex];
   }
 
   updateGameLogic(dt, time) {
@@ -2883,37 +2936,41 @@ window.onHeadingUpdate = function(headingDegrees) {
         const dirStr = window.app.getCardinalDirection(headingDegrees);
         
         if (dirStr !== window.lastReportedCardinal) {
-            window.lastReportedCardinal = dirStr;
-            window.lastReportedHeading = headingDegrees;
-            
-            if (settings.turnTickSound && window.app.audio) {
-                window.app.audio.playSettledChime();
-            }
-            
-            // 若正開啟地標詳細資訊視窗，暫停轉向語音播報以避免打擾閱讀
-            if (window.isDetailModalOpen || (window.app && window.app.isDetailModalOpen)) {
-                return;
-            }
+            const now = Date.now();
+            // 方位廣播防抖：相隔至少 600ms，避免手腕震顫連環發音
+            if (!window.lastCardinalReportTime || (now - window.lastCardinalReportTime >= 600)) {
+                window.lastCardinalReportTime = now;
+                window.lastReportedCardinal = dirStr;
+                window.lastReportedHeading = headingDegrees;
 
-            // 轉動播報開關：僅當使用者開啟「轉動手機即時播報方位」時，才透過 Google 內建原生 TTS 發聲！
-            // 絕不調用 TalkBack / announceForAccessibility，確保 TalkBack 在轉向時徹底靜音無干擾。
-            if (settings.turnAnnounce) {
-                if (window.AndroidBridge && window.AndroidBridge.speakTtsDirect) {
-                    window.AndroidBridge.speakTtsDirect(dirStr, true);
-                } else if (!window.AndroidBridge && window.speechSynthesis) {
-                    try {
-                        window.speechSynthesis.cancel();
-                        const u = new SpeechSynthesisUtterance(dirStr);
-                        u.lang = 'zh-TW';
-                        u.rate = 1.25;
-                        window.speechSynthesis.speak(u);
-                    } catch (e) {}
+                if (window.app && window.app.recordTrace) {
+                    window.app.recordTrace("HEADING_CHANGED", { heading: Math.round(headingDegrees), cardinal: dirStr });
                 }
-            }
+                
+                if (settings.turnTickSound && window.app.audio) {
+                    window.app.audio.playSettledChime();
+                }
+                
+                // 若正開啟地標詳細資訊視窗，暫停轉向語音播報以避免打擾閱讀
+                if (window.isDetailModalOpen || (window.app && window.app.isDetailModalOpen)) {
+                    return;
+                }
 
-            // 轉向後若有周遭資料，微延遲觸發接近感知檢查
-            if (window.app.lastData && window.app.checkProximityAlerts) {
-                window.app.checkProximityAlerts(window.app.lastData);
+                // 轉動播報開關：僅當使用者開啟「轉動手機即時播報方位」時，才透過 Google 內建原生 TTS 發聲！
+                // 絕不調用 TalkBack / announceForAccessibility，確保 TalkBack 在轉向時徹底靜音無干擾。
+                if (settings.turnAnnounce) {
+                    if (window.AndroidBridge && window.AndroidBridge.speakTtsDirect) {
+                        window.AndroidBridge.speakTtsDirect(dirStr, true);
+                    } else if (!window.AndroidBridge && window.speechSynthesis) {
+                        try {
+                            window.speechSynthesis.cancel();
+                            const u = new SpeechSynthesisUtterance(dirStr);
+                            u.lang = 'zh-TW';
+                            u.rate = 1.25;
+                            window.speechSynthesis.speak(u);
+                        } catch (e) {}
+                    }
+                }
             }
         }
     }
@@ -2947,6 +3004,17 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
                   Math.sin(Δλ/2) * Math.sin(Δλ/2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
         dist = R * c;
+    }
+
+    // 異常位移監控：若非首度定位且單次跳躍超過 25 公尺，記錄異常
+    if (window.lastGpsLat !== null && dist > 25.0 && dist < 99999) {
+        if (window.app && window.app.recordAnomaly) {
+            window.app.recordAnomaly("GPS_JUMP", `GPS 座標跳躍 ${Math.round(dist)} 公尺 (精度: ${accuracy}m, 速度: ${speed}m/s)`, {
+                jump_meters: dist,
+                accuracy: accuracy,
+                speed: speed
+            });
+        }
     }
 
     // 只要有移動 >= 1.5m 或首度定位即更新
@@ -3009,17 +3077,16 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
                 if (window.app.renderRadarCanvas) window.app.renderRadarCanvas(data);
                 if (window.app.updatePOIs) window.app.updatePOIs(data.pois || []);
 
-                // 檢查周遭接近店家提示
-                if (window.app.checkProximityAlerts) {
-                    window.app.checkProximityAlerts(data);
-                }
-
-                // 僅在首度啟動完成定位時播報起點摘要
+                // 首次定位與後續行進走廊提示分流，徹底杜絕開口 2ms 互掐剪音！
                 if (dist === 999999) {
                     const overseasMsg = data.is_overseas ? "【⚠️ 偵測到海外地區：已啟用全球線上圖資模式】" : "";
                     const report = `${overseasMsg}${data.concise_report || data.full_report || "已更新 GPS 定位。"}`;
                     window.app.updateLiveLog(report, false, true);
                     if (window.app.audio) window.app.audio.playArrival();
+                } else {
+                    if (window.app.checkProximityAlerts) {
+                        window.app.checkProximityAlerts(data);
+                    }
                 }
             }
 

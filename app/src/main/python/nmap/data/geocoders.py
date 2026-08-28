@@ -284,6 +284,49 @@ class NominatimClient:
             pass
         return None
 
+    def get_doorplate_online(self, lat: float, lon: float) -> Optional[Dict[str, Any]]:
+        """
+        【方案 C 核心】：線上高精度門牌反查與持久化快取 (ArcGIS / NLSC)
+        作用：當離線圖資無任何實體門牌時，線上查詢官方實體門牌點位，並自動存入 nmap_cache.db。
+        """
+        cache_key = f"doorplate:{round(lat, 5)}:{round(lon, 5)}"
+        cached = self.cache.get_geocode(cache_key)
+        if cached:
+            return cached
+
+        arcgis_url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode"
+        params = {"f": "json", "location": f"{lon},{lat}"}
+        try:
+            resp = self.session.get(arcgis_url, params=params, timeout=2.5)
+            if resp.status_code == 200:
+                data = resp.json()
+                addr_data = data.get("address", {})
+                st = addr_data.get("Address", "")
+                add_num = addr_data.get("AddNum", "")
+                poi_name = addr_data.get("PlaceName", "")
+                match_addr = addr_data.get("Match_addr", "")
+
+                if add_num or ("號" in st):
+                    clean_hn = add_num if add_num else ""
+                    if not clean_hn:
+                        m = re.search(r'(\d+)號', st)
+                        if m:
+                            clean_hn = m.group(1)
+
+                    res = {
+                        "street": st,
+                        "housenumber": clean_hn,
+                        "name": poi_name,
+                        "full_address": match_addr,
+                        "source": "arcgis"
+                    }
+                    self.cache.set_geocode(cache_key, res)
+                    return res
+        except Exception:
+            pass
+
+        return None
+
     def parse_input(self, input_str: str) -> Tuple[Optional[float], Optional[float], str]:
         """
         【萬能輸入解析器】

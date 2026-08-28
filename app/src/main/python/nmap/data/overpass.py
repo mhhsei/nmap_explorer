@@ -294,6 +294,28 @@ class OverpassClient:
                         "tags": tags
                     })
 
+                # 【方案 A 核心】：解析多邊形建築物上的真實門牌與街名
+                # 台灣大量著名大樓（如壽德大樓、大創、新光三越）在 OSM 中是以 way 呈現，必須提取其幾何質心與門牌
+                if "addr:housenumber" in tags or "addr:street" in tags:
+                    street = tags.get("addr:street", "")
+                    place = tags.get("addr:place", "")
+                    if "巷" in place or "弄" in place:
+                        street = street + place if street else place
+                    elif not street:
+                        street = place
+
+                    clean_hn = tags.get("addr:housenumber", "")
+                    if clean_hn:
+                        house_numbers.append({
+                            "id": way_id,
+                            "housenumber": clean_hn,
+                            "street": street,
+                            "lat": avg_lat,
+                            "lon": avg_lon,
+                            "name": tags.get("name") or tags.get("name:zh") or "",
+                            "tags": tags
+                        })
+
                 category = self._extract_poi_category(tags)
                 if category and ("name" in tags or tags.get("amenity") or tags.get("shop")):
                     pois.append({

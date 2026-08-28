@@ -145,18 +145,18 @@ class NVDAReporter:
         lines.append(f"• 當前道路：{road_info['street_name']} ({road_info['oneway']}，{road_info['lanes']} 車道)")
         lines.append(f"• 人行道：{road_info['sidewalk_desc']}")
 
-        # Section 2.5: Left/Right Side House Numbers & Alleys
+        # Section 2.5: Left/Right Side Real House Numbers & Alleys (方案 A + C)
         side_scan = agent.world_model.get_left_right_side_scan(agent.lat, agent.lon, agent.heading_deg, radius_m=60.0)
         if door_estimates is None:
             door_estimates = agent.world_model.get_interpolated_door_numbers(agent.lat, agent.lon, agent.heading_deg)
-        lines.append("\n【左右側門牌與巷弄掃描】")
-        left_h = f" (門牌: {', '.join(side_scan['left_side']['house_numbers'])})" if side_scan['left_side']['house_numbers'] else f" ({door_estimates['left_side_estimate']})"
+        lines.append("\n【左右側實體門牌與巷弄掃描】")
+        left_h = f" (門牌: {', '.join(side_scan['left_side']['house_numbers'])})" if side_scan['left_side']['house_numbers'] else (f" ({door_estimates['left_side_estimate']})" if door_estimates.get('left_side_estimate') else "")
         left_a = f" (巷弄: {', '.join(a['name'] for a in side_scan['left_side']['alleys'])})" if side_scan['left_side']['alleys'] else ""
-        lines.append(f"• 左側 (Left Side)：{left_h}{left_a}")
+        lines.append(f"• 左側 (Left Side)：{left_h}{left_a}" if (left_h or left_a) else "• 左側 (Left Side)：無實體門牌")
 
-        right_h = f" (門牌: {', '.join(side_scan['right_side']['house_numbers'])})" if side_scan['right_side']['house_numbers'] else f" ({door_estimates['right_side_estimate']})"
+        right_h = f" (門牌: {', '.join(side_scan['right_side']['house_numbers'])})" if side_scan['right_side']['house_numbers'] else (f" ({door_estimates['right_side_estimate']})" if door_estimates.get('right_side_estimate') else "")
         right_a = f" (巷弄: {', '.join(a['name'] for a in side_scan['right_side']['alleys'])})" if side_scan['right_side']['alleys'] else ""
-        lines.append(f"• 右側 (Right Side)：{right_h}{right_a}")
+        lines.append(f"• 右側 (Right Side)：{right_h}{right_a}" if (right_h or right_a) else "• 右側 (Right Side)：無實體門牌")
 
         # Section 3: Intersection & Crossing Safety with 12-Hour Clock Bearings
         lines.append("\n【路口與過馬路資訊】")
