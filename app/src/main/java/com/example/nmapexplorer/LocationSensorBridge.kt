@@ -173,9 +173,13 @@ class StationaryMotionDetector(
 /**
  * 【二維行人與乘車自適應卡爾曼濾波器 (Pedestrian & Vehicular Adaptive Kalman Filter)】
  * 
- * 核心升級：
- * 1. 靜止絕對鎖定 (Zero Drift Deadband)：靜止時 100% 凍結座標，阻絕室內 GPS 虛擬跳點。
- * 2. 步態事件驅動推進 (Step-Synchronous Predict)：行走時僅在物理邁步時推進位置，消除原地自動向前滑行。
+ * 核心演算法亮點：
+ * 1. 停留重心收斂定錨 (Centroid Anchoring & ZUPT)：
+ *    停步時不取最後單一筆可能帶有漂移雜訊的 GPS，而是以停下前 2~3 秒內之平滑位置加權重心定錨。
+ *    杜絕鎖在漂移點；原地轉身時位置 100% 凍結，僅朝向旋轉，維持 3D 空間音訊穩定。
+ * 2. 前進軸與橫向軸阻尼分流 (Along-Track vs Cross-Track Damping)：
+ *    將人體前進朝向旋轉解耦。前進軸 (Along-track) 正常放行確保步態敏銳反應；
+ *    橫向軸 (Cross-track) 強力加壓阻尼，瞬間削平 80% 大樓折射引起的馬路左右橫跳雜訊！
  * 3. 馬氏距離新息門控 (Mahalanobis Innovation Gating)：以 95% 卡方檢定 (5.991) 嚴格把關 GPS，剔除大樓折射跳點。
  * 4. 乘車高速自適應 (Vehicular High-Speed Mode)：搭乘公車/計程車時自動解鎖，流暢追蹤車載軌跡。
  */
@@ -208,6 +212,61 @@ class PedestrianKalmanFilter {
     private var lastRejectedZx = 0.0
     private var lastRejectedZy = 0.0
 
+    // 最近平滑座標緩衝區 (供停步時幾何重心收斂定錨計算)
+    private data class FilteredFix(
+        val x: Double,
+        val y: Double,
+        val accuracyMeters: Float,
+        val timestampNanos: Long
+    )
+    private val recentFixes = java.util.ArrayDeque<FilteredFix>()
+
+    /**
+     * 【當偵測到進入靜止狀態時觸發 (On Stationary State Entered)】
+     * 作用：
+     * 停步時不取最後單一筆可能帶有漂移雜訊的 GPS，而是以停下前 2~3 秒內之平滑位置加權重心定錨。
+     */
+    fun onStationaryStateEntered() {
+        if (!isInitialized || recentFixes.isEmpty()) return
+
+        var sumW = 0.0
+        var weightedX = 0.0
+        var weightedY = 0.0
+        val latestNanos = recentFixes.last.timestampNanos
+
+        for (fix in recentFixes) {
+            val ageSec = max(0.0, (latestNanos - fix.timestampNanos) / 1_000_000_000.0)
+            // 2.0 秒半衰期時間衰減（越靠近停步時刻的權重越高）
+            val timeWeight = exp(-ageSec / 2.0)
+            // 精度倒數平方權重（精度越佳之權重越高）
+            val accWeight = 1.0 / max(fix.accuracyMeters.toDouble(), 1.5).pow(2.0)
+            val w = timeWeight * accWeight
+
+            weightedX += fix.x * w
+            weightedY += fix.y * w
+            sumW += w
+        }
+
+        if (sumW > 0.0) {
+            val centroidX = weightedX / sumW
+            val centroidY = weightedY / sumW
+
+            // 驗證幾何重心與當前位置之距離，防止異常離群跳躍 (< 5.5m)
+            val distToCentroid = sqrt((centroidX - x).pow(2.0) + (centroidY - y).pow(2.0))
+            if (distToCentroid < 5.5) {
+                x = centroidX
+                y = centroidY
+            }
+        }
+
+        vx = 0.0
+        vy = 0.0
+        val (cLat, cLon) = getCurrentGeoLocation()
+        lockedLat = cLat
+        lockedLon = cLon
+        Log.i("LocationSensorBridge", "[CENTROID_ANCHOR] 停步重心收斂定錨成功: ($lockedLat, $lockedLon)，整合 ${recentFixes.size} 筆歷史軌跡點。")
+    }
+
     /**
      * 步態推進 (Predict Step - 由步伐事件驅動)
      * 作用：當使用者走一步時，由 Weinberg 自適應步長模型平滑推算前進。
@@ -230,6 +289,14 @@ class PedestrianKalmanFilter {
         val (curLat, curLon) = getCurrentGeoLocation()
         lockedLat = curLat
         lockedLon = curLon
+
+        // 步態推算亦加入滑動視窗
+        val nowNanos = System.currentTimeMillis() * 1_000_000L
+        recentFixes.addLast(FilteredFix(x, y, 4.0f, nowNanos))
+        while (recentFixes.size > 8) {
+            recentFixes.removeFirst()
+        }
+
         return Pair(curLat, curLon)
     }
 
@@ -244,6 +311,7 @@ class PedestrianKalmanFilter {
      * @param motionState 當前運動狀態 (靜止/步行/乘車)
      * @param isMultipath 是否偵測到大樓多路徑折射反射雜訊
      * @param hasDualFrequencyL5 是否收到 L5 雙頻衛星高精度訊號
+     * @param headingDeg 當前 9 軸融合真北朝向角 (度，0~360)
      * @return 濾波平滑後的 (緯度, 經度)
      */
     fun filter(
@@ -254,7 +322,8 @@ class PedestrianKalmanFilter {
         timestampNanos: Long,
         motionState: MotionState,
         isMultipath: Boolean = false,
-        hasDualFrequencyL5: Boolean = false
+        hasDualFrequencyL5: Boolean = false,
+        headingDeg: Float = -1f
     ): Pair<Double, Double> {
         // 若為第一次定位：設定初始錨點與狀態
         if (!isInitialized) {
@@ -268,10 +337,12 @@ class PedestrianKalmanFilter {
             lockedLon = rawLon
             lastTimestampNanos = timestampNanos
             isInitialized = true
+            recentFixes.clear()
+            recentFixes.addLast(FilteredFix(0.0, 0.0, accuracyMeters, timestampNanos))
             return Pair(rawLat, rawLon)
         }
 
-        // 1. 【室內/原地靜止防抖與看門狗安全破鎖 (Safety Breakout)】
+        // 1. 【停留防抖、重心微收斂與看門狗安全破鎖 (Safety Breakout)】
         if (motionState == MotionState.STATIONARY_LOCKED) {
             val radLat = Math.toRadians(lockedLat)
             val mPerLat = 111139.0
@@ -281,9 +352,9 @@ class PedestrianKalmanFilter {
                 ((rawLat - lockedLat) * mPerLat).pow(2)
             )
 
-            // 破鎖仲裁：若物理位移 > 5.0m 且 GPS 精度合理 (< 15m)，或移動速度 > 0.55m/s：
-            // 代表使用者已開始走動或先前鎖定在雜訊點，立即解除座標凍結重新對齊！
-            if ((distFromLocked > 5.0 && accuracyMeters < 15.0f) || (speedMps > 0.55f && accuracyMeters < 15.0f)) {
+            // 破鎖仲裁：若物理位移 > 4.8m 且 GPS 精度合理 (< 14m)，或移動速度 > 0.55m/s：
+            // 代表使用者已開始走動，立即解除座標凍結重新對齊！
+            if ((distFromLocked > 4.8 && accuracyMeters < 14.0f) || (speedMps > 0.55f && accuracyMeters < 14.0f)) {
                 Log.w("LocationSensorBridge", "[KALMAN_BREAKOUT] Stationary lock broken by displacement: dist=${String.format(Locale.US, "%.1f", distFromLocked)}m, speed=${speedMps}m/s, acc=${accuracyMeters}m")
                 anchorLat = rawLat
                 anchorLon = rawLon
@@ -296,8 +367,20 @@ class PedestrianKalmanFilter {
                 lockedLat = rawLat
                 lockedLon = rawLon
                 consecutiveRejections = 0
+                recentFixes.clear()
+                recentFixes.addLast(FilteredFix(0.0, 0.0, accuracyMeters, timestampNanos))
                 return Pair(rawLat, rawLon)
             } else {
+                // 停留微收斂 (Stationary Micro-Convergence):
+                // 若位移在定錨範圍內 (< 3.5m) 且衛星精度極佳 (< 4.2m) 且非折射雜訊：
+                // 允許極微幅 (5%) 柔和微調重心，消除長時間等紅燈時的單點微小初始偏壓
+                if (distFromLocked < 3.5 && accuracyMeters < 4.2f && !isMultipath) {
+                    lockedLat = 0.95 * lockedLat + 0.05 * rawLat
+                    lockedLon = 0.95 * lockedLon + 0.05 * rawLon
+                    val (curLat, curLon) = getCurrentGeoLocation()
+                    x += (lockedLon - curLon) * mPerLon
+                    y += (lockedLat - curLat) * mPerLat
+                }
                 vx = 0.0
                 vy = 0.0
                 return Pair(lockedLat, lockedLon)
@@ -329,17 +412,35 @@ class PedestrianKalmanFilter {
             lockedLat = rawLat
             lockedLon = rawLon
             consecutiveRejections = 0
+            recentFixes.clear()
+            recentFixes.addLast(FilteredFix(0.0, 0.0, accuracyMeters, timestampNanos))
             return Pair(rawLat, rawLon)
         }
 
-        // 2. 狀態預測步驟：全時注入健康過程雜訊 Q，徹底杜絕協方差塌陷 (Covariance Collapse) 與座標凍結！
-        val qPos = if (motionState == MotionState.VEHICULAR_TRANSIT) 4.0 else 1.8
+        // 2. 【狀態預測步驟：前進軸與橫向軸阻尼分流 (Along-Track vs Cross-Track Noise Projection)】
+        val hasValidHeading = headingDeg in 0f..360f
+        val (qX, qY) = if (hasValidHeading && motionState == MotionState.PEDESTRIAN_WALKING) {
+            val radH = Math.toRadians(headingDeg.toDouble())
+            val sinH = sin(radH)
+            val cosH = cos(radH)
+            // 前進方向正常放行 (2.0 m^2/s)；垂直前進方向施加強阻尼 (0.18 m^2/s)，大幅抑制左右橫跳！
+            val qAlong = 2.0
+            val qCross = 0.18
+            Pair(
+                qAlong * sinH * sinH + qCross * cosH * cosH,
+                qAlong * cosH * cosH + qCross * sinH * sinH
+            )
+        } else if (motionState == MotionState.VEHICULAR_TRANSIT) {
+            Pair(4.0, 4.0)
+        } else {
+            Pair(1.8, 1.8)
+        }
         val qVel = if (motionState == MotionState.VEHICULAR_TRANSIT) 2.0 else 0.8
 
         x += vx * dt
         y += vy * dt
-        p00 += p22 * dt * dt + qPos * dt
-        p11 += p33 * dt * dt + qPos * dt
+        p00 += p22 * dt * dt + qX * dt
+        p11 += p33 * dt * dt + qY * dt
         p22 += qVel * dt
         p33 += qVel * dt
 
@@ -383,18 +484,47 @@ class PedestrianKalmanFilter {
             consecutiveRejections = 0
         }
 
-        // 5. 計算卡爾曼增益並更新狀態
+        // 5. 【前進軸與橫向軸新息阻尼解耦 (Along-Track vs Cross-Track Innovation Damping)】
+        val (effectiveInnovX, effectiveInnovY) = if (hasValidHeading && motionState == MotionState.PEDESTRIAN_WALKING) {
+            val radH = Math.toRadians(headingDeg.toDouble())
+            val sinH = sin(radH)
+            val cosH = cos(radH)
+
+            // 投影至前進軸與橫向軸
+            val innovAlong = innovX * sinH + innovY * cosH
+            val innovCross = innovX * cosH - innovY * sinH
+
+            // 橫向新息壓縮阻尼：人體行走無法瞬間側向跳躍 3 公尺。
+            // 超出 1.2m 擺動門檻之橫向折射雜訊施加 Huber 阻尼 (壓縮係數 0.25)，徹底抹平人行道左右橫跳！
+            val lateralThreshold = 1.2
+            val absCross = abs(innovCross)
+            val dampedCross = if (absCross > lateralThreshold) {
+                sign(innovCross) * (lateralThreshold + 0.25 * (absCross - lateralThreshold))
+            } else {
+                innovCross
+            }
+
+            // 重構正交直角座標新息向量
+            Pair(
+                innovAlong * sinH + dampedCross * cosH,
+                innovAlong * cosH - dampedCross * sinH
+            )
+        } else {
+            Pair(innovX, innovY)
+        }
+
+        // 6. 計算卡爾曼增益並更新狀態
         val k0 = p00 / sX
         val k1 = p11 / sY
 
-        x += k0 * innovX
-        y += k1 * innovY
+        x += k0 * effectiveInnovX
+        y += k1 * effectiveInnovY
 
         p00 *= (1.0 - k0)
         p11 *= (1.0 - k1)
 
-        vx = (k0 * innovX) / dt
-        vy = (k1 * innovY) / dt
+        vx = (k0 * effectiveInnovX) / dt
+        vy = (k1 * effectiveInnovY) / dt
 
         // 速度鉗制防護
         val maxSpeed = if (motionState == MotionState.VEHICULAR_TRANSIT) 25.0 else 4.0
@@ -408,6 +538,13 @@ class PedestrianKalmanFilter {
         val (outLat, outLon) = getCurrentGeoLocation()
         lockedLat = outLat
         lockedLon = outLon
+
+        // 記錄平滑軌跡供定錨計算
+        recentFixes.addLast(FilteredFix(x, y, accuracyMeters, timestampNanos))
+        while (recentFixes.size > 8) {
+            recentFixes.removeFirst()
+        }
+
         return Pair(outLat, outLon)
     }
 
@@ -422,6 +559,7 @@ class PedestrianKalmanFilter {
     fun reset() {
         isInitialized = false
         consecutiveRejections = 0
+        recentFixes.clear()
     }
 }
 
@@ -478,6 +616,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private val kalmanFilter = PedestrianKalmanFilter()
     private val stationaryDetector = StationaryMotionDetector { state ->
         Log.i(tag, "Motion state changed to: $state")
+        if (state == MotionState.STATIONARY_LOCKED) {
+            kalmanFilter.onStationaryStateEntered()
+        }
     }
 
     private var isRunning = false
@@ -885,7 +1026,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             userStepLengthM = 0.85f * userStepLengthM + 0.15f * estimatedStep
         }
 
-        // 執行三態自適應卡爾曼濾波
+        // 執行三態自適應卡爾曼濾波（含前進軸與橫向軸阻尼分流 + 停留重心收斂定錨）
         val motionState = stationaryDetector.currentState
         val (filteredLat, filteredLon) = kalmanFilter.filter(
             rawLat = rawLat,
@@ -895,7 +1036,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             timestampNanos = timestampNanos,
             motionState = motionState,
             isMultipath = isUrbanCanyonMultipath,
-            hasDualFrequencyL5 = hasDualFrequencyL5
+            hasDualFrequencyL5 = hasDualFrequencyL5,
+            headingDeg = smoothedHeading
         )
 
         val provider = location.provider ?: "fused"

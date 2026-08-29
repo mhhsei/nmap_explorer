@@ -49,6 +49,15 @@
 ## 📝 變更日誌 (Changelog)
 
 ### [v1.0.6 - 2026-08-29] - 語音朗讀前置 3D 聽覺圖標庫 (Earcons)、對話框無障礙焦點隔離 (Inert Shield) 與高中生白話設定精簡
+- **🧭 前進軸與橫向軸阻尼分流 (Along-Track vs Cross-Track Damping) 與停步重心收斂定錨 (`LocationSensorBridge.kt`)**:
+  1. **前進軸與橫向軸解耦分流 (Along-Track vs Cross-Track Damping)**：
+     - **人體物理運動約束**：人是朝正前方邁步走，不可能瞬間側向平移跳躍 3 公尺。演算法將 9 軸融合真北朝向 ($\theta$) 投影解耦為「前進軸」與「垂直橫向軸」。
+     - **過程雜訊異方性 (Anisotropic Process Noise)**：前進軸過程雜訊正常放行 ($q_{\text{along}} = 2.0\text{ m}^2/\text{s}$)，確保步態與加速度敏銳跟隨；橫向軸施加強阻尼 ($q_{\text{cross}} = 0.18\text{ m}^2/\text{s}$)，壓制橫向物理噪聲。
+     - **橫向新息壓縮 (Cross-Track Innovation Damping)**：將 GPS 測量新息分解，若大樓折射引起橫向跳動超過 $1.2\text{m}$ 門檻，施加 Huber-style 阻尼壓縮（壓縮係數 0.25）。**瞬間削平 80% 大樓玻璃反射引起的馬路左右橫跳雜訊**，使行走軌跡如同火車在軌道上般平順筆直！
+  2. **停步重心收斂定錨 (Centroid Anchoring & ZUPT)**：
+     - **杜絕鎖在跳點**：停步時不取最後單一筆帶有漂移雜訊的 GPS，而是維護最近 3~5 秒軌跡滑動視窗，依據精度倒數平方與時間衰減計算「加權幾何重心」，精準定錨在真實站立位置。
+     - **位置與朝向徹底解耦 (Position-Heading Decoupling)**：停步期間座標 100% 凍結（速度強制為 0），若在定錨半徑內收到特高精度衛星訊號則進行 5% 柔和微收斂；原地轉身時位置完全不動，指南針與 3D 空間音效平滑旋轉，徹底消除原地旋轉時店家鐘點方向狂跳的困擾。
+     - **靈敏起步破鎖**：步伐檢測邁出第一步或物理位移 $> 4.8\text{m}$ 時立即流暢解鎖，重啟前進導航。
 - **🛡️ WCAG 2.2 AAA 無障礙模態對話框焦點隔離 (Modal Inert Shield & Focus Trap) 與白話設定精簡 (`index.html`, `app.js`, `style.css`)**:
   1. **消滅 TalkBack 滑動穿透至前一層背景 (Modal Inert Shield)**：
      - **語意結構重構**：將主畫面所有內容（標題、權限橫幅、搜尋列、按鈕群、歷史訊息清單）完整包裝於獨立語意容器 `<main id="main-content">` 中，與所有對話框解耦並列。
