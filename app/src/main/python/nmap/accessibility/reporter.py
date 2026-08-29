@@ -83,19 +83,20 @@ class NVDAReporter:
                 parts.append(f"📍 正通過【{jtype}】，請直線前進。")
                 has_junc_alert = True
             elif dist is not None and dist <= 28.0:
-                # 檢查是否有實體有聲號誌 (APS)
+                # 檢查號誌安全情報 (有聲號誌/即時秒數/按鈕位置)
                 sig_info = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=28.0)
-                if sig_info and sig_info.get("has_aps"):
-                    # 有號誌時精簡說出有聲導引
+                if sig_info and (sig_info.get("has_aps") or sig_info.get("has_live_seconds")):
+                    # 具備有聲號誌或即時秒數時直接報讀
                     parts.append(f"📍 {sig_info['speech_prompt']}")
                 else:
-                    # 沒有有聲號誌時，精簡描述路口狀況 (路口型態、車道數/路寬、斑馬線方向、無有聲號誌)
+                    # 無有聲號誌且無即時秒數時，精簡描述路況 (路口型態、車道數/路寬、斑馬線方向、按鈕位置、無有聲號誌)
                     lanes = road_info.get("lanes", 2)
                     oneway = road_info.get("oneway", "雙向")
                     width_approx = int(lanes * 3.5)
                     crossings = intersection.get("nearby_crossings") or []
                     clock_str = f"，斑馬線在 {crossings[0]['clock_position']}" if crossings else ""
-                    parts.append(f"📍 前方 {round(dist)}公尺【{jtype}】，{oneway}{lanes}線道約{width_approx}米{clock_str}，無有聲號誌。")
+                    btn_hint = "，右側桿高110公分處有按鈕" if (sig_info and sig_info.get("has_button")) else ""
+                    parts.append(f"📍 前方 {round(dist)}公尺【{jtype}】，{oneway}{lanes}線道約{width_approx}米{clock_str}{btn_hint}，無有聲號誌。")
                 has_junc_alert = True
 
         # 5. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
@@ -197,14 +198,18 @@ class NVDAReporter:
             for b in clock_branches[:4]:
                 lines.append(f"  - 位於 {b['clock_position']} ({b['relative_direction']}) {b['distance_m']}m：{b['road_name']}")
 
-        # Section 3.2: Acoustic Pedestrian Signals (Scheme 1)
+        # Section 3.2: Traffic Signal, APS & Pedestrian Button (Scheme 1)
         sig_safety = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=35.0)
-        if sig_safety and sig_safety.get("has_aps"):
-            lines.append("\n【視障有聲號誌 (APS)】")
-            lines.append(f"• 設施狀態：{sig_safety['speech_prompt']}")
+        lines.append("\n【交通號誌、有聲導引與按鈕情報】")
+        if sig_safety:
+            if sig_safety.get("has_aps"):
+                lines.append(f"• 有聲號誌：{sig_safety['target_sound']}")
+            if sig_safety.get("has_live_seconds"):
+                lines.append(f"• 即時秒數：{sig_safety['light_status']} 剩 {sig_safety['remaining_seconds']} 秒")
+            if sig_safety.get("has_button"):
+                lines.append(f"• 行人觸動按鈕：{sig_safety['button_guide']}")
         else:
-            lines.append("\n【視障有聲號誌 (APS)】")
-            lines.append("• 設施狀態：此路口無實體有聲號誌，請依車流平行音確認起步通行。")
+            lines.append("• 號誌設施：此路口無實體有聲號誌，請依車流平行音確認起步通行。")
 
         # Section 3.5: Sidewalk Hazards Radar (Scheme 3)
         sidewalk_hazards = agent.world_model.get_sidewalk_hazards(agent.lat, agent.lon, agent.heading_deg, max_dist_m=15.0)
