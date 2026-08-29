@@ -1944,8 +1944,8 @@ class NmapWebApp {
       }
     }
 
-    // 0.2 【Scheme 1 交通部 TDX 路口號誌與視障有聲號誌 (SPaT & APS)】
-    if (data.traffic_signal && data.traffic_signal.distance_m <= 18.0 && data.traffic_signal.distance_m >= 4.0) {
+    // 0.2 【Scheme 1 交通部視障有聲號誌 (APS)】- 實體號誌優先導引
+    if (data.traffic_signal && data.traffic_signal.has_aps && data.traffic_signal.distance_m <= 22.0 && data.traffic_signal.distance_m >= 4.0) {
       const sig = data.traffic_signal;
       const lastSigTime = this.announcedSignalCooldown.get(sig.id) || 0;
       if (now - lastSigTime > 30000) {
@@ -1955,7 +1955,7 @@ class NmapWebApp {
           category: "signal",
           distance_m: sig.distance_m,
           relative_bearing_deg: 0
-        }, `🚦 ${sig.speech_prompt}`, false);
+        }, `📍 ${sig.speech_prompt}`, false);
         return;
       }
     }
@@ -2039,7 +2039,10 @@ class NmapWebApp {
             if (filteredRoads.length > 0) {
               roads = `（即將交會 ${filteredRoads.join("、")}）`;
             }
-            const msg = `📍 前方 ${Math.round(juncDist)} 公尺有【${juncType}】${roads}。`;
+            const lanes = (data.road_info && data.road_info.lanes) ? data.road_info.lanes : 2;
+            const oneway = (data.road_info && data.road_info.oneway) ? data.road_info.oneway : "雙向";
+            const widthM = Math.round(lanes * 3.5);
+            const msg = `📍 前方 ${Math.round(juncDist)}公尺【${juncType}】${roads}，${oneway}${lanes}線道約${widthM}米，無有聲號誌。`;
             this.announceJunction(msg, true);
             return;
           }
@@ -2049,7 +2052,7 @@ class NmapWebApp {
         else if (juncDist < 6.0) {
           if (this.currentJunctionState !== "PASSING") {
             this.currentJunctionState = "PASSING";
-            const msg = `📍 正通過【${juncType}】。`;
+            const msg = `📍 正通過【${juncType}】，請直線前進。`;
             this.announceJunction(msg, false);
             return;
           }

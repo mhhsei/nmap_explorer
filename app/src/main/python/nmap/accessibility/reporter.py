@@ -73,27 +73,32 @@ class NVDAReporter:
             parts.append(f"{m['speech_prompt']}")
             has_mrt_alert = True
 
-        # 4. 路口交通號誌時制與有聲號誌提醒 (Scheme 1: SPaT & APS)
-        sig_info = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=22.0)
-        has_signal_alert = False
-        if sig_info and sig_info.get("distance_m", 99) <= 16.0:
-            parts.append(f"🚦 {sig_info['speech_prompt']}")
-            has_signal_alert = True
-
-        # 5. 路口動態接近與經過提醒（6.0m ~ 28.0m 提前預警，< 6.0m 提示正通過）
+        # 4. 路口接近與過馬路安全性導引（有號誌時說出來，沒有就精簡描述路口狀況）
         is_intersection = intersection.get('junction_type') not in ["直行道路", None]
         has_junc_alert = False
         if is_intersection:
             dist = intersection.get('junction_distance_m', 0)
             jtype = intersection.get('junction_type', '路口')
             if dist is not None and dist < 6.0:
-                parts.append(f"📍 正通過【{jtype}】。")
+                parts.append(f"📍 正通過【{jtype}】，請直線前進。")
                 has_junc_alert = True
             elif dist is not None and dist <= 28.0:
-                parts.append(f"前方 {round(dist)} 公尺有【{jtype}】。")
+                # 檢查是否有實體有聲號誌 (APS)
+                sig_info = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=28.0)
+                if sig_info and sig_info.get("has_aps"):
+                    # 有號誌時精簡說出有聲導引
+                    parts.append(f"📍 {sig_info['speech_prompt']}")
+                else:
+                    # 沒有有聲號誌時，精簡描述路口狀況 (路口型態、車道數/路寬、斑馬線方向、無有聲號誌)
+                    lanes = road_info.get("lanes", 2)
+                    oneway = road_info.get("oneway", "雙向")
+                    width_approx = int(lanes * 3.5)
+                    crossings = intersection.get("nearby_crossings") or []
+                    clock_str = f"，斑馬線在 {crossings[0]['clock_position']}" if crossings else ""
+                    parts.append(f"📍 前方 {round(dist)}公尺【{jtype}】，{oneway}{lanes}線道約{width_approx}米{clock_str}，無有聲號誌。")
                 has_junc_alert = True
 
-        # 6. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
+        # 5. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
         corridor_pois = [p for p in pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
@@ -103,7 +108,7 @@ class NVDAReporter:
             parts.append(f"前進路上：{'、'.join(poi_texts)}。")
             has_poi_alert = True
 
-        if not has_hazard_alert and not has_mrt_alert and not has_signal_alert and not has_junc_alert and not has_poi_alert and street_name == self.last_street:
+        if not has_hazard_alert and not has_mrt_alert and not has_junc_alert and not has_poi_alert and street_name == self.last_street:
             pass # 靜默保持安靜，留給使用者聽環境音的空間
 
         return " ".join(parts).strip()
@@ -192,11 +197,14 @@ class NVDAReporter:
             for b in clock_branches[:4]:
                 lines.append(f"  - 位於 {b['clock_position']} ({b['relative_direction']}) {b['distance_m']}m：{b['road_name']}")
 
-        # Section 3.2: Traffic Signal & Acoustic Pedestrian Signals (Scheme 1)
+        # Section 3.2: Acoustic Pedestrian Signals (Scheme 1)
         sig_safety = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=35.0)
-        if sig_safety:
-            lines.append("\n【路口號誌時制 (SPaT) 與有聲號誌 (APS)】")
-            lines.append(f"• 當前狀態：{sig_safety['speech_prompt']}")
+        if sig_safety and sig_safety.get("has_aps"):
+            lines.append("\n【視障有聲號誌 (APS)】")
+            lines.append(f"• 設施狀態：{sig_safety['speech_prompt']}")
+        else:
+            lines.append("\n【視障有聲號誌 (APS)】")
+            lines.append("• 設施狀態：此路口無實體有聲號誌，請依車流平行音確認起步通行。")
 
         # Section 3.5: Sidewalk Hazards Radar (Scheme 3)
         sidewalk_hazards = agent.world_model.get_sidewalk_hazards(agent.lat, agent.lon, agent.heading_deg, max_dist_m=15.0)
