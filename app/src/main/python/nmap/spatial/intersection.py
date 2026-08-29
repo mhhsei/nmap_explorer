@@ -97,15 +97,30 @@ class IntersectionAnalyzer:
             curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
         curr_street = curr_road_info.get("street_name", "")
 
-        for item in world_model.junction_rtree.intersection(bounds, objects=True):
+        # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3，延伸搜尋下一個路口，最遠 500 公尺)
+        junction_type = "直行道路"
+        closest_junction_dist = 999.0
+
+        intersecting_roads = set()
+        branches_info = []
+        if curr_road_info is None:
+            curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
+        curr_street = curr_road_info.get("street_name", "")
+
+        # 延伸至前方 500 公尺搜尋下一個實體路口，消除距離限制
+        max_junction_distance_m = max(max_distance_m, 500.0)
+        j_radius_deg = max_junction_distance_m / 111139.0
+        j_bounds = (lon - j_radius_deg, lat - j_radius_deg, lon + j_radius_deg, lat + j_radius_deg)
+
+        for item in world_model.junction_rtree.intersection(j_bounds, objects=True):
             node_id, degree, n_lat, n_lon = item.object
             dist = haversine_distance(lat, lon, n_lat, n_lon)
             
-            if dist <= max_distance_m:
+            if dist <= max_junction_distance_m:
                 t_brng = calculate_bearing(lat, lon, n_lat, n_lon)
                 rel_brng = relative_bearing(heading_deg, t_brng)
-                # 僅關注前方 90° 視角內，或極度接近 (< 15m) 的路口
-                if (abs(rel_brng) <= 90 or dist < 15.0) and dist < closest_junction_dist:
+                # 關注前方視角 (朝向 ±85° 以內) 或極度接近 (< 15m) 的路口節點
+                if (abs(rel_brng) <= 85 or dist < 15.0) and dist < closest_junction_dist:
                     physical_neighbors = (set(world_model.road_graph.predecessors(node_id)) | set(world_model.road_graph.successors(node_id))) - {node_id}
                     real_degree = len(physical_neighbors)
                     if real_degree >= 3:
@@ -191,10 +206,17 @@ class IntersectionAnalyzer:
             if junction_type != "直行道路":
                 safety_notes.insert(0, f"前方 {closest_junction_dist:.1f} 公尺處有{junction_type}")
 
-        # Build comprehensive spoken report for blind exploration
+        # Build comprehensive spoken report for blind exploration (延伸至下個路口，不限距離)
         report_lines = []
         if junction_type != "直行道路" and closest_junction_dist < 900:
-            report_lines.append(f"前方 {round(closest_junction_dist)} 公尺為【{junction_type}】。")
+            if closest_junction_dist <= 30.0:
+                report_lines.append(f"前方 {round(closest_junction_dist)} 公尺為【{junction_type}】。")
+            else:
+                report_lines.append(f"前方下一個路口（約 {round(closest_junction_dist)} 公尺）為【{junction_type}】。")
+
+            if intersecting_roads:
+                report_lines.append(f"即將交會：{'、'.join(intersecting_roads)}。")
+
             if branches_info:
                 seen_branches = set()
                 branch_texts = []
@@ -213,7 +235,7 @@ class IntersectionAnalyzer:
         else:
             curr_road = world_model.get_road_info(lat, lon, heading_deg)
             curr_name = curr_road.get("street_name", "道路")
-            report_lines.append(f"前方 60 公尺內為直行道路，目前所在為【{curr_name}】。")
+            report_lines.append(f"前方 500 公尺內均為直行道路，目前所在為【{curr_name}】。")
             if nearby_crossings:
                 c = nearby_crossings[0]
                 report_lines.append(f"前方 {c['distance_m']} 公尺處設有斑馬線。")

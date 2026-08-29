@@ -153,25 +153,81 @@ class WebAudioEngine {
     } catch (e) {}
   }
 
-  playBeacon(relBearing = 0, distM = 5) {
+  /**
+   * 掃描前方店家雙耳立體聲掃描音效 (Scan Sweep Tone)
+   */
+  playScanSweepTone() {
     if (!this.enabled) return;
-    const rad = relBearing * Math.PI / 180.0;
-    const distAudio = Math.max(0.5, Math.min(10.0, distM));
-    const x = distAudio * Math.sin(rad);
-    const z = -distAudio * Math.cos(rad);
-    this.playSpatialTone(880, 'sine', x, 0, z, 0.15);
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      this.playSpatialTone(587.3, 'sine', -1.5, 0, -1, 0.08, 0.00, 0.35);
+      this.playSpatialTone(784.0, 'sine', 1.5, 0, -1, 0.08, 0.07, 0.35);
+      this.playSpatialTone(987.8, 'sine', 0.0, 0, -1, 0.12, 0.14, 0.40);
+    } catch (e) {}
   }
 
+  /**
+   * 掃描周遭所有店家 360 度雷達探索和弦音效 (Radar Explore Tone)
+   */
+  playRadarExploreTone() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      this.playSpatialTone(523.2, 'triangle', 0, 0, -1, 0.08, 0.00, 0.35);
+      this.playSpatialTone(659.3, 'sine', 0, 0, -1, 0.08, 0.06, 0.38);
+      this.playSpatialTone(1046.5, 'sine', 0, 0, -1, 0.15, 0.12, 0.45);
+    } catch (e) {}
+  }
+
+  /**
+   * 3D 空間距離感應脈衝音 (Proximity Beacon Ping)
+   * 特性：越接近地標，聲音越響亮、頻率越高、越急促
+   */
+  playBeacon(relBearing = 0, distM = 5) {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+
+    // 1. 3D 空間定位 (HRTF)
+    const rad = relBearing * Math.PI / 180.0;
+    const distAudio = Math.max(0.6, Math.min(8.0, distM));
+    const x = distAudio * Math.sin(rad);
+    const z = -distAudio * Math.cos(rad);
+
+    // 2. 音量動態縮放 (越近越響亮: 0.35 ~ 0.95)
+    const volume = Math.min(0.95, Math.max(0.35, 1.0 - (distM / 60.0) * 0.6));
+
+    // 3. 頻率動態提高 (越近越高亢清脆)
+    let freq = 880;
+    if (distM > 40) freq = 660;
+    else if (distM > 15) freq = 880;
+    else if (distM > 6) freq = 1046.5;
+    else freq = 1318.5;
+
+    // 播放主音頻脈衝
+    this.playSpatialTone(freq, 'sine', x, 0, z, 0.10, 0.0, volume);
+
+    // 小於 10 公尺時加上高頻緊湊副音 (Double-pip)，急迫感更加顯著
+    if (distM <= 10.0) {
+      this.playSpatialTone(freq * 1.25, 'triangle', x, 0, z, 0.05, 0.06, volume * 0.85);
+    }
+  }
+
+  /**
+   * 抵達目的地勝利慶祝音 (Arrival Fanfare)
+   */
   playArrival() {
     if (!this.enabled) return;
     this.initContext();
     if (!this.ctx) return;
 
     try {
-      [523, 659, 784].forEach((freq, i) => {
+      [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
         setTimeout(() => {
-          this.playSpatialTone(freq, 'sine', (i - 1) * 0.5, 0, -1, 0.12);
-        }, i * 70);
+          this.playSpatialTone(freq, 'sine', (i - 1.5) * 0.4, 0, -1, 0.18, 0.0, 0.45);
+        }, i * 75);
       });
     } catch (e) {}
   }
@@ -687,16 +743,22 @@ class NmapWebApp {
     const uiBtnScan = document.getElementById("ui-btn-scan");
     if (uiBtnScan) {
         uiBtnScan.addEventListener("click", () => {
-            this.recordInteraction("點擊按鈕", "左右兩側掃描 (F)");
-            this.announceLeftRightSweep();
+            this.recordInteraction("點擊按鈕", "掃描前方店家 (L)");
+            if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+                this.audio.playScanSweepTone();
+            }
+            setTimeout(() => this.announceLeftRightSweep(), 200);
         });
     }
 
     const uiBtnAround = document.getElementById("ui-btn-around");
     if (uiBtnAround) {
         uiBtnAround.addEventListener("click", () => {
-            this.recordInteraction("點擊按鈕", "周遭設施探索 (Enter)");
-            this.announceAllPOIs();
+            this.recordInteraction("點擊按鈕", "掃描周遭所有店家 (P)");
+            if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+                this.audio.playRadarExploreTone();
+            }
+            setTimeout(() => this.announceAllPOIs(), 200);
         });
     }
 
@@ -704,7 +766,10 @@ class NmapWebApp {
     if (uiBtnIntersection) {
         uiBtnIntersection.addEventListener("click", () => {
             this.recordInteraction("點擊按鈕", "前方路口狀況 (I)");
-            this.announceUpcomingIntersection();
+            if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+                this.audio.playJunctionTone(0, -1);
+            }
+            setTimeout(() => this.announceUpcomingIntersection(), 150);
         });
     }
 
@@ -823,16 +888,20 @@ class NmapWebApp {
       });
     }
 
-    // Modal Actions Wiring
+    // Modal & 3D Guidance Actions Wiring
     const poiCloseBtn = document.getElementById("poi-modal-close-btn");
     const poiDismissBtn = document.getElementById("poi-modal-dismiss");
     const poiNavNmapBtn = document.getElementById("poi-modal-nav-nmap");
     const poiNavGmapsBtn = document.getElementById("poi-modal-nav-gmaps");
+    const homeStopBtn = document.getElementById("home-stop-guidance-btn");
+    const arrivalStopBtn = document.getElementById("arrival-modal-stop-btn");
 
     if (poiCloseBtn) poiCloseBtn.addEventListener("click", () => this.closePoiModal());
     if (poiDismissBtn) poiDismissBtn.addEventListener("click", () => this.closePoiModal());
     if (poiNavNmapBtn) poiNavNmapBtn.addEventListener("click", () => this.startBeaconToTarget());
     if (poiNavGmapsBtn) poiNavGmapsBtn.addEventListener("click", () => this.launchGoogleMapsNavigation());
+    if (homeStopBtn) homeStopBtn.addEventListener("click", () => this.stopBeaconGuidance(false));
+    if (arrivalStopBtn) arrivalStopBtn.addEventListener("click", () => this.closeArrivalModal());
 
     // ESC key closes any active modal
     document.addEventListener("keydown", (e) => {
@@ -842,6 +911,8 @@ class NmapWebApp {
           this.closeModal(m);
           if (m && m.id === "poi-detail-modal") {
             this.closePoiModal();
+          } else if (m && m.id === "arrival-modal") {
+            this.closeArrivalModal();
           }
         } else {
           this.closePoiModal();
@@ -967,7 +1038,10 @@ class NmapWebApp {
         case "p":
         case "P":
           e.preventDefault();
-          this.announceAllPOIs();
+          if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+            this.audio.playRadarExploreTone();
+          }
+          setTimeout(() => this.announceAllPOIs(), 200);
           break;
 
         case "r":
@@ -989,18 +1063,24 @@ class NmapWebApp {
         case "4": e.preventDefault(); this.setStepDistance(3); break;
         case "5": e.preventDefault(); this.setStepDistance(5); break;
 
-        // I = Intersection: 前方路口資訊與分支走向
+        // I = Intersection: 前方路口資訊與分支走向 (延伸至下個路口)
         case "i":
         case "I":
           e.preventDefault();
-          this.announceUpcomingIntersection();
+          if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+            this.audio.playJunctionTone(0, -1);
+          }
+          setTimeout(() => this.announceUpcomingIntersection(), 150);
           break;
 
         // L = Left/Right Sweep: 左右兩側店家掃描
         case "l":
         case "L":
           e.preventDefault();
-          this.announceLeftRightSweep();
+          if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+            this.audio.playScanSweepTone();
+          }
+          setTimeout(() => this.announceLeftRightSweep(), 200);
           break;
 
         case "m":
@@ -1440,6 +1520,19 @@ class NmapWebApp {
       body.innerHTML = infoRows.join("");
     };
 
+    const nmapBtn = document.getElementById("poi-modal-nav-nmap");
+    if (nmapBtn) {
+      if (this.activeBeaconTarget && this.activeBeaconTarget.name === poi.name) {
+        nmapBtn.textContent = "🛑 正在 3D 導引此地標（點擊停止導引）";
+        nmapBtn.style.background = "#ef4444";
+        nmapBtn.style.color = "#ffffff";
+      } else {
+        nmapBtn.textContent = "🎯 開啟 3D 空間聲音導引 (越近越響越急促)";
+        nmapBtn.style.background = "#38bdf8";
+        nmapBtn.style.color = "#0f172a";
+      }
+    }
+
     renderModalContent({}, true);
     this.openModal("poi-detail-modal", (typeof triggerEl !== "undefined" && triggerEl) ? triggerEl : (this.lastPoiTriggerElement || document.activeElement));
 
@@ -1481,34 +1574,169 @@ class NmapWebApp {
     this.updateLiveLog("已關閉地標詳情，恢復地圖即時播報。", false, true);
   }
 
-  startBeaconToTarget() {
-    if (!this.activePoiTarget) return;
-    const target = this.activePoiTarget;
-    this.updateLiveLog(`已設定【${target.name}】為目標。開始 3D 空間聲音導引。`, false, true);
+  /**
+   * 計算 3D 導引脈衝間隔毫秒數 (越近越快越急)
+   */
+  calculateBeaconIntervalMs(distM) {
+    if (distM <= 4.0) return 220;   // 極急促 (每秒 4.5 次)
+    if (distM <= 8.0) return 350;   // 急促 (每秒近 3 次)
+    if (distM <= 15.0) return 500;  // 快速 (每秒 2 次)
+    if (distM <= 25.0) return 750;  // 中速
+    if (distM <= 45.0) return 1100; // 稍慢
+    if (distM <= 70.0) return 1500; // 慢速脈衝
+    return 2000;                    // 遠處平緩 (每 2 秒一次)
+  }
+
+  /**
+   * 啟動 3D 空間聲音導引 (單一目標監控原則)
+   */
+  startBeaconToTarget(poi = null) {
+    const target = poi || this.activePoiTarget;
+    if (!target) return;
+
+    // 若點選的正是當前正在導引的地標，則視為停止導引
+    if (this.activeBeaconTarget && this.activeBeaconTarget.name === target.name) {
+      this.stopBeaconGuidance(false);
+      this.closePoiModal();
+      return;
+    }
+
+    // 1. 一次只能監控一個地點：若已有舊目標，先停止舊目標
+    if (this.activeBeaconTarget) {
+      this.stopBeaconGuidance(true);
+    }
+
+    this.activeBeaconTarget = target;
+    this.updateLiveLog(`開始 3D 空間聲音導引前往【${target.name}】。越接近目標聲音越急促越響亮。`, false, true);
     this.closePoiModal();
 
-    if (this.beaconInterval) clearInterval(this.beaconInterval);
-    
-    // Play beacon step every 3 seconds
-    const playBeaconStep = () => {
-      if (!this.activePoiTarget || !this.localLat || !this.localLon) return;
-      const targetBrng = NMapGeometry.calculateBearing(this.localLat, this.localLon, target.lat, target.lon);
-      const relBrng = NMapGeometry.relativeBearing(this.localHeading || 0, targetBrng);
-      const dist = NMapGeometry.haversineDistance(this.localLat, this.localLon, target.lat, target.lon);
-      
-      if (dist <= 3.0) {
-        if (this.audio) this.audio.playArrival();
-        this.updateLiveLog(`🎉 已抵達目標：${target.name}！`, false, true);
-        clearInterval(this.beaconInterval);
-        this.beaconInterval = null;
-        return;
-      }
-      
-      if (this.audio) this.audio.playBeacon(relBrng, dist);
-    };
+    // 2. 顯示首頁常駐控制條
+    const activeBar = document.getElementById("active-guidance-bar");
+    if (activeBar) activeBar.style.display = "block";
 
-    playBeaconStep();
-    this.beaconInterval = setInterval(playBeaconStep, 3000);
+    // 3. 立即觸發第一聲導航脈衝，並排程後續動態間隔
+    this.scheduleNextBeaconStep();
+  }
+
+  /**
+   * 排程下一次 3D 空間導引聲音脈衝
+   */
+  scheduleNextBeaconStep() {
+    if (!this.activeBeaconTarget) return;
+
+    if (this.beaconTimer) {
+      clearTimeout(this.beaconTimer);
+      this.beaconTimer = null;
+    }
+
+    const target = this.activeBeaconTarget;
+    const curLat = (this.localLat !== null && this.localLat !== undefined) ? this.localLat : this.serverLat;
+    const curLon = (this.localLon !== null && this.localLon !== undefined) ? this.localLon : this.serverLon;
+    const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
+
+    if (!curLat || !curLon) {
+      this.beaconTimer = setTimeout(() => this.scheduleNextBeaconStep(), 1500);
+      return;
+    }
+
+    const targetBrng = NMapGeometry.calculateBearing(curLat, curLon, target.lat, target.lon);
+    const relBrng = NMapGeometry.relativeBearing(curHead, targetBrng);
+    const dist = NMapGeometry.haversineDistance(curLat, curLon, target.lat, target.lon);
+    const clock = NMapGeometry.bearingToClockPosition(relBrng);
+
+    // 更新首頁控制條之即時剩餘距離與方位
+    this.updateActiveGuidanceBar(target, dist, clock);
+
+    // 判斷是否抵達目標 (<= 3.5 公尺)
+    if (dist <= 3.5) {
+      this.handleArrivalAtTarget(target, dist);
+      return;
+    }
+
+    // 播放 3D 空間脈衝 (越近越響、越清脆)
+    if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+      this.audio.playBeacon(relBrng, dist);
+    }
+
+    // 動態計算下次播放延遲：越接近地標聲音越快越急
+    const nextInterval = this.calculateBeaconIntervalMs(dist);
+    this.beaconTimer = setTimeout(() => this.scheduleNextBeaconStep(), nextInterval);
+  }
+
+  /**
+   * 更新首頁常駐導引控制列
+   */
+  updateActiveGuidanceBar(target, distM, clockStr) {
+    const pill = document.getElementById("guidance-dist-pill");
+    const desc = document.getElementById("guidance-target-desc");
+    if (pill) pill.textContent = `剩餘 ${Math.round(distM)}m`;
+    if (desc) desc.textContent = `目標：${target.name}（${clockStr} 約 ${Math.round(distM)} 公尺）`;
+  }
+
+  /**
+   * 停止 3D 空間聲音導引
+   */
+  stopBeaconGuidance(silent = false) {
+    if (this.beaconTimer) {
+      clearTimeout(this.beaconTimer);
+      this.beaconTimer = null;
+    }
+    const hadTarget = !!this.activeBeaconTarget;
+    const targetName = this.activeBeaconTarget ? this.activeBeaconTarget.name : "";
+    this.activeBeaconTarget = null;
+
+    const activeBar = document.getElementById("active-guidance-bar");
+    if (activeBar) activeBar.style.display = "none";
+
+    if (!silent && hadTarget) {
+      this.updateLiveLog(`已停止【${targetName}】的 3D 空間聲音導引。`, false, true);
+    }
+  }
+
+  /**
+   * 抵達目的地處理：停止聲音、播放勝利和弦、震動、並彈出無障礙對話框
+   */
+  handleArrivalAtTarget(target, distM) {
+    // 立即停止脈衝計時器
+    if (this.beaconTimer) {
+      clearTimeout(this.beaconTimer);
+      this.beaconTimer = null;
+    }
+    this.activeBeaconTarget = null;
+
+    // 隱藏首頁控制條
+    const activeBar = document.getElementById("active-guidance-bar");
+    if (activeBar) activeBar.style.display = "none";
+
+    // 播放勝利抵達慶祝音
+    if (this.audio) this.audio.playArrival();
+
+    // 觸發震動反饋
+    if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+      try {
+        window.AndroidBridge.vibrate("[0, 250, 100, 250, 100, 500]");
+      } catch (e) {}
+    }
+
+    // 語音播報
+    this.updateLiveLog(`🎉 已順利抵達目的地：【${target.name}】！導引聲音已自動關閉。`, false, true);
+
+    // 彈出抵達對話框 (Arrival Modal)
+    const arrivalBody = document.getElementById("arrival-modal-body");
+    if (arrivalBody) {
+      arrivalBody.textContent = `您已順利抵達【${target.name}】（距離約 ${Math.round(distM)} 公尺）。導引聲音已自動為您關閉。`;
+    }
+    this.openModal("arrival-modal", document.getElementById("arrival-modal-stop-btn"));
+    const stopBtn = document.getElementById("arrival-modal-stop-btn");
+    if (stopBtn) setTimeout(() => stopBtn.focus(), 150);
+  }
+
+  /**
+   * 關閉抵達對話框
+   */
+  closeArrivalModal() {
+    this.closeModal("arrival-modal");
+    this.updateLiveLog("已關閉抵達通知，恢復一般地圖探索。", false, true);
   }
 
   launchGoogleMapsNavigation() {

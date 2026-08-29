@@ -239,12 +239,12 @@ class IntersectionAnalyzerJS {
     let upcomingJunction = null;
     let branchRoads = [];
 
-    // Find upcoming road intersections within 60 meters
+    // Find upcoming road intersections (extended to next junction up to 500m)
     for (const road of roads) {
       const geom = road.geometry || [];
       for (const pt of geom) {
         const d = NMapGeometry.haversineDistance(lat, lon, pt[0], pt[1]);
-        if (d < 60.0) {
+        if (d < 500.0) {
           const brng = NMapGeometry.calculateBearing(lat, lon, pt[0], pt[1]);
           const rel = NMapGeometry.relativeBearing(headingDeg, brng);
           if (Math.abs(rel) <= 45.0 && d < nearestDist) {

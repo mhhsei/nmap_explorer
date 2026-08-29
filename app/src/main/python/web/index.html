@@ -46,6 +46,16 @@
       <button id="search-go-btn" class="btn" style="width: auto; padding: 12px 18px;" aria-label="立即前往此地點開始探索">前往</button>
     </div>
 
+    <!-- 3D 空間聲音導引首頁常駐控制條 (Active 3D Guidance Banner) -->
+    <div id="active-guidance-bar" class="active-guidance-bar" style="display: none; background: #064e3b; border: 2px solid #10b981; border-radius: 10px; padding: 12px; margin-bottom: 12px;" role="region" aria-label="進行中的 3D 空間聲音導引">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span style="font-weight: bold; color: #a7f3d0; font-size: 1.15em;">🎯 3D 空間導引中</span>
+        <span id="guidance-dist-pill" style="background: #047857; color: #ecfdf5; font-size: 0.95em; padding: 3px 10px; border-radius: 6px; font-weight: bold;">剩餘 --m</span>
+      </div>
+      <p id="guidance-target-desc" style="color: #f0fdf4; margin: 0 0 10px 0; font-size: 1.1em; line-height: 1.5;">目標：--</p>
+      <button id="home-stop-guidance-btn" class="btn" style="background: #ef4444; color: #ffffff; width: 100%; padding: 12px; font-size: 1.1em; font-weight: bold; border-radius: 8px;" aria-label="停止目前 3D 空間聲音導引">🛑 停止導引</button>
+    </div>
+
     <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
       <button id="ui-btn-scan" class="btn" aria-label="掃描前方店家">掃描前方 (L)</button>
       <button id="ui-btn-around" class="btn" aria-label="掃描周遭所有店家">周遭所有 (P)</button>
@@ -190,10 +200,23 @@
         <!-- 動態注入地標資料 -->
       </div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <button id="poi-modal-nav-nmap" class="btn" style="background:#38bdf8; color:#0f172a; padding:12px; font-size:1.05em; font-weight:bold;" aria-label="啟動 3D 空間聲音導引前往此地標">🎯 空間聲音導引</button>
+        <button id="poi-modal-nav-nmap" class="btn" style="grid-column:span 2; background:#38bdf8; color:#0f172a; padding:14px; font-size:1.18em; font-weight:bold; border-radius:8px;" aria-label="開啟 3D 空間聲音導引前往此地標">🎯 開啟 3D 空間聲音導引 (越近越響越急促)</button>
         <button id="poi-modal-nav-gmaps" class="btn" style="background:#22c55e; color:#0f172a; padding:12px; font-size:1.05em; font-weight:bold;" aria-label="開啟 Google 地圖步行導航">🗺️ Google 導航</button>
-        <button id="poi-modal-dismiss" class="btn" style="grid-column:span 2; background:#475569; color:#f8fafc; padding:10px; font-size:1em;" aria-label="關閉地標詳情對話框">關閉 (Esc)</button>
+        <button id="poi-modal-dismiss" class="btn" style="background:#475569; color:#f8fafc; padding:12px; font-size:1.05em;" aria-label="關閉地標詳情對話框">關閉 (Esc)</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 抵達目的地無障礙對話框 (Arrival Accessible Modal) -->
+  <div id="arrival-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-hidden="true" inert aria-labelledby="arrival-modal-title">
+    <div class="modal-content" style="border-color:#10b981; background:#064e3b; text-align:center; padding:24px 16px;">
+      <div class="modal-header" style="border-bottom:1px solid #047857; padding-bottom:8px; margin-bottom:14px;">
+        <h2 id="arrival-modal-title" style="color:#6ee7b7; font-size:1.6em; margin:0;" tabindex="0">🎉 已抵達目的地！</h2>
+      </div>
+      <div id="arrival-modal-body" style="font-size:1.25em; line-height:1.7; color:#f0fdf4; margin-bottom:22px;" tabindex="0">
+        您已順利抵達目標地點。
+      </div>
+      <button id="arrival-modal-stop-btn" class="btn" style="background:#10b981; color:#064e3b; padding:15px; font-size:1.25em; font-weight:bold; width:100%; border-radius:8px;" aria-label="確定抵達並關閉導引聲音">✅ 確定抵達並關閉聲音</button>
     </div>
   </div>
 

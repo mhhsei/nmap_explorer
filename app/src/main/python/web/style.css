@@ -436,3 +436,23 @@ body {
   clip: rect(0, 0, 0, 0);
   border: 0;
 }
+
+/* 3D 空間聲音導引常駐列與抵達對話框 */
+.active-guidance-bar {
+  animation: pulse-border 2s infinite alternate;
+}
+
+@keyframes pulse-border {
+  from { border-color: #10b981; box-shadow: 0 0 4px rgba(16, 185, 129, 0.3); }
+  to { border-color: #34d399; box-shadow: 0 0 14px rgba(52, 211, 153, 0.6); }
+}
+
+#arrival-modal .modal-content {
+  box-shadow: 0 0 30px rgba(16, 185, 129, 0.7);
+  animation: pop-in 0.25s ease-out;
+}
+
+@keyframes pop-in {
+  from { transform: scale(0.85); opacity: 0; }
+  to { transform: scale(1.0); opacity: 1; }
+}
