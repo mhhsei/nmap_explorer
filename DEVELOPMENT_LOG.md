@@ -48,6 +48,31 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.9 - 2026-08-30] - 8 合 1 結構化日誌全面升級：檔案副檔名標準化 (Windows/NVDA 友善)、ZIP 分享防護與 8 大維度診斷指標擴充
+- **📁 檔案副檔名標準化與命名白話化 (`WebAppInterface.kt`)**:
+  - **白話生活痛點**：原本日誌壓縮檔中的 `.ndjson` 與 `.geojson` 在 Windows 上被視為未知副檔名，視障者用 NVDA 閱讀時無法直接按 Enter 用記事本打開，且全英文檔名報讀不直觀。
+  - **8 合 1 標準命名規範**：
+    1. `0_文字版診斷總覽_SUMMARY.txt`：純文字中文排版報告，包含系統狀態、電源、感測器、衛星與異常速查，記事本與 NVDA 秒開秒讀。
+    2. `1_AI快速診斷_QUICK_SUMMARY.json`：結構化設備、環境、演算法與異常 JSON，供 AI 自動化工具診斷。
+    3. `2_行走軌跡_trajectory.geojson.txt`：標準 GeoJSON 軌跡檔加附 `.txt` 副檔名，Windows 記事本可直接開啟，GIS 軟體亦可解析。
+    4. `3_周遭店家清單_detected_pois.json`：周圍探測店家列表 JSON。
+    5. `4_語音播報歷史紀錄_speech_history.txt`：時間戳記與語音朗讀文字對照清單。
+    6. `5_決策因果鏈_causality_trace.txt`：按時間排列的決策事件因果追蹤紀錄。
+    7. `6_感測器與GPS軌跡_sensor_trajectory.txt`：包含卡爾曼濾波、步態推算、氣壓計高度之完整 NDJSON 軌跡。
+    8. `7_Android系統Logcat日誌_system_logcat.log`：Android 系統底層最近 5000 行 Logcat。
+- **🛡️ Android Share Sheet 與通訊軟體副檔名防護 (`WebAppInterface.kt`)**:
+  - **副檔名遺失根因**：原程式僅透過 `Intent.EXTRA_STREAM` 傳遞 URI，在 Android 10+ 透過 LINE、Gmail、Google 雲端硬碟接收時，接收端會因缺乏 `ClipData` 檔案標籤而將檔案儲存為無副檔名代碼。
+  - **多重保護注入**：加入 `clipData = ClipData.newUri(...)`、`Intent.EXTRA_TITLE` 並保持外層 ZIP 檔名為標準 `NMap_Logs_[Model]_[TimeStamp].zip`，確保在任何第三方通訊軟體分享接收時 100% 保留 `.zip` 副檔名。
+- **📊 全面擴充 8 大維度診斷指標 (`LocationSensorBridge.kt`, `BarometerVerticalFilter.kt`, `BeaconAnchorManager.kt`, `app.js`)**:
+  1. **系統電源與省電模式**：調用 `PowerManager.isPowerSaveMode`，秒速揪出「因手機進入省電模式而強行凍結 GPS 背景更新」的痛點。
+  2. **電池狀態與網路連線**：記錄剩餘電量、充電狀態與網路類型（Wi-Fi / 4G / 5G / 離線）。
+  3. **視障無障礙與音訊輸出**：記錄 TalkBack 服務啟用狀態、觸控瀏覽輔助，以及音訊輸出途徑（藍牙耳機、有線耳機、喇叭），確認立體聲 3D HRTF 是否正常就緒。
+  4. **3D 垂直空間與氣壓原始數據**：記錄即時氣壓 ($hPa$)、基準氣壓 $P_0$、立體樓層與垂直速度 ($m/s$)。
+  5. **國家級 e-GNSS 差分與衛星品質**：記錄差分定位等級、可視衛星總數、使用顆數、平均訊噪比 ($C/N_0$)、雙頻 L5 鎖定顆數與都市峽谷多路徑折射標記。
+  6. **步伐推算與手機空間姿態**：記錄硬體計步器累計步數、軟體波峰計步數、自適應步長，以及手機手持姿態角（真北朝向、俯仰角 Pitch、翻滾角 Roll），排查手持傾斜對指南針的影響。
+  7. **室內公眾信標定錨**：記錄當前定錨公眾信標名稱、距離與最近掃描到的所有周遭藍牙 BLE 廣播設備清單。
+  8. **3D 空間導引狀態**：記錄前端正在導引的店家目標名稱、剩餘距離與鐘點方位。
+
 ### [v1.0.8 - 2026-08-29] - 氣壓計三維立體高程 (人行天橋與地下街切換) 與公眾 Wi-Fi RTT / 藍牙 iBeacon 室內深度定錨整合
 - **🏢 3D 氣壓計垂直高度濾波與樓層遲滯狀態機 (`BarometerVerticalFilter.kt`, `vertical_level.py`)**:
   - **白話比喻**：如同隨身配備「立體電梯樓層嚮導」。不再把走在天橋上的盲人當作走在馬路上，更不會在天橋上報讀橋下的水煎包店，也不在地下道報讀地面公車亭。

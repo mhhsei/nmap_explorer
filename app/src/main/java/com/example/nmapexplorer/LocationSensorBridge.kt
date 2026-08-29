@@ -642,6 +642,16 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var lastSoftwareStepMs = 0L
     private var lastAccMag = 9.8f
 
+    // 衛星與手持姿態、計步器與氣壓診斷指標
+    private var satelliteTotalCount: Int = 0
+    private var satelliteUsedCount: Int = 0
+    private var satelliteAvgSnr: Float = 0f
+    private var satelliteL5Count: Int = 0
+    private var phonePitchDeg: Float = 0f
+    private var phoneRollDeg: Float = 0f
+    private var hardwareStepCount: Long = 0L
+    private var softwareStepCount: Long = 0L
+
     // 行人卡爾曼濾波器與靜止偵測器實例
     private val kalmanFilter = PedestrianKalmanFilter()
     private val stationaryDetector = StationaryMotionDetector { state ->
@@ -676,6 +686,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     }
 
     init {
+        activeInstance = this
         barometerFilter = BarometerVerticalFilter { level, altM, desc ->
             currentVerticalLevel = level
             currentAltitudeM = altM
@@ -930,6 +941,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                         val avgSnr = if (usedCount > 0) totalSnr / usedCount else 0f
                         isUrbanCanyonMultipath = (usedCount >= 3 && avgSnr < 21.0f) || (highCount < 4 && usedCount >= 4)
                         hasDualFrequencyL5 = (l5Count >= 2 && usedCount >= 5)
+
+                        satelliteTotalCount = count
+                        satelliteUsedCount = usedCount
+                        satelliteAvgSnr = avgSnr
+                        satelliteL5Count = l5Count
                     }
                 }
                 locationManager.registerGnssStatusCallback(gnssStatusCallback!!, Handler(Looper.getMainLooper()))
@@ -996,6 +1012,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
      */
     fun stop() {
         isRunning = false
+        if (activeInstance == this) {
+            activeInstance = null
+        }
         sensorManager.unregisterListener(this)
         kalmanFilter.reset()
         stationaryDetector.reset()
@@ -1087,7 +1106,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
      */
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) {
-            Log.d(tag, "[STEP_DETECTED] source=HardwareStepDetector")
+            hardwareStepCount++
+            Log.d(tag, "[STEP_DETECTED] source=HardwareStepDetector, total=$hardwareStepCount")
             onStepDetected()
             return
         }
@@ -1117,8 +1137,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             // 軟體波峰計步備援 (視障平穩行走調校：峰值 > 10.15 m/s²，增量 > 0.35 m/s²，間隔 > 280ms)
             val nowUptime = SystemClock.uptimeMillis()
             if (mag > 10.15f && (mag - lastAccMag) > 0.35f && (nowUptime - lastSoftwareStepMs) > 280L) {
+                softwareStepCount++
                 lastSoftwareStepMs = nowUptime
-                Log.d(tag, "[STEP_DETECTED] source=SoftwarePeak, mag=${String.format(Locale.US, "%.2f", mag)}")
+                Log.d(tag, "[STEP_DETECTED] source=SoftwarePeak, total=$softwareStepCount, mag=${String.format(Locale.US, "%.2f", mag)}")
                 onStepDetected()
             }
             lastAccMag = mag
@@ -1132,6 +1153,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             return
         }
 
+        // 計算手機空間姿態角：俯仰角 (Pitch) 與翻滾角 (Roll)
+        SensorManager.getOrientation(rotationMatrix, orientationAngles)
+        phonePitchDeg = Math.toDegrees(orientationAngles[1].toDouble()).toFloat()
+        phoneRollDeg = Math.toDegrees(orientationAngles[2].toDouble()).toFloat()
+
         // 3D 手持前向向量水平方位角計算（100% 免疫 0°~85° 手持俯仰傾斜）
         val eastForward = rotationMatrix[1].toDouble()
         val northForward = rotationMatrix[4].toDouble()
@@ -1140,7 +1166,6 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         val rawDegrees: Float = if (horizontalMagSq > 0.03) {
             ((Math.toDegrees(atan2(eastForward, northForward)) + 360.0) % 360.0).toFloat()
         } else {
-            SensorManager.getOrientation(rotationMatrix, orientationAngles)
             ((Math.toDegrees(orientationAngles[0].toDouble()) + 360.0) % 360.0).toFloat()
         }
 
@@ -1262,10 +1287,23 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             put("acc_m", acc)
             put("speed_mps", speed)
             put("heading_deg", smoothedHeading)
+            put("pitch_deg", phonePitchDeg)
+            put("roll_deg", phoneRollDeg)
             put("is_l5", hasDualFrequencyL5)
             put("is_multipath", isUrbanCanyonMultipath)
+            put("sat_total", satelliteTotalCount)
+            put("sat_used", satelliteUsedCount)
+            put("sat_snr", satelliteAvgSnr)
+            put("sat_l5", satelliteL5Count)
+            put("hw_steps", hardwareStepCount)
+            put("sw_steps", softwareStepCount)
+            put("stride_m", userStepLengthM)
             put("vertical_level", currentVerticalLevel.name)
             put("altitude_m", currentAltitudeM)
+            put("raw_pressure_hpa", barometerFilter?.getRawPressure() ?: 1013.25f)
+            put("baseline_p0_hpa", barometerFilter?.getBaselinePressure() ?: 1013.25f)
+            put("vertical_vel_mps", barometerFilter?.getVelocity() ?: 0.0f)
+            put("last_beacon", beaconManager?.lastMatchedBeacon?.name ?: "")
         }.toString()
         addTrajectoryLog(humanLog, ndjson)
 
@@ -1317,6 +1355,50 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         fun getTrajectoryNdjson(): String {
             return synchronized(ndjsonRecords) {
                 ndjsonRecords.joinToString("\n")
+            }
+        }
+
+        @Volatile
+        private var activeInstance: LocationSensorBridge? = null
+
+        fun getDiagnosticsSnapshot(): org.json.JSONObject {
+            val inst = activeInstance
+            return org.json.JSONObject().apply {
+                if (inst != null) {
+                    put("vertical_level", inst.currentVerticalLevel.name)
+                    put("vertical_level_display", inst.currentVerticalLevel.displayName)
+                    put("altitude_m", inst.currentAltitudeM)
+                    put("raw_pressure_hpa", inst.barometerFilter?.getRawPressure() ?: 1013.25f)
+                    put("baseline_pressure_hpa", inst.barometerFilter?.getBaselinePressure() ?: 1013.25f)
+                    put("vertical_velocity_mps", inst.barometerFilter?.getVelocity() ?: 0.0f)
+                    put("diff_tier_name", inst.currentDiffTier.name)
+                    put("diff_tier_display", inst.currentDiffTier.displayName)
+                    put("satellites_total", inst.satelliteTotalCount)
+                    put("satellites_used", inst.satelliteUsedCount)
+                    put("satellites_avg_snr", inst.satelliteAvgSnr)
+                    put("satellites_l5_count", inst.satelliteL5Count)
+                    put("has_l5", inst.hasDualFrequencyL5)
+                    put("is_multipath", inst.isUrbanCanyonMultipath)
+                    put("motion_state", inst.stationaryDetector.currentState.name)
+                    put("hardware_steps", inst.hardwareStepCount)
+                    put("software_steps", inst.softwareStepCount)
+                    put("stride_length_m", inst.userStepLengthM)
+                    put("heading_deg", inst.smoothedHeading)
+                    put("pitch_deg", inst.phonePitchDeg)
+                    put("roll_deg", inst.phoneRollDeg)
+                    val beacon = inst.beaconManager?.lastMatchedBeacon
+                    if (beacon != null) {
+                        put("last_matched_beacon", org.json.JSONObject().apply {
+                            put("id", beacon.id)
+                            put("name", beacon.name)
+                            put("dist_m", inst.beaconManager?.lastMatchedDistanceM ?: 0f)
+                            put("level", beacon.level.name)
+                            put("lat", beacon.lat)
+                            put("lon", beacon.lon)
+                        })
+                    }
+                    put("recent_beacons", inst.beaconManager?.getRecentScannedBeaconsJson() ?: org.json.JSONArray())
+                }
             }
         }
 

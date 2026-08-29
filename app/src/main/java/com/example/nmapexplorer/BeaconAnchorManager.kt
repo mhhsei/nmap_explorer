@@ -71,6 +71,21 @@ class BeaconAnchorManager(
     // 防重複播報冷卻表：Beacon ID -> 上次定錨時間戳記 (uptimeMillis)
     private val anchorCooldownMap = mutableMapOf<String, Long>()
 
+    // 最近定錨信標與掃描歷史快照
+    var lastMatchedBeacon: PublicBeaconAnchor? = null
+        private set
+    var lastMatchedDistanceM: Float = 0f
+        private set
+    private val recentScannedBeacons = java.util.Collections.synchronizedList(mutableListOf<org.json.JSONObject>())
+
+    fun getRecentScannedBeaconsJson(): org.json.JSONArray {
+        val arr = org.json.JSONArray()
+        synchronized(recentScannedBeacons) {
+            recentScannedBeacons.forEach { arr.put(it) }
+        }
+        return arr
+    }
+
     companion object {
         /** 定錨觸發最大有效距離 (公尺)：只有走進距離 Beacon 6.5 公尺以內才判定為可靠定錨 */
         const val MAX_ANCHOR_DISTANCE_M = 6.5f
@@ -300,7 +315,23 @@ class BeaconAnchorManager(
             it.major == major && it.minor == minor && it.uuid.equals(uuidStr, ignoreCase = true)
         }
 
+        val beaconObj = org.json.JSONObject().apply {
+            put("uuid", uuidStr)
+            put("major", major)
+            put("minor", minor)
+            put("rssi", rssi)
+            put("dist_m", estimatedDistM)
+            put("matched_name", matchedBeacon?.name ?: "未匹配公眾信標")
+            put("t", System.currentTimeMillis())
+        }
+        synchronized(recentScannedBeacons) {
+            if (recentScannedBeacons.size > 30) recentScannedBeacons.removeAt(0)
+            recentScannedBeacons.add(beaconObj)
+        }
+
         if (matchedBeacon != null && estimatedDistM <= MAX_ANCHOR_DISTANCE_M) {
+            lastMatchedBeacon = matchedBeacon
+            lastMatchedDistanceM = estimatedDistM
             val now = SystemClock.uptimeMillis()
             val lastEmitted = anchorCooldownMap[matchedBeacon.id] ?: 0L
 

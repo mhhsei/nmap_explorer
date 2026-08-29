@@ -865,6 +865,16 @@ class NmapWebApp {
                     lat: window.lastGpsLat,
                     lon: window.lastGpsLon
                 },
+                verticalLevel: window.currentVerticalLevel || "GROUND",
+                altitudeM: window.currentAltitudeM || 0.0,
+                beaconAnchor: window.currentBeaconAnchor || null,
+                differentialTier: window.currentDifferentialTier || null,
+                activeGuidance: this.activeGuidance ? {
+                    targetName: this.activeGuidance.targetName,
+                    targetLat: this.activeGuidance.targetLat,
+                    targetLon: this.activeGuidance.targetLon,
+                    lastDistanceM: this.activeGuidance.lastDistanceM
+                } : null,
                 speechHistory: this.sessionSpeechHistory || [],
                 detectedPois: detectedList,
                 causalityTrace: this.sessionCausalityTrace || [],

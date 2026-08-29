@@ -1,8 +1,14 @@
 package com.example.nmapexplorer
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.os.BatteryManager
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -17,7 +23,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
-
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -292,16 +297,17 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     }
 
     /**
-     * 一鍵打包 7 合 1 AI 結構化診斷日誌並喚醒系統分享選單 (Share Sheet)
+     * 一鍵打包 8 合 1 結構化診斷日誌並喚醒系統分享選單 (Share Sheet)
      * 
      * 包含內容：
-     * 1. 0_AI_QUICK_SUMMARY.json：手機硬體、版本、導航狀態與異常速查
-     * 2. 1_trajectory.geojson：標準 GeoJSON 行走軌跡與地標
-     * 3. 2_causality_trace.ndjson：決策因果鏈 Trace ID
-     * 4. 3_detected_pois.json：掃描到的周遭店家
-     * 5. 4_speech_history.ndjson：語音朗讀歷史
-     * 6. 5_sensor_trajectory.ndjson：底層卡爾曼/步態數據
-     * 7. 6_system_logcat.txt：Android 系統底層日誌
+     * 1. 0_文字版診斷總覽_SUMMARY.txt：NVDA 螢幕報讀與記事本可直接秒開的中文純文字報告
+     * 2. 1_AI快速診斷_QUICK_SUMMARY.json：手機硬體、電源省電模式、感測器快照與異常速查
+     * 3. 2_行走軌跡_trajectory.geojson.txt：標準 GeoJSON 行走軌跡與地標
+     * 4. 3_周遭店家清單_detected_pois.json：掃描到的周遭店家
+     * 5. 4_語音播報歷史紀錄_speech_history.txt：語音朗讀歷史
+     * 6. 5_決策因果鏈_causality_trace.txt：決策因果鏈 Trace 紀錄
+     * 7. 6_感測器與GPS軌跡_sensor_trajectory.txt：底層卡爾曼、氣壓計、信標與步態數據
+     * 8. 7_Android系統Logcat日誌_system_logcat.log：Android 系統底層日誌
      */
     @JavascriptInterface
     fun shareAppLogsWithData(frontendJsonData: String) {
@@ -322,7 +328,6 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 org.json.JSONObject()
             }
 
-            // 1. 0_AI_QUICK_SUMMARY.json (AI 一秒診斷速查摘要)
             val pkgInfo = try {
                 context.packageManager.getPackageInfo(context.packageName, 0)
             } catch (e: Exception) {
@@ -330,6 +335,156 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             }
             val versionCode = if (pkgInfo != null) PackageInfoCompat.getLongVersionCode(pkgInfo) else 0L
 
+            // 1. 系統電源與運行環境指標（排查 GPS 凍結核心原因）
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val isPowerSaveMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                powerManager?.isPowerSaveMode ?: false
+            } else false
+
+            val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val bLevel = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val bScale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val batteryPct = if (bLevel >= 0 && bScale > 0) (bLevel * 100 / bScale) else -1
+            val bStatus = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val isCharging = bStatus == BatteryManager.BATTERY_STATUS_CHARGING || bStatus == BatteryManager.BATTERY_STATUS_FULL
+
+            // 2. 網路連線類型
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            @Suppress("DEPRECATION")
+            val activeNet = connectivityManager?.activeNetworkInfo
+            @Suppress("DEPRECATION")
+            val networkTypeStr = when {
+                activeNet == null || !activeNet.isConnected -> "無網路 (離線探索模式)"
+                activeNet.type == ConnectivityManager.TYPE_WIFI -> "Wi-Fi (${activeNet.extraInfo ?: "已連線"})"
+                activeNet.type == ConnectivityManager.TYPE_MOBILE -> "行動網路 (${activeNet.subtypeName})"
+                else -> activeNet.typeName
+            }
+
+            // 3. 音訊輸出途徑
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            @Suppress("DEPRECATION")
+            val isBluetoothAudio = audioManager?.isBluetoothA2dpOn == true || audioManager?.isBluetoothScoOn == true
+            @Suppress("DEPRECATION")
+            val isWiredHeadset = audioManager?.isWiredHeadsetOn == true
+            val audioRouteStr = when {
+                isBluetoothAudio -> "藍牙無線耳機 (具備立體聲 3D HRTF 空間音效效果)"
+                isWiredHeadset -> "有線立體聲耳機"
+                else -> "手機內建揚聲器 (喇叭)"
+            }
+
+            // 4. 無障礙服務狀態
+            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+            val isAccessibilityEnabled = am?.isEnabled ?: false
+            val isTouchExploration = am?.isTouchExplorationEnabled ?: false
+
+            // 5. 底層感測器與演算法快照
+            val sensorDiag = LocationSensorBridge.getDiagnosticsSnapshot()
+
+            val poisArray = json.optJSONArray("detectedPois")
+            val speechArray = json.optJSONArray("speechHistory")
+            val traceArray = json.optJSONArray("causalityTrace")
+            val anomaliesArray = json.optJSONArray("anomalies")
+            val lastGpsObj = json.optJSONObject("lastGps")
+
+            // =========================================================================
+            // 檔案 1：0_文字版診斷總覽_SUMMARY.txt (NVDA 螢幕閱讀器與記事本直接秒開的純文字報告)
+            // =========================================================================
+            val plainTextSummary = buildString {
+                appendLine("================================================================================")
+                appendLine("【NMap Explorer 視障無障礙導航系統 - 設備與診斷總覽報告】")
+                appendLine("================================================================================")
+                appendLine("匯出時間：$displayTimeStr")
+                appendLine("手機型號：${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})")
+                appendLine("App 版本：${pkgInfo?.versionName ?: "1.0"} (版本代號: $versionCode)")
+                appendLine("探索時長：${json.optInt("sessionDurationSec", 0)} 秒")
+                appendLine("播報次數：${speechArray?.length() ?: 0} 則")
+                appendLine("發現店家：${poisArray?.length() ?: 0} 處")
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("一、 系統電源與運行環境（排查 GPS 凍結核心指標）")
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("• 系統省電模式 (Power Save Mode)：" + if (isPowerSaveMode) "【⚠️ 開啟中 (警告：省電模式會大幅抑制背景 GPS 頻率，可能造成導航卡頓)】" else "關閉 (正常)")
+                appendLine("• 電池電量：$batteryPct% " + (if (isCharging) "(充電中)" else "(未充電)"))
+                appendLine("• 網路連線狀態：$networkTypeStr")
+                appendLine("• 螢幕閱讀器 (TalkBack)：" + if (isAccessibilityEnabled) "開啟中" else "未開啟")
+                appendLine("• 觸控瀏覽輔助 (Touch Exploration)：" + if (isTouchExploration) "開啟中" else "未開啟")
+                appendLine("• 音訊輸出途徑：$audioRouteStr")
+                appendLine("• 定位權限授權：${if (hasLocationPermission()) "已授權 (精確定位)" else "未授權"}")
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("二、 3D 立體垂直高程與氣壓計狀態 (Barometer & 3D Level)")
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("• 當前立體樓層：${sensorDiag.optString("vertical_level_display", "地面層")} (${sensorDiag.optString("vertical_level", "GROUND")})")
+                appendLine("• 相對地面高度：${String.format(Locale.US, "%+.1f", sensorDiag.optDouble("altitude_m", 0.0))} 公尺")
+                appendLine("• 即時原始氣壓：${String.format(Locale.US, "%.2f", sensorDiag.optDouble("raw_pressure_hpa", 1013.25))} hPa")
+                appendLine("• 基準大氣壓力：${String.format(Locale.US, "%.2f", sensorDiag.optDouble("baseline_pressure_hpa", 1013.25))} hPa")
+                appendLine("• 垂直升降速度：${String.format(Locale.US, "%.2f", sensorDiag.optDouble("vertical_velocity_mps", 0.0))} m/s")
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("三、 定位品質與衛星狀態 (GNSS & Differential)")
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("• 差分定位等級：${sensorDiag.optString("diff_tier_display", "單機導航 (3-5m)")} [${sensorDiag.optString("diff_tier_name", "OFFLINE_AUTONOMOUS")}]")
+                appendLine("• 可視衛星總數：${sensorDiag.optInt("satellites_total", 0)} 顆 (使用中：${sensorDiag.optInt("satellites_used", 0)} 顆)")
+                appendLine("• 平均訊噪比 (C/N0)：${String.format(Locale.US, "%.1f", sensorDiag.optDouble("satellites_avg_snr", 0.0))} dB-Hz")
+                appendLine("• 雙頻 L5 衛星：${if (sensorDiag.optBoolean("has_l5", false)) "已鎖定 (收獲 " + sensorDiag.optInt("satellites_l5_count", 0) + " 顆 L5)" else "無雙頻 L5"}")
+                appendLine("• 都市峽谷多路徑折射 (Multipath)：${if (sensorDiag.optBoolean("is_multipath", false)) "【⚠️ 偵測到大樓訊號折射反射】" else "無折射 (訊號正常)"}")
+                appendLine("• 最後 GPS 座標：(${lastGpsObj?.optDouble("lat", 0.0)}, ${lastGpsObj?.optDouble("lon", 0.0)})")
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("四、 步伐、航位推算與手機姿態 (PDR & Motion State)")
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("• 運動狀態機：${sensorDiag.optString("motion_state", "STATIONARY_LOCKED")}")
+                appendLine("• 硬體計步器累計：${sensorDiag.optLong("hardware_steps", 0L)} 步")
+                appendLine("• 軟體波峰計步累計：${sensorDiag.optLong("software_steps", 0L)} 步")
+                appendLine("• 自適應步長估計：${String.format(Locale.US, "%.2f", sensorDiag.optDouble("stride_length_m", 0.65))} 公尺")
+                appendLine("• 手機手持姿態：")
+                appendLine("  - 真北方位角 (Heading)：${String.format(Locale.US, "%.1f", sensorDiag.optDouble("heading_deg", 0.0))}°")
+                appendLine("  - 俯仰角 (Pitch)：${String.format(Locale.US, "%.1f", sensorDiag.optDouble("pitch_deg", 0.0))}°")
+                appendLine("  - 翻滾角 (Roll)：${String.format(Locale.US, "%.1f", sensorDiag.optDouble("roll_deg", 0.0))}°")
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("五、 室內公眾信標與 Wi-Fi 定錨 (Indoor Beacons)")
+                appendLine("--------------------------------------------------------------------------------")
+                val matchedBeacon = sensorDiag.optJSONObject("last_matched_beacon")
+                if (matchedBeacon != null) {
+                    appendLine("• 目前定錨信標：${matchedBeacon.optString("name")} (距離約 ${String.format(Locale.US, "%.1f", matchedBeacon.optDouble("dist_m", 0.0))} 公尺)")
+                    appendLine("  信標樓層：${matchedBeacon.optString("level")}")
+                } else {
+                    appendLine("• 目前定錨信標：尚未定錨公眾信標")
+                }
+                val recentBeacons = sensorDiag.optJSONArray("recent_beacons")
+                appendLine("• 最近掃描到藍牙信標筆數：${recentBeacons?.length() ?: 0} 筆")
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("六、 3D 空間導引狀態")
+                appendLine("--------------------------------------------------------------------------------")
+                val guidance = json.optJSONObject("activeGuidance")
+                if (guidance != null) {
+                    appendLine("• 導引目標名稱：${guidance.optString("targetName", "無")}")
+                    appendLine("• 目標剩餘距離：${String.format(Locale.US, "%.1f", guidance.optDouble("lastDistanceM", 0.0))} 公尺")
+                } else {
+                    appendLine("• 3D 空間導引：未開啟")
+                }
+                appendLine()
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("七、 異常事件速查 (Anomalies)")
+                appendLine("--------------------------------------------------------------------------------")
+                if (anomaliesArray != null && anomaliesArray.length() > 0) {
+                    for (i in 0 until anomaliesArray.length()) {
+                        val an = anomaliesArray.optJSONObject(i)
+                        if (an != null) {
+                            appendLine("• [${an.optString("type")}] ${an.optString("desc")} (${an.optString("time")})")
+                        }
+                    }
+                } else {
+                    appendLine("• 無異常事件記錄 (系統運行良好)")
+                }
+                appendLine("================================================================================")
+            }
+
+            // =========================================================================
+            // 檔案 2：1_AI快速診斷_QUICK_SUMMARY.json (結構化診斷 JSON，供自動化工具解析)
+            // =========================================================================
             val summaryObj = org.json.JSONObject().apply {
                 put("generated_at", displayTimeStr)
                 put("export_timestamp_iso", json.optString("exportTime", displayTimeStr))
@@ -346,25 +501,36 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     put("max_memory_mb", Runtime.getRuntime().maxMemory() / (1024 * 1024))
                     put("location_permission_granted", hasLocationPermission())
                 })
+                put("power_and_environment", org.json.JSONObject().apply {
+                    put("is_power_save_mode", isPowerSaveMode)
+                    put("battery_percent", batteryPct)
+                    put("is_charging", isCharging)
+                    put("network_type", networkTypeStr)
+                    put("audio_route", audioRouteStr)
+                    put("talkback_active", isAccessibilityEnabled)
+                    put("touch_exploration_active", isTouchExploration)
+                })
+                put("sensor_diagnostics", sensorDiag)
                 put("session_metrics", json.optJSONObject("sessionMetrics") ?: org.json.JSONObject())
                 put("navigation_state", org.json.JSONObject().apply {
                     put("current_road", json.optString("currentRoad", "未知道路"))
                     put("door_estimate", json.optString("lastDoor", ""))
                     put("intersection_status", json.optString("lastIntersection", ""))
                     put("last_heading_deg", json.optDouble("lastHeading", 0.0))
-                    put("last_gps", json.optJSONObject("lastGps") ?: org.json.JSONObject())
+                    put("last_gps", lastGpsObj ?: org.json.JSONObject())
+                    put("active_guidance", json.optJSONObject("activeGuidance"))
                 })
-                put("anomalies_detected", json.optJSONArray("anomalies") ?: org.json.JSONArray())
+                put("anomalies_detected", anomaliesArray ?: org.json.JSONArray())
             }
             val summaryJsonStr = summaryObj.toString(2)
 
-            // 2. 1_trajectory.geojson (標準 GeoJSON 地理軌跡檔)
-            val poisArray = json.optJSONArray("detectedPois")
+            // =========================================================================
+            // 檔案 3：2_行走軌跡_trajectory.geojson.txt (標準 GeoJSON 軌跡檔，加 .txt 記事本與地圖工具通用)
+            // =========================================================================
             val geojsonObj = org.json.JSONObject().apply {
                 put("type", "FeatureCollection")
                 val features = org.json.JSONArray()
 
-                // 行走折線幾何特徵 (LineString)
                 val coordsList = LocationSensorBridge.getGpsCoordinatesList()
                 if (coordsList.isNotEmpty()) {
                     val lineGeom = org.json.JSONObject().apply {
@@ -386,7 +552,6 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     features.put(lineFeature)
                 }
 
-                // 店家地標點特徵 (Point Features)
                 if (poisArray != null) {
                     for (i in 0 until poisArray.length()) {
                         val p = poisArray.optJSONObject(i) ?: continue
@@ -419,49 +584,62 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             }
             val geojsonStr = geojsonObj.toString(2)
 
-            // 3. 2_causality_trace.ndjson (因果鏈 Trace ID 結構化日誌)
-            val traceArray = json.optJSONArray("causalityTrace")
-            val traceNdjson = buildString {
+            // =========================================================================
+            // 檔案 4：3_周遭店家清單_detected_pois.json
+            // =========================================================================
+            val poisJsonStr = poisArray?.toString(2) ?: "[]"
+
+            // =========================================================================
+            // 檔案 5：4_語音播報歷史紀錄_speech_history.txt (易讀純文字格式)
+            // =========================================================================
+            val speechTxt = buildString {
+                if (speechArray != null && speechArray.length() > 0) {
+                    for (i in 0 until speechArray.length()) {
+                        val s = speechArray.optJSONObject(i)
+                        if (s != null) {
+                            val timeStr = s.optString("time", "")
+                            val textStr = s.optString("text", "")
+                            appendLine("[$timeStr] $textStr")
+                        }
+                    }
+                } else {
+                    appendLine("（尚無語音播報紀錄）")
+                }
+            }
+
+            // =========================================================================
+            // 檔案 6：5_決策因果鏈_causality_trace.txt (易讀決策事件清單)
+            // =========================================================================
+            val traceTxt = buildString {
                 if (traceArray != null && traceArray.length() > 0) {
                     for (i in 0 until traceArray.length()) {
                         val obj = traceArray.optJSONObject(i)
                         if (obj != null) {
-                            appendLine(obj.toString())
+                            val timeStr = obj.optString("time", "")
+                            val typeStr = obj.optString("type", "")
+                            val descStr = obj.optString("desc", obj.toString())
+                            appendLine("[$timeStr] [$typeStr] $descStr")
                         }
                     }
                 } else {
-                    appendLine("{\"info\": \"No causality traces recorded\"}")
+                    appendLine("（尚無決策因果鏈追蹤紀錄）")
                 }
             }
 
-            // 4. 3_detected_pois.json (結構化周遭店家清單)
-            val poisJsonStr = poisArray?.toString(2) ?: "[]"
-
-            // 5. 4_speech_history.ndjson (語音播報結構化歷史)
-            val speechArray = json.optJSONArray("speechHistory")
-            val speechNdjson = buildString {
-                if (speechArray != null && speechArray.length() > 0) {
-                    for (i in 0 until speechArray.length()) {
-                        val obj = speechArray.optJSONObject(i)
-                        if (obj != null) {
-                            appendLine(obj.toString())
-                        }
-                    }
-                } else {
-                    appendLine("{\"info\": \"No speech events recorded\"}")
-                }
-            }
-
-            // 6. 5_sensor_trajectory.ndjson (底層感測器歷程)
+            // =========================================================================
+            // 檔案 7：6_感測器與GPS軌跡_sensor_trajectory.txt (NDJSON 格式附 .txt 記事本直接開)
+            // =========================================================================
             val sensorNdjson = LocationSensorBridge.getTrajectoryNdjson().ifBlank {
                 "{\"info\": \"No sensor fixes recorded\"}"
             }
 
-            // 7. 6_system_logcat.txt (系統底層日誌，擷取最近 5000 行完整歷程)
+            // =========================================================================
+            // 檔案 8：7_Android系統Logcat日誌_system_logcat.log (標準 .log 格式)
+            // =========================================================================
             val process = Runtime.getRuntime().exec("logcat -d -v time -t 5000")
             val logText = process.inputStream.bufferedReader().readText()
 
-            // 將全部診斷檔案壓縮進動態命名的 ZIP 檔中
+            // 將全部診斷檔案壓縮進動態命名的 ZIP 檔中（維持標準 .zip 副檔名原樣不動）
             val zipFileName = "NMap_Logs_${cleanModel}_${timeStampForFile}.zip"
             val zipFile = File(logDir, zipFileName)
             if (zipFile.exists()) {
@@ -475,13 +653,14 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     zos.closeEntry()
                 }
 
-                addEntry("0_AI_QUICK_SUMMARY.json", summaryJsonStr)
-                addEntry("1_trajectory.geojson", geojsonStr)
-                addEntry("2_causality_trace.ndjson", traceNdjson)
-                addEntry("3_detected_pois.json", poisJsonStr)
-                addEntry("4_speech_history.ndjson", speechNdjson)
-                addEntry("5_sensor_trajectory.ndjson", sensorNdjson)
-                addEntry("6_system_logcat.txt", logText)
+                addEntry("0_文字版診斷總覽_SUMMARY.txt", plainTextSummary)
+                addEntry("1_AI快速診斷_QUICK_SUMMARY.json", summaryJsonStr)
+                addEntry("2_行走軌跡_trajectory.geojson.txt", geojsonStr)
+                addEntry("3_周遭店家清單_detected_pois.json", poisJsonStr)
+                addEntry("4_語音播報歷史紀錄_speech_history.txt", speechTxt)
+                addEntry("5_決策因果鏈_causality_trace.txt", traceTxt)
+                addEntry("6_感測器與GPS軌跡_sensor_trajectory.txt", sensorNdjson)
+                addEntry("7_Android系統Logcat日誌_system_logcat.log", logText)
             }
 
             // 透過 Android FileProvider 安全產生 URI 並呼叫系統分享介面
@@ -495,7 +674,10 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
                 putExtra(Intent.EXTRA_SUBJECT, "NMap Explorer 診斷日誌 - ${Build.MODEL} ($timeStampForFile)")
+                putExtra(Intent.EXTRA_TITLE, zipFileName)
                 putExtra(Intent.EXTRA_TEXT, "這是 NMap Explorer 的 AI 結構化診斷與軌跡日誌壓縮包（手機型號：${Build.MODEL}，匯出時間：$displayTimeStr）。")
+                // 使用 ClipData 攜帶檔案名稱與 URI，確保各大通訊軟體 (LINE/Gmail/雲端硬碟) 接收時絕不丟失 .zip 副檔名
+                clipData = ClipData.newUri(context.contentResolver, zipFileName, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 

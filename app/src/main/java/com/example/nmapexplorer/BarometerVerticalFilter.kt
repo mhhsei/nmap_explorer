@@ -54,6 +54,12 @@ class BarometerVerticalFilter(
     private var p11 = 1.0f
 
     private var lastTimestampNs: Long = 0L
+    private var lastRawPressureHpa: Float = 1013.25f
+
+    fun getRawPressure(): Float = lastRawPressureHpa
+    fun getBaselinePressure(): Float = baselinePressureHpa
+    fun getAltitude(): Float = stateAltitudeM
+    fun getVelocity(): Float = stateVelocityMps
 
     // 當前樓層狀態
     var currentLevel: VerticalLevel = VerticalLevel.GROUND
@@ -93,6 +99,8 @@ class BarometerVerticalFilter(
         if (pressureHpa <= 300f || pressureHpa >= 1100f) {
             return Pair(currentLevel, stateAltitudeM)
         }
+
+        lastRawPressureHpa = pressureHpa
 
         // 1. 初始化地面基準氣壓
         if (!isBaselineInitialized) {
