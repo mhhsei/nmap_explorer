@@ -26,6 +26,11 @@
   <main id="main-content" class="main-content" role="main">
     <h1>nmap 行動導航版</h1>
 
+    <!-- 差分定位即時品質狀態徽章 (WCAG 2.2 AAA aria-live 即時報讀) -->
+    <div id="diff-status-container" style="display: flex; justify-content: center; margin-bottom: 8px;">
+      <span id="diff-status-pill" style="font-size: 0.9em; padding: 4px 12px; border-radius: 12px; background: #1e293b; color: #38bdf8; border: 1px solid #0284c7;" role="status" aria-live="polite" aria-label="差分定位品質: 單機導航 (3-5m)">📍 單機導航 (3-5m)</span>
+    </div>
+
     <!-- 權限不足提示橫幅 -->
     <div id="permission-banner" class="banner" style="display:none; background:#78350f; border:1px solid #f59e0b; border-radius:8px; padding:12px; margin-bottom:10px;" role="alert">
       <p id="permission-text" style="color:#fef08a; font-weight:bold; font-size:1.1em; margin-bottom:8px;">📍 定位權限未開啟，已進入手動探索模式。</p>

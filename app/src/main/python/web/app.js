@@ -3630,3 +3630,16 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
     }
 };
 
+/**
+ * 差分定位品質等級即時回調 (由 Android LocationSensorBridge 注入)
+ */
+window.onDifferentialTierUpdate = function(tierName, displayName, expectedAcc) {
+    window.currentDifferentialTier = { name: tierName, displayName: displayName, expectedAcc: expectedAcc };
+    const diffElem = document.getElementById("diff-status-pill");
+    if (diffElem) {
+        diffElem.textContent = "📍 " + displayName;
+        diffElem.setAttribute("aria-label", "差分定位品質: " + displayName);
+    }
+};
+
+

@@ -312,6 +312,7 @@ class PedestrianKalmanFilter {
      * @param isMultipath 是否偵測到大樓多路徑折射反射雜訊
      * @param hasDualFrequencyL5 是否收到 L5 雙頻衛星高精度訊號
      * @param headingDeg 當前 9 軸融合真北朝向角 (度，0~360)
+     * @param diffTier 五級差分定位品質等級 (DifferentialTier)
      * @return 濾波平滑後的 (緯度, 經度)
      */
     fun filter(
@@ -323,7 +324,8 @@ class PedestrianKalmanFilter {
         motionState: MotionState,
         isMultipath: Boolean = false,
         hasDualFrequencyL5: Boolean = false,
-        headingDeg: Float = -1f
+        headingDeg: Float = -1f,
+        diffTier: DifferentialTier = DifferentialTier.OFFLINE_AUTONOMOUS
     ): Pair<Double, Double> {
         // 若為第一次定位：設定初始錨點與狀態
         if (!isInitialized) {
@@ -444,9 +446,15 @@ class PedestrianKalmanFilter {
         p22 += qVel * dt
         p33 += qVel * dt
 
-        // 3. 自適應測量雜訊協方差 R（以 GPS 精度為基準，確保高精度 GPS 能在 0.5s 內敏銳跟隨）
-        var baseR = max(accuracyMeters.toDouble().pow(1.8) * 0.7, 3.0)
-        if (hasDualFrequencyL5) baseR *= 0.5
+        // 3. 自適應測量雜訊協方差 R（融合五級差分定位品質階梯，公分/分米級高精度動態信任）
+        var baseR = when (diffTier) {
+            DifferentialTier.RTK_FIXED_CENTIMETER -> 0.15
+            DifferentialTier.RTK_FLOAT_DECIMETER -> 0.35
+            DifferentialTier.DGPS_CODE_DIFF -> 0.75
+            DifferentialTier.CARRIER_SMOOTHED_HATCH -> 1.60
+            DifferentialTier.OFFLINE_AUTONOMOUS -> max(accuracyMeters.toDouble().pow(1.8) * 0.7, 3.0)
+        }
+        if (hasDualFrequencyL5) baseR *= 0.7
         if (isMultipath) baseR *= 4.0
 
         // 4. 馬氏距離新息門控 (Mahalanobis Innovation Gating) 與防鎖死連續異常復位
@@ -621,6 +629,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }
     }
 
+    // 國家級 e-GNSS NTRIP 差分客戶端與雙頻載波平滑處理器實例
+    private var ntripClient: NtripDiffClient? = null
+    private var rawGnssProcessor: GnssRawMeasurementProcessor? = null
+    private var currentDiffTier: DifferentialTier = DifferentialTier.OFFLINE_AUTONOMOUS
+
     private var isRunning = false
     private var lastEmittedLocation: Location? = null
 
@@ -679,8 +692,10 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             Log.i(tag, "[Step Sensor] Hardware STEP_DETECTOR unavailable; software accelerometer peak detection active.")
         }
 
-        // 3. 註冊衛星狀態監聽器，即時監控訊噪比與 L5 雙頻衛星
+        // 3. 註冊衛星狀態監聽器、雙頻載波平滑引擎與 e-GNSS 差分客戶端
         registerGnssStatusCallback()
+        registerGnssRawMeasurementsCallback()
+        startNtripClient()
 
         val hasFine = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val hasCoarse = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -819,6 +834,57 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     }
 
     /**
+     * 註冊 Android 7.0+ 原生 GnssMeasurementsEvent 監聽器（雙頻載波相位 Hatch 平滑）
+     */
+    @SuppressLint("MissingPermission")
+    private fun registerGnssRawMeasurementsCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && locationManager != null) {
+            try {
+                val processor = GnssRawMeasurementProcessor { localTier, smoothedCount, l5Count ->
+                    // 若當前未連上更高階之 NTRIP 差分，採用本地載波平滑等級
+                    if (!isNtripDifferentialActive()) {
+                        currentDiffTier = localTier
+                    }
+                }
+                rawGnssProcessor = processor
+                locationManager.registerGnssMeasurementsCallback(processor, Handler(Looper.getMainLooper()))
+                Log.i(tag, "[GNSS_RAW] GnssMeasurementsCallback registered. Hatch carrier smoothing activated.")
+            } catch (e: Exception) {
+                Log.w(tag, "Could not register GnssMeasurementsCallback: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 啟動台灣 e-GNSS NTRIP 差分客戶端
+     */
+    private fun startNtripClient() {
+        try {
+            val client = NtripDiffClient { tier, ageSec ->
+                currentDiffTier = if (tier != DifferentialTier.OFFLINE_AUTONOMOUS) {
+                    tier
+                } else {
+                    if ((rawGnssProcessor?.getSmoothedSatelliteCount() ?: 0) >= 5) {
+                        DifferentialTier.CARRIER_SMOOTHED_HATCH
+                    } else {
+                        DifferentialTier.OFFLINE_AUTONOMOUS
+                    }
+                }
+            }
+            ntripClient = client
+            client.start()
+            Log.i(tag, "[NTRIP_INIT] e-GNSS NTRIP Client initiated in background.")
+        } catch (e: Exception) {
+            Log.w(tag, "Could not start NtripDiffClient: ${e.message}")
+        }
+    }
+
+    private fun isNtripDifferentialActive(): Boolean {
+        return ntripClient?.isDifferentialFresh() == true && 
+               (ntripClient?.getCurrentTier() != DifferentialTier.OFFLINE_AUTONOMOUS)
+    }
+
+    /**
      * 停止所有感測器與定位監聽，釋放資源
      */
     fun stop() {
@@ -829,9 +895,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
             locationManager?.removeUpdates(this)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && gnssStatusCallback != null) {
-                locationManager?.unregisterGnssStatusCallback(gnssStatusCallback!!)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                if (gnssStatusCallback != null) {
+                    locationManager?.unregisterGnssStatusCallback(gnssStatusCallback!!)
+                }
+                if (rawGnssProcessor != null) {
+                    locationManager?.unregisterGnssMeasurementsCallback(rawGnssProcessor!!)
+                }
             }
+            ntripClient?.stop()
         } catch (e: Exception) {
             Log.e(tag, "Error stopping location updates", e)
         }
@@ -1026,7 +1098,17 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             userStepLengthM = 0.85f * userStepLengthM + 0.15f * estimatedStep
         }
 
-        // 執行三態自適應卡爾曼濾波（含前進軸與橫向軸阻尼分流 + 停留重心收斂定錨）
+        // 判定當前生效之差分品質等級（符合五大嚴格工程檢核標準）
+        val activeTier = if (isNtripDifferentialActive()) {
+            ntripClient!!.getCurrentTier()
+        } else if ((rawGnssProcessor?.getSmoothedSatelliteCount() ?: 0) >= 5) {
+            DifferentialTier.CARRIER_SMOOTHED_HATCH
+        } else {
+            DifferentialTier.OFFLINE_AUTONOMOUS
+        }
+        currentDiffTier = activeTier
+
+        // 執行三態自適應卡爾曼濾波（含前進軸與橫向軸阻尼分流 + 停留重心收斂定錨 + 五級差分品質協方差）
         val motionState = stationaryDetector.currentState
         val (filteredLat, filteredLon) = kalmanFilter.filter(
             rawLat = rawLat,
@@ -1037,19 +1119,25 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             motionState = motionState,
             isMultipath = isUrbanCanyonMultipath,
             hasDualFrequencyL5 = hasDualFrequencyL5,
-            headingDeg = smoothedHeading
+            headingDeg = smoothedHeading,
+            diffTier = currentDiffTier
         )
+
+        // 定期將最新平滑位置提供給 NTRIP 客戶端以維持 VRS 基準站鎖定
+        ntripClient?.updateCurrentLocation(filteredLat, filteredLon, alt)
 
         val provider = location.provider ?: "fused"
 
         // 記錄人類可讀與結構化 NDJSON 日誌
         val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 | 折射: $isUrbanCanyonMultipath"
+        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 等級: ${currentDiffTier.displayName} | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 | 折射: $isUrbanCanyonMultipath"
         val ndjson = org.json.JSONObject().apply {
             put("t", timeStr)
             put("evt", "GPS_FIX")
             put("provider", provider)
             put("motion_state", motionState.name)
+            put("diff_tier", currentDiffTier.name)
+            put("diff_name", currentDiffTier.displayName)
             put("raw_lat", rawLat)
             put("raw_lon", rawLon)
             put("lat", filteredLat)
@@ -1062,13 +1150,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }.toString()
         addTrajectoryLog(humanLog, ndjson)
 
-        Log.i(tag, "[GPS_FIX] provider=$provider, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
+        Log.i(tag, "[GPS_FIX] provider=$provider, diff=${currentDiffTier.displayName}, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
 
-        // 呼叫前端 JavaScript onLocationUpdate 函式
+        // 呼叫前端 JavaScript onLocationUpdate 與 onDifferentialTierUpdate 函式
         val effectiveSpeed = if (motionState == MotionState.STATIONARY_LOCKED) 0f else speed
+        val effectiveAcc = min(acc, currentDiffTier.expectedAccuracyMeters)
         webView.post {
             webView.evaluateJavascript(
-                "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${acc}, ${bearing}, ${effectiveSpeed});",
+                "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed});" +
+                "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});",
                 null
             )
         }

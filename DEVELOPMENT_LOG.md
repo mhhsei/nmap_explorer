@@ -49,6 +49,21 @@
 ## 📝 變更日誌 (Changelog)
 
 ### [v1.0.6 - 2026-08-29] - 語音朗讀前置 3D 聽覺圖標庫 (Earcons)、對話框無障礙焦點隔離 (Inert Shield) 與高中生白話設定精簡
+- **🛰️ 國家級 e-GNSS 差分電文 (NTRIP/RTK Client) 與雙頻載波平滑引擎 (`GNSS_DIFFERENTIAL_STANDARDS.md`, `NtripDiffClient.kt`, `HatchFilter.kt`, `GnssRawMeasurementProcessor.kt`, `DifferentialTier.kt`)**:
+  1. **制定五大嚴格工程檢核標準 (`GNSS_DIFFERENTIAL_STANDARDS.md`)**：
+     - **標準一（時效與幀檢驗）**：差分時效 $T_{\text{age}} \le 6.0\text{s}$ 有效，$6\sim12\text{s}$ 警告加權，$> 12\text{s}$ 強制降級；嚴格執行 RTCM 3.x 幀 `0xD3` 與國際標準 CRC24Q 多項式驗證，壞包即刻丟棄。
+     - **標準二（載波平滑與週跳重置）**：單顆衛星 Hatch 濾波平滑上限 50 曆元，偵測到 `ADR_STATE_RESET` 或 `ADR_STATE_CYCLE_SLIP` 時瞬時重置平滑視窗，防止相位污染。
+     - **標準三（防穿牆與幾何合理性）**：差分跳躍必須通過卡方檢定（$\chi^2 \le 9.21$）；手持靜止鎖定（`STATIONARY_LOCKED`）時坐標 100% 凍結定錨，差分引擎僅於背景收斂，絕不破壞防抖。
+     - **標準四（網路低功耗與頻寬防護）**：指數退避重試（$1\text{s}\sim60\text{s}$），徹底杜絕在地下室狂發請求耗盡手機電池；心跳 GGA 上傳限制每 10 秒 1 筆。
+     - **標準五（無障礙透明度）**：狀態列以 `aria-live="polite"` 靜默更新五級差分品質狀態，絕不以生硬技術日誌干擾使用者聆聽環境聲音。
+  2. **五級定位品質階梯 (Five Differential Tiers)**：
+     - `Tier 0 (OFFLINE_AUTONOMOUS)`：單機卡爾曼 + PDR 航位推算 (3~5m)。
+     - `Tier 1 (CARRIER_SMOOTHED_HATCH)`：手機本地雙頻 L1+L5 載波平滑，離線可用，削平 70% 雜訊 (1.5m)。
+     - `Tier 2 (DGPS_CODE_DIFF)`：e-GNSS 偽距代碼差分 (0.8m)。
+     - `Tier 3 (RTK_FLOAT_DECIMETER)`：e-GNSS 載波浮點解，斑馬線精準對齊 (0.4m)。
+     - `Tier 4 (RTK_FIXED_CENTIMETER)`：e-GNSS 載波固定解，公分級盲道導引 (< 0.2m)。
+  3. **前端無障礙即時連動**：
+     - 在主介面頂部增設 `diff-status-pill` 狀態徽章，即時向 NVDA / TalkBack 回報定位品質。
 - **🧭 前進軸與橫向軸阻尼分流 (Along-Track vs Cross-Track Damping) 與停步重心收斂定錨 (`LocationSensorBridge.kt`)**:
   1. **前進軸與橫向軸解耦分流 (Along-Track vs Cross-Track Damping)**：
      - **人體物理運動約束**：人是朝正前方邁步走，不可能瞬間側向平移跳躍 3 公尺。演算法將 9 軸融合真北朝向 ($\theta$) 投影解耦為「前進軸」與「垂直橫向軸」。
