@@ -56,13 +56,22 @@ def serve_static(filename):
     return static_file(filename, root=WEB_ROOT)
 
 
-def build_status_dict(include_full_report: bool = True, heading_deg: float = None, lat: float = None, lon: float = None) -> dict:
+def build_status_dict(
+    include_full_report: bool = True,
+    heading_deg: float = None,
+    lat: float = None,
+    lon: float = None,
+    vertical_level: str = "GROUND",
+    altitude_m: float = 0.0,
+    beacon_anchor: dict = None
+) -> dict:
     """
     【單次管線構建地圖綜合狀態 (Single-Pass World Status Builder)】
     作用：
     1. 在單一運算週期中只計算一次 road_info、pois、buildings、intersection。
     2. 將計算好的 Context 同時共享給 reporter 與 street_analyzer，徹底消滅 3~5 次的重複 GIS 運算。
-    3. 直接產出原生 Python 字典，消除 json.dumps -> json.loads 的無效序列化開銷。
+    3. 整合 3D 垂直樓層 (氣壓計) 與室內公眾 Beacon 定錨狀態。
+    4. 直接產出原生 Python 字典，消除 json.dumps -> json.loads 的無效序列化開銷。
     """
     if not agent.is_loaded:
         return {
@@ -86,7 +95,15 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
     door_estimates = agent.world_model.get_interpolated_door_numbers(cur_lat, cur_lon, cur_head)
     if road_info is not None:
         road_info["door_numbers"] = door_estimates.get("concise_door", "")
-    concise_report = reporter.generate_concise_report(agent, road_info=road_info, pois=pois, intersection=intersection)
+    concise_report = reporter.generate_concise_report(
+        agent,
+        road_info=road_info,
+        pois=pois,
+        intersection=intersection,
+        vertical_level=vertical_level,
+        altitude_m=altitude_m,
+        beacon_anchor=beacon_anchor
+    )
     street_scene = street_analyzer.analyze_scene(cur_lat, cur_lon, cur_head, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
 
     # 查詢台灣專屬公共資源 (路口SPaT號誌/變電箱安全雷達/捷運專屬無障礙電梯)
@@ -102,7 +119,10 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
             buildings=buildings,
             intersection_analysis=intersection,
             door_estimates=door_estimates,
-            scene=street_scene
+            scene=street_scene,
+            vertical_level=vertical_level,
+            altitude_m=altitude_m,
+            beacon_anchor=beacon_anchor
         )
     else:
         full_report = concise_report
@@ -115,6 +135,9 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
         "lat": cur_lat,
         "lon": cur_lon,
         "heading_deg": cur_head,
+        "vertical_level": vertical_level,
+        "altitude_m": altitude_m,
+        "beacon_anchor": beacon_anchor,
         "step_count": agent.step_count,
         "road_info": road_info,
         "pois": pois,
@@ -134,18 +157,45 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
 def get_status():
     """
     【取得當前地圖全景狀態 (Get Current World Status)】
-    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 120 米有什麼店、前方路口長怎樣、門牌幾號」。
-    支援動態即時朝向與座標參數。
+    作用：前端隨時向後端查詢目前「站在哪條路、面向哪裡、身邊 120 米有什麼店、前方路口長怎樣、門牌幾號、垂直樓層與室內定錨狀態」。
+    支援動態即時朝向、座標、垂直高程與 Beacon 定錨參數。
     """
     h = request.query.get("heading_deg") or (request.json.get("heading_deg") if request.json else None)
     lat = request.query.get("lat") or (request.json.get("lat") if request.json else None)
     lon = request.query.get("lon") or (request.json.get("lon") if request.json else None)
+    vert = request.query.get("vertical_level") or (request.json.get("vertical_level") if request.json else "GROUND")
+    alt = request.query.get("altitude_m") or (request.json.get("altitude_m") if request.json else 0.0)
+    beacon = request.json.get("beacon_anchor") if request.json else None
 
     h_val = float(h) if (h is not None and str(h).strip() != "") else None
     lat_val = float(lat) if (lat is not None and str(lat).strip() != "") else None
     lon_val = float(lon) if (lon is not None and str(lon).strip() != "") else None
+    alt_val = float(alt) if (alt is not None and str(alt).strip() != "") else 0.0
 
-    return json_response(build_status_dict(include_full_report=True, heading_deg=h_val, lat=lat_val, lon=lon_val))
+    return json_response(build_status_dict(
+        include_full_report=True,
+        heading_deg=h_val,
+        lat=lat_val,
+        lon=lon_val,
+        vertical_level=str(vert),
+        altitude_m=alt_val,
+        beacon_anchor=beacon
+    ))
+
+
+@app.route("/api/beacon_match", method=["GET", "POST"])
+def beacon_match():
+    """
+    【比對公眾 iBeacon 身分】
+    """
+    uuid_str = request.query.get("uuid") or (request.json.get("uuid") if request.json else "")
+    major = int(request.query.get("major") or (request.json.get("major") if request.json else 0))
+    minor = int(request.query.get("minor") or (request.json.get("minor") if request.json else 0))
+    from nmap.spatial.beacon_database import TaiwanBeaconDatabase
+    match = TaiwanBeaconDatabase.match_beacon_by_id(uuid_str, major, minor)
+    if match:
+        return json_response({"success": True, "beacon": match})
+    return json_response({"success": False, "message": "No matching public beacon found"})
 
 
 @app.route("/api/poi_detail_legacy", method=["GET", "POST"])
@@ -311,7 +361,16 @@ def update_gps():
 
     ok, msg = agent.update_gps_position(lat, lon, heading, accuracy)
 
-    status_data = build_status_dict(include_full_report=True)
+    vert = data.get("vertical_level", "GROUND")
+    alt = float(data.get("altitude_m", 0.0))
+    beacon = data.get("beacon_anchor")
+
+    status_data = build_status_dict(
+        include_full_report=True,
+        vertical_level=vert,
+        altitude_m=alt,
+        beacon_anchor=beacon
+    )
     status_data["action_message"] = msg
     status_data["is_collision"] = False
     return json_response(status_data)

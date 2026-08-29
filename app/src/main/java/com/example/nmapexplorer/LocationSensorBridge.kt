@@ -564,6 +564,28 @@ class PedestrianKalmanFilter {
     }
 
     fun isFilterInitialized(): Boolean = isInitialized
+
+    /**
+     * 室內公眾 Beacon 或 Wi-Fi RTT 絕對定錨重置
+     * 作用：當在室內/地下街偵測到已知公眾燈塔時，直接將卡爾曼座標與局部原點對齊至該燈塔
+     */
+    fun reanchor(newLat: Double, newLon: Double, accuracyM: Float = 2.0f) {
+        anchorLat = newLat
+        anchorLon = newLon
+        x = 0.0
+        y = 0.0
+        vx = 0.0
+        vy = 0.0
+        p00 = accuracyM * accuracyM.toDouble()
+        p11 = accuracyM * accuracyM.toDouble()
+        p22 = 0.5
+        p33 = 0.5
+        isInitialized = true
+        consecutiveRejections = 0
+        recentFixes.clear()
+        recentFixes.add(FilteredFix(0.0, 0.0, accuracyM, System.nanoTime()))
+    }
+
     fun reset() {
         isInitialized = false
         consecutiveRejections = 0
@@ -634,6 +656,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var rawGnssProcessor: GnssRawMeasurementProcessor? = null
     private var currentDiffTier: DifferentialTier = DifferentialTier.OFFLINE_AUTONOMOUS
 
+    // 氣壓計垂直高度濾波器與公眾室內 Beacon 定錨引擎
+    private var barometerFilter: BarometerVerticalFilter? = null
+    private var beaconManager: BeaconAnchorManager? = null
+    private var pressureSensor: Sensor? = null
+    private var currentVerticalLevel: VerticalLevel = VerticalLevel.GROUND
+    private var currentAltitudeM: Float = 0.0f
+
     private var isRunning = false
     private var lastEmittedLocation: Location? = null
 
@@ -643,6 +672,72 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             for (location in locationResult.locations) {
                 onLocationChanged(location)
             }
+        }
+    }
+
+    init {
+        barometerFilter = BarometerVerticalFilter { level, altM, desc ->
+            currentVerticalLevel = level
+            currentAltitudeM = altM
+            val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+            val humanLog = "[$timeStr] [垂直樓層切換] 樓層: ${level.displayName} | 高度: ${String.format(Locale.US, "%.1f", altM)}m | 提示: $desc"
+            val ndjson = org.json.JSONObject().apply {
+                put("t", timeStr)
+                put("evt", "VERTICAL_LEVEL_CHANGE")
+                put("level", level.name)
+                put("display_name", level.displayName)
+                put("altitude_m", altM)
+                put("desc", desc)
+            }.toString()
+            addTrajectoryLog(humanLog, ndjson)
+
+            webView.post {
+                val escapedDesc = desc.replace("'", "\\'")
+                webView.evaluateJavascript(
+                    "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${level.name}', '${level.displayName}', ${altM}, '${escapedDesc}');",
+                    null
+                )
+            }
+        }
+
+        beaconManager = BeaconAnchorManager(context) { beacon, distM ->
+            handleBeaconAnchor(beacon, distM)
+        }
+    }
+
+    private fun handleBeaconAnchor(beacon: PublicBeaconAnchor, distM: Float) {
+        val now = SystemClock.uptimeMillis()
+        val timeSinceGps = now - lastGpsFixTimeMs
+        val isGpsWeak = timeSinceGps > 1200L || (lastEmittedLocation?.accuracy ?: 100f) > 15f
+
+        val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val humanLog = "[$timeStr] [公眾Beacon定錨] 信標: ${beacon.name} | 距離: ${String.format(Locale.US, "%.1f", distM)}m | 樓層: ${beacon.level.displayName} | 座標: (${beacon.lat}, ${beacon.lon})"
+        val ndjson = org.json.JSONObject().apply {
+            put("t", timeStr)
+            put("evt", "BEACON_REANCHOR")
+            put("beacon_id", beacon.id)
+            put("beacon_name", beacon.name)
+            put("dist_m", distM)
+            put("level", beacon.level.name)
+            put("lat", beacon.lat)
+            put("lon", beacon.lon)
+        }.toString()
+        addTrajectoryLog(humanLog, ndjson)
+
+        if (isGpsWeak) {
+            kalmanFilter.reanchor(beacon.lat, beacon.lon, 2.0f)
+            Log.i(tag, "[BEACON_REANCHOR] Indoor coordinates anchored to (${beacon.lat}, ${beacon.lon}) by ${beacon.name}")
+        }
+
+        barometerFilter?.calibrateBaseline(if (beacon.level == VerticalLevel.UNDERGROUND) -3.2f else if (beacon.level == VerticalLevel.UNDERGROUND_B2) -6.5f else 0.0f)
+
+        webView.post {
+            val escapedName = beacon.name.replace("'", "\\'")
+            val escapedDesc = beacon.description.replace("'", "\\'")
+            webView.evaluateJavascript(
+                "if (window.onBeaconAnchorUpdate) window.onBeaconAnchorUpdate('${beacon.id}', '${escapedName}', ${beacon.lat}, ${beacon.lon}, ${distM}, '${beacon.level.name}', '${escapedDesc}');",
+                null
+            )
         }
     }
 
@@ -762,6 +857,18 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         } catch (e: SecurityException) {
             Log.e(tag, "SecurityException while requesting location updates", e)
         }
+
+        // 5. 註冊氣壓計感測器 (Sensor.TYPE_PRESSURE)，提供 3D 垂直樓層追蹤
+        pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
+        if (pressureSensor != null) {
+            sensorManager.registerListener(this, pressureSensor, SensorManager.SENSOR_DELAY_UI)
+            Log.i(tag, "[Pressure Sensor] Hardware TYPE_PRESSURE registered for 3D pedestrian altitude tracking.")
+        } else {
+            Log.w(tag, "[Pressure Sensor] No hardware barometer detected.")
+        }
+
+        // 6. 啟動藍牙 BLE 與 Wi-Fi 公眾室內信標掃描定錨引擎
+        beaconManager?.start()
     }
 
     /**
@@ -904,6 +1011,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 }
             }
             ntripClient?.stop()
+            beaconManager?.stop()
+            pressureSensor?.let { sensorManager.unregisterListener(this, it) }
         } catch (e: Exception) {
             Log.e(tag, "Error stopping location updates", e)
         }
@@ -965,7 +1074,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             Log.i(tag, "[PDR_STEP] Advanced to ($pdrLat, $pdrLon), stride=${String.format(Locale.US, "%.2f", userStepLengthM)}m, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
             webView.post {
                 webView.evaluateJavascript(
-                    "if (window.onLocationUpdate) window.onLocationUpdate(${pdrLat}, ${pdrLon}, 6.0, ${smoothedHeading}, 1.1);",
+                    "if (window.onLocationUpdate) window.onLocationUpdate(${pdrLat}, ${pdrLon}, 6.0, ${smoothedHeading}, 1.1);" +
+                    "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
                     null
                 )
             }
@@ -979,6 +1089,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) {
             Log.d(tag, "[STEP_DETECTED] source=HardwareStepDetector")
             onStepDetected()
+            return
+        }
+
+        if (event.sensor.type == Sensor.TYPE_PRESSURE) {
+            val pressureHpa = event.values[0]
+            val isStationary = stationaryDetector.currentState == MotionState.STATIONARY_LOCKED
+            barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary)
             return
         }
 
@@ -1147,10 +1264,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             put("heading_deg", smoothedHeading)
             put("is_l5", hasDualFrequencyL5)
             put("is_multipath", isUrbanCanyonMultipath)
+            put("vertical_level", currentVerticalLevel.name)
+            put("altitude_m", currentAltitudeM)
         }.toString()
         addTrajectoryLog(humanLog, ndjson)
 
-        Log.i(tag, "[GPS_FIX] provider=$provider, diff=${currentDiffTier.displayName}, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
+        Log.i(tag, "[GPS_FIX] provider=$provider, diff=${currentDiffTier.displayName}, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°, level=${currentVerticalLevel.name}")
 
         // 呼叫前端 JavaScript onLocationUpdate 與 onDifferentialTierUpdate 函式
         val effectiveSpeed = if (motionState == MotionState.STATIONARY_LOCKED) 0f else speed
@@ -1158,7 +1277,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         webView.post {
             webView.evaluateJavascript(
                 "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed});" +
-                "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});",
+                "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});" +
+                "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
                 null
             )
         }

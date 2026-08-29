@@ -26,9 +26,11 @@
   <main id="main-content" class="main-content" role="main">
     <h1>nmap 行動導航版</h1>
 
-    <!-- 差分定位即時品質狀態徽章 (WCAG 2.2 AAA aria-live 即時報讀) -->
-    <div id="diff-status-container" style="display: flex; justify-content: center; margin-bottom: 8px;">
+    <!-- 差分定位品質、3D立體垂直樓層與公眾 Beacon 定錨狀態徽章 (WCAG 2.2 AAA aria-live 即時報讀) -->
+    <div id="diff-status-container" style="display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
       <span id="diff-status-pill" style="font-size: 0.9em; padding: 4px 12px; border-radius: 12px; background: #1e293b; color: #38bdf8; border: 1px solid #0284c7;" role="status" aria-live="polite" aria-label="差分定位品質: 單機導航 (3-5m)">📍 單機導航 (3-5m)</span>
+      <span id="vertical-status-pill" style="font-size: 0.9em; padding: 4px 12px; border-radius: 12px; background: #1e293b; color: #a7f3d0; border: 1px solid #10b981;" role="status" aria-live="polite" aria-label="立體高程: 地面層 (±0.0m)">🏢 地面層 (±0.0m)</span>
+      <span id="beacon-status-pill" style="display: none; font-size: 0.9em; padding: 4px 12px; border-radius: 12px; background: #3b0764; color: #e9d5ff; border: 1px solid #a855f7;" role="status" aria-live="polite" aria-label="公眾信標定錨">📡 公眾信標定錨</span>
     </div>
 
     <!-- 權限不足提示橫幅 -->

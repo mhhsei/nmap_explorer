@@ -1,6 +1,8 @@
 from typing import Dict, Any, List, Optional
 from nmap.agent.explorer import ExplorerAgent
 from nmap.spatial.geometry import bearing_to_cardinal
+from nmap.spatial.vertical_level import VerticalLevelManager, LEVEL_DISPLAY_NAMES
+from nmap.spatial.beacon_database import TaiwanBeaconDatabase
 
 
 class NVDAReporter:
@@ -20,13 +22,18 @@ class NVDAReporter:
         self.announced_pois = set()
         self.last_street = ""
         self.last_junc_alert = ""
+        self.last_vertical_level = "GROUND"
+        self.last_beacon_id = ""
 
     def generate_concise_report(
         self,
         agent: ExplorerAgent,
         road_info: Optional[Dict[str, Any]] = None,
         pois: Optional[List[Dict[str, Any]]] = None,
-        intersection: Optional[Dict[str, Any]] = None
+        intersection: Optional[Dict[str, Any]] = None,
+        vertical_level: str = "GROUND",
+        altitude_m: float = 0.0,
+        beacon_anchor: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         【產生極簡「省話模式」即時播報 (VoiceVista-Style Concise Announcement)】
@@ -51,6 +58,16 @@ class NVDAReporter:
         street_name = road_info.get("street_name", "道路")
         
         parts = []
+
+        # 0. 室內公眾 Beacon / Wi-Fi 定錨回饋 (最高優先級，讓視障者即時確認自己已被精準定錨)
+        if beacon_anchor and beacon_anchor.get("id") != self.last_beacon_id:
+            parts.append(TaiwanBeaconDatabase.format_anchor_announcement(beacon_anchor, beacon_anchor.get("dist_m", 2.0)))
+            self.last_beacon_id = beacon_anchor.get("id", "")
+
+        # 0.1 垂直高程與樓層切換提醒 (天橋/地下道/地面)
+        if vertical_level != self.last_vertical_level:
+            parts.append(VerticalLevelManager.format_transition_speech(self.last_vertical_level, vertical_level, altitude_m))
+            self.last_vertical_level = vertical_level
 
         # 1. 道路變更提醒（走進新路時報讀）
         if street_name != self.last_street:
@@ -99,13 +116,17 @@ class NVDAReporter:
                     parts.append(f"📍 前方 {round(dist)}公尺【{jtype}】，{oneway}{lanes}線道約{width_approx}米{clock_str}{btn_hint}，無有聲號誌。")
                 has_junc_alert = True
 
-        # 5. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
-        corridor_pois = [p for p in pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
+        # 5. 前方前進走廊左右店家提醒（經垂直樓層過濾，排除後方店家）
+        filtered_pois = VerticalLevelManager.filter_and_prioritize_pois(pois or [], vertical_level)
+        corridor_pois = [p for p in filtered_pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
         if corridor_pois:
             corridor_pois.sort(key=lambda x: x["distance_m"])
-            poi_texts = [f"{p['name']} ({p.get('relative_direction', '')} {round(p['distance_m'])}公尺)" for p in corridor_pois[:2]]
+            poi_texts = []
+            for p in corridor_pois[:2]:
+                tag = f"[{p['level_tag']}] " if "level_tag" in p else ""
+                poi_texts.append(f"{tag}{p['name']} ({p.get('relative_direction', '')} {round(p['distance_m'])}公尺)")
             parts.append(f"前進路上：{'、'.join(poi_texts)}。")
             has_poi_alert = True
 
@@ -122,7 +143,10 @@ class NVDAReporter:
         buildings: Optional[List[Dict[str, Any]]] = None,
         intersection_analysis: Optional[Dict[str, Any]] = None,
         door_estimates: Optional[Dict[str, Any]] = None,
-        scene: Optional[Dict[str, Any]] = None
+        scene: Optional[Dict[str, Any]] = None,
+        vertical_level: str = "GROUND",
+        altitude_m: float = 0.0,
+        beacon_anchor: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         【產生 360 度周遭全景探索報告 (Full Spatial Exploration Report)】
@@ -162,6 +186,18 @@ class NVDAReporter:
         lines.append(f"• GPS座標：({round(agent.lat, 5)}, {round(agent.lon, 5)})")
         lines.append(f"• 朝向：面向{cardinal} (方位角 {int(agent.heading_deg)}°)")
 
+        # Section 1.2: 3D 垂直空間高程與公眾 Beacon 定錨
+        level_name = LEVEL_DISPLAY_NAMES.get(vertical_level, "地面層")
+        alt_str = f"{altitude_m:+.1f} 公尺" if altitude_m != 0.0 else "±0.0 公尺"
+        lines.append(f"\n【3D 垂直空間與高程】")
+        lines.append(f"• 所在立體層級：{level_name}")
+        lines.append(f"• 相對地面高程：{alt_str}")
+        if beacon_anchor:
+            dist_val = beacon_anchor.get('dist_m', 2.0)
+            lines.append(f"• 📡 公眾 Beacon 定錨：{beacon_anchor.get('name')} (距離約 {round(dist_val)} 公尺)")
+            if beacon_anchor.get("description"):
+                lines.append(f"  導引指引：{beacon_anchor.get('description')}")
+
         # Section 1.5: Real-World Physical Street Scene Architecture & Infrastructure
         if scene is None:
             scene = agent.street_scene_engine.analyze_scene(agent.lat, agent.lon, agent.heading_deg, agent.world_model, road_info=road_info)
@@ -171,8 +207,12 @@ class NVDAReporter:
 
         # Section 2: Road & Sidewalk Status
         lines.append("\n【道路與人行道】")
-        lines.append(f"• 當前道路：{road_info['street_name']} ({road_info['oneway']}，{road_info['lanes']} 車道)")
-        lines.append(f"• 人行道：{road_info['sidewalk_desc']}")
+        sname = road_info.get('street_name', '未知道路')
+        oneway = road_info.get('oneway', '雙向')
+        lanes = road_info.get('lanes', 2)
+        sw_desc = road_info.get('sidewalk_desc', '兩側平整人行道與騎樓')
+        lines.append(f"• 當前道路：{sname} ({oneway}，{lanes} 車道)")
+        lines.append(f"• 人行道：{sw_desc}")
 
         # Section 2.5: Left/Right Side Real House Numbers & Alleys (方案 A + C)
         side_scan = agent.world_model.get_left_right_side_scan(agent.lat, agent.lon, agent.heading_deg, radius_m=60.0)

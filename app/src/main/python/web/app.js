@@ -232,6 +232,39 @@ class WebAudioEngine {
     } catch (e) {}
   }
 
+  /**
+   * 3D 垂直樓層切換立體音效 (Vertical Level Transition Tone)
+   * 登上天橋：上升純四度三和弦 (C5 -> E5 -> G5)
+   * 走下地下道：下行滑音 (G5 -> E5 -> C5)
+   */
+  playVerticalTransitionTone(isAscending = true) {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      const notes = isAscending ? [523.25, 659.25, 783.99] : [783.99, 659.25, 523.25];
+      notes.forEach((freq, i) => {
+        setTimeout(() => {
+          this.playSpatialTone(freq, 'sine', 0, isAscending ? 1.0 : -1.0, -1, 0.12, 0.0, 0.38);
+        }, i * 65);
+      });
+    } catch (e) {}
+  }
+
+  /**
+   * 📡 公眾室內 iBeacon / Wi-Fi 定錨鎖定音 (Beacon Re-anchor Lock Tone)
+   * 概念：雷達波束精準鎖定鐘聲 (A5 -> E6 雙音鐘響)
+   */
+  playBeaconAnchorTone() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      this.playSpatialTone(880.0, 'sine', 0, 0, -1, 0.10, 0.00, 0.40);
+      this.playSpatialTone(1318.5, 'triangle', 0, 0, -1, 0.16, 0.08, 0.45);
+    } catch (e) {}
+  }
+
   // =========================================================================
   // 🎵 視障無障礙專屬聽覺圖標庫 (Accessible Auditory Icons / Earcons)
   // 目的：在語音朗讀前播放 100~250ms 短促清脆且具 3D 空間定位的聲音，
@@ -3871,7 +3904,10 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
                 lat: lat,
                 lon: lon,
                 heading_deg: heading,
-                accuracy: accuracy || 10.0
+                accuracy: accuracy || 10.0,
+                vertical_level: window.currentVerticalLevel || "GROUND",
+                altitude_m: window.currentAltitudeM || 0.0,
+                beacon_anchor: window.currentBeaconAnchor || null
             })
         })
         .then(res => res.json())
@@ -3931,6 +3967,73 @@ window.onDifferentialTierUpdate = function(tierName, displayName, expectedAcc) {
     if (diffElem) {
         diffElem.textContent = "📍 " + displayName;
         diffElem.setAttribute("aria-label", "差分定位品質: " + displayName);
+    }
+};
+
+/**
+ * 3D 垂直空間高程與樓層切換即時回調 (由 Android LocationSensorBridge 注入)
+ */
+window.currentVerticalLevel = "GROUND";
+window.currentAltitudeM = 0.0;
+window.onVerticalLevelUpdate = function(levelName, displayName, altitudeM, description) {
+    const oldLevel = window.currentVerticalLevel;
+    window.currentVerticalLevel = levelName;
+    window.currentAltitudeM = altitudeM;
+
+    const vertElem = document.getElementById("vertical-status-pill");
+    if (vertElem) {
+        const sign = altitudeM >= 0 ? "+" : "";
+        let icon = "🏢";
+        if (levelName === "OVERPASS") icon = "🌁";
+        else if (levelName.startsWith("UNDERGROUND")) icon = "🚇";
+        vertElem.textContent = `${icon} ${displayName} (${sign}${altitudeM.toFixed(1)}m)`;
+        vertElem.setAttribute("aria-label", `立體高程: ${displayName} (${sign}${altitudeM.toFixed(1)}公尺)`);
+    }
+
+    if (levelName !== oldLevel) {
+        const isUp = (levelName === "OVERPASS") || (oldLevel.startsWith("UNDERGROUND") && levelName === "GROUND");
+        if (window.app && window.app.audio) {
+            window.app.audio.playVerticalTransitionTone(isUp);
+        }
+        if (description && window.app && window.app.updateLiveLog) {
+            window.app.updateLiveLog(description, false, true);
+        }
+    }
+};
+
+/**
+ * 📡 公眾室內 iBeacon / Wi-Fi 定錨即時回調 (由 Android LocationSensorBridge 注入)
+ */
+window.currentBeaconAnchor = null;
+window.onBeaconAnchorUpdate = function(beaconId, beaconName, lat, lon, distM, levelName, description) {
+    window.currentBeaconAnchor = {
+        id: beaconId,
+        name: beaconName,
+        lat: lat,
+        lon: lon,
+        dist_m: distM,
+        level: levelName,
+        description: description
+    };
+
+    const beaconPill = document.getElementById("beacon-status-pill");
+    if (beaconPill) {
+        beaconPill.style.display = "inline-block";
+        beaconPill.textContent = `📡 ${beaconName.split(" ")[0]} (${distM.toFixed(1)}m)`;
+        beaconPill.setAttribute("aria-label", `已定錨公眾信標: ${beaconName}，距離約 ${Math.round(distM)} 公尺`);
+    }
+
+    if (window.app && window.app.audio) {
+        window.app.audio.playBeaconAnchorTone();
+    }
+    if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+        window.AndroidBridge.vibrate("[0, 100, 50, 100]");
+    }
+
+    const distStr = distM > 1.0 ? `約 ${Math.round(distM)} 公尺` : "正身旁";
+    const msg = `📡 偵測到【${beaconName}】(${distStr})，室內定位已精準定錨！${description ? '，' + description : ''}`;
+    if (window.app && window.app.updateLiveLog) {
+        window.app.updateLiveLog(msg, false, true);
     }
 };
 
