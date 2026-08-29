@@ -15,6 +15,9 @@ from nmap.spatial.geometry import (
     bearing_to_relative_direction
 )
 from nmap.spatial.real_poi_fetcher import RealPoiFetcher
+from nmap.spatial.taiwan_signals import TaiwanSignalManager
+from nmap.spatial.sidewalk_hazards import SidewalkHazardScanner
+from nmap.spatial.mrt_accessibility import MrtAccessibilityDirectory
 
 
 """
@@ -155,6 +158,23 @@ class WorldModel:
         self.poi_fetcher = RealPoiFetcher()
         self.next_external_poi_id = 1000000
         self.rtree_lock = threading.Lock()
+
+        # 台灣專屬公共服務與無障礙導引管理器 (SPaT號誌/變電箱雷達/捷運專屬電梯)
+        self.signal_manager = TaiwanSignalManager()
+        self.hazard_scanner = SidewalkHazardScanner()
+        self.mrt_directory = MrtAccessibilityDirectory()
+
+    def get_signal_safety(self, lat: float, lon: float, heading_deg: float, radius_m: float = 28.0) -> Optional[Dict[str, Any]]:
+        """取得前方路口交通號誌時制 (SPaT) 與有聲號誌 (APS)"""
+        return self.signal_manager.get_nearby_signal_safety(lat, lon, heading_deg, radius_m)
+
+    def get_sidewalk_hazards(self, lat: float, lon: float, heading_deg: float, max_dist_m: float = 12.0) -> List[Dict[str, Any]]:
+        """取得前方人行道實體障礙物 (變電箱、消防栓、段差)"""
+        return self.hazard_scanner.scan_forward_corridor(lat, lon, heading_deg, max_dist_m)
+
+    def get_mrt_accessible_exits(self, lat: float, lon: float, heading_deg: float, radius_m: float = 300.0) -> List[Dict[str, Any]]:
+        """取得周遭捷運出入口並優先標示專屬無障礙電梯"""
+        return self.mrt_directory.get_nearby_mrt_exits(lat, lon, heading_deg, radius_m)
 
     def build_from_osm(self, parsed_data: Dict[str, Any], ref_lat: Optional[float] = None, ref_lon: Optional[float] = None):
         """

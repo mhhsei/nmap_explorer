@@ -57,7 +57,30 @@ class NVDAReporter:
             parts.append(f"進入【{street_name}】。")
             self.last_street = street_name
 
-        # 2. 路口動態接近與經過提醒（6.0m ~ 28.0m 提前預警，< 6.0m 提示正通過）
+        # 2. 人行道實體障礙物安全防撞雷達 (Scheme 3: 變電箱/消防栓/段差) - 第一優先警示！
+        hazards = agent.world_model.get_sidewalk_hazards(agent.lat, agent.lon, agent.heading_deg, max_dist_m=8.0)
+        has_hazard_alert = False
+        if hazards:
+            h = hazards[0]
+            parts.append(h["speech_prompt"])
+            has_hazard_alert = True
+
+        # 3. 捷運專屬無障礙電梯出口提示 (Scheme 4: 捷運電梯)
+        mrt_exits = agent.world_model.get_mrt_accessible_exits(agent.lat, agent.lon, agent.heading_deg, radius_m=80.0)
+        has_mrt_alert = False
+        if mrt_exits and mrt_exits[0]["distance_m"] <= 35.0 and mrt_exits[0]["has_elevator"]:
+            m = mrt_exits[0]
+            parts.append(f"{m['speech_prompt']}")
+            has_mrt_alert = True
+
+        # 4. 路口交通號誌時制與有聲號誌提醒 (Scheme 1: SPaT & APS)
+        sig_info = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=22.0)
+        has_signal_alert = False
+        if sig_info and sig_info.get("distance_m", 99) <= 16.0:
+            parts.append(f"🚦 {sig_info['speech_prompt']}")
+            has_signal_alert = True
+
+        # 5. 路口動態接近與經過提醒（6.0m ~ 28.0m 提前預警，< 6.0m 提示正通過）
         is_intersection = intersection.get('junction_type') not in ["直行道路", None]
         has_junc_alert = False
         if is_intersection:
@@ -70,7 +93,7 @@ class NVDAReporter:
                 parts.append(f"前方 {round(dist)} 公尺有【{jtype}】。")
                 has_junc_alert = True
 
-        # 3. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
+        # 6. 前方前進走廊左右店家提醒（限制前方 1.5 ~ 25.0 公尺，排除後方店家，提前 20 秒預警）
         corridor_pois = [p for p in pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
@@ -80,7 +103,7 @@ class NVDAReporter:
             parts.append(f"前進路上：{'、'.join(poi_texts)}。")
             has_poi_alert = True
 
-        if not has_junc_alert and not has_poi_alert and street_name == self.last_street:
+        if not has_hazard_alert and not has_mrt_alert and not has_signal_alert and not has_junc_alert and not has_poi_alert and street_name == self.last_street:
             pass # 靜默保持安靜，留給使用者聽環境音的空間
 
         return " ".join(parts).strip()
@@ -168,6 +191,26 @@ class NVDAReporter:
             lines.append("• 鐘點方位路口分支：")
             for b in clock_branches[:4]:
                 lines.append(f"  - 位於 {b['clock_position']} ({b['relative_direction']}) {b['distance_m']}m：{b['road_name']}")
+
+        # Section 3.2: Traffic Signal & Acoustic Pedestrian Signals (Scheme 1)
+        sig_safety = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=35.0)
+        if sig_safety:
+            lines.append("\n【路口號誌時制 (SPaT) 與有聲號誌 (APS)】")
+            lines.append(f"• 當前狀態：{sig_safety['speech_prompt']}")
+
+        # Section 3.5: Sidewalk Hazards Radar (Scheme 3)
+        sidewalk_hazards = agent.world_model.get_sidewalk_hazards(agent.lat, agent.lon, agent.heading_deg, max_dist_m=15.0)
+        if sidewalk_hazards:
+            lines.append("\n【人行道安全防撞雷達 (變電箱/障礙物)】")
+            for h in sidewalk_hazards[:3]:
+                lines.append(f"• {h['speech_prompt']}")
+
+        # Section 3.8: MRT Accessible Elevator Exits (Scheme 4)
+        mrt_exits = agent.world_model.get_mrt_accessible_exits(agent.lat, agent.lon, agent.heading_deg, radius_m=200.0)
+        if mrt_exits:
+            lines.append("\n【捷運站立體無障礙出入口 (專屬電梯優先)】")
+            for m in mrt_exits[:3]:
+                lines.append(f"• {m['speech_prompt']} ({m['accessibility_badge']})")
 
         # Section 4: Categorized POIs (Categorized by Type for easy NVDA navigation)
         lines.append(f"\n【周遭 POI 與店家設施】（150公尺內共 {len(pois)} 處）")

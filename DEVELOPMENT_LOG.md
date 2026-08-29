@@ -49,6 +49,18 @@
 ## 📝 變更日誌 (Changelog)
 
 ### [v1.0.6 - 2026-08-29] - 語音朗讀前置 3D 聽覺圖標庫 (Earcons)、對話框無障礙焦點隔離 (Inert Shield) 與高中生白話設定精簡
+- **🇹🇼 台灣三大公共無障礙資源深度整合 (方案 1, 3, 4) (`taiwan_signals.py`, `sidewalk_hazards.py`, `mrt_accessibility.py`, `world_model.py`, `reporter.py`, `server.py`, `app.js`)**:
+  1. **方案 1：交通部 TDX 路口即時號誌時制 (SPaT) 與視障有聲號誌 (APS) 導引 (`taiwan_signals.py`)**：
+     - **有聲號誌立體引導**：建立全台重點十字路口有聲號誌 (APS) 點位庫，自動依據行人朝向辨識為「東西向」或「南北向」，精準指示「清脆鳥鳴聲（東西向許昌街）」或「沉穩布穀鳥聲（南北向館前路）」。
+     - **即時時制秒數與安全預警**：模擬與介接即時號誌循環，回報綠燈剩餘秒數；若綠燈剩餘時間 $< 10$ 秒，主動提示「秒數不足，請在斑馬線前等候下一輪綠燈」，大幅降低盲人過馬路危險。
+  2. **方案 3：國土署人行道基本資料庫與台電變電箱安全防撞雷達 (`sidewalk_hazards.py`)**：
+     - **消滅白手杖空中盲區**：白杖主要探測地面 20 公分以內，對懸掛腰部的變電箱側面、消防栓或施工窄頸極易碰撞受傷。
+     - **前進走廊碰撞預警**：掃描行進方向前方 $2.0 \sim 12.0$ 公尺、橫向偏移 $\le 2.2$ 公尺的安全走廊。一旦探測到大型箱體，提前 4~6 公尺觸發警戒聽覺圖標，並親切提供「請稍微靠左側前進」等繞行避障建議。
+  3. **方案 4：捷運站三維立體出入口與專屬無障礙電梯導引庫 (`mrt_accessibility.py`)**：
+     - **強制鎖定直通電梯**：針對台北捷運與高雄捷運等大型立體樞紐站，標記所有出口的無障礙電梯、雙向手扶梯與斜坡道屬性。
+     - **避開陡峭長階梯**：導航搜尋捷運站時，演算法強制將「直通電梯專屬出口（如台北車站 M1、西門站 4 號）」設為最高權重置頂，杜絕將使用者導引至 60 階陡峭樓梯出口的困境。
+  4. **全端連鎖整合**：
+     - 後端 `WorldModel`、`NVDAReporter`、`server.py`（提供 `/api/signals`、`/api/hazards`、`/api/mrt_exits`）與前端 `app.js`（`checkProximityAlerts` 與專屬音效派發）無縫聯動。
 - **🛰️ 國家級 e-GNSS 差分電文 (NTRIP/RTK Client) 與雙頻載波平滑引擎 (`GNSS_DIFFERENTIAL_STANDARDS.md`, `NtripDiffClient.kt`, `HatchFilter.kt`, `GnssRawMeasurementProcessor.kt`, `DifferentialTier.kt`)**:
   1. **制定五大嚴格工程檢核標準 (`GNSS_DIFFERENTIAL_STANDARDS.md`)**：
      - **標準一（時效與幀檢驗）**：差分時效 $T_{\text{age}} \le 6.0\text{s}$ 有效，$6\sim12\text{s}$ 警告加權，$> 12\text{s}$ 強制降級；嚴格執行 RTCM 3.x 幀 `0xD3` 與國際標準 CRC24Q 多項式驗證，壞包即刻丟棄。

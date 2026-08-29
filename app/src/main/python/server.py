@@ -89,6 +89,11 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
     concise_report = reporter.generate_concise_report(agent, road_info=road_info, pois=pois, intersection=intersection)
     street_scene = street_analyzer.analyze_scene(cur_lat, cur_lon, cur_head, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
 
+    # 查詢台灣專屬公共資源 (路口SPaT號誌/變電箱安全雷達/捷運專屬無障礙電梯)
+    traffic_signal = agent.world_model.get_signal_safety(cur_lat, cur_lon, cur_head)
+    sidewalk_hazards = agent.world_model.get_sidewalk_hazards(cur_lat, cur_lon, cur_head)
+    mrt_exits = agent.world_model.get_mrt_accessible_exits(cur_lat, cur_lon, cur_head)
+
     if include_full_report:
         full_report = reporter.generate_full_report(
             agent,
@@ -116,6 +121,9 @@ def build_status_dict(include_full_report: bool = True, heading_deg: float = Non
         "buildings": buildings,
         "intersection": intersection,
         "door_estimates": door_estimates,
+        "traffic_signal": traffic_signal,
+        "sidewalk_hazards": sidewalk_hazards,
+        "mrt_exits": mrt_exits,
         "full_report": full_report,
         "concise_report": concise_report,
         "street_scene": street_scene
@@ -515,6 +523,49 @@ def navigate():
         "message": msg,
         "route": agent.active_navigation
     })
+
+
+@app.route("/api/signals", method=["GET", "POST"])
+def get_signals():
+    """
+    【路口即時交通號誌 (SPaT) 與視障有聲號誌 (APS) API】
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+    lat = float(request.query.get("lat") or agent.lat)
+    lon = float(request.query.get("lon") or agent.lon)
+    heading = float(request.query.get("heading") or agent.heading_deg)
+    signal_info = agent.world_model.get_signal_safety(lat, lon, heading)
+    return json_response({"success": True, "signal": signal_info})
+
+
+@app.route("/api/hazards", method=["GET", "POST"])
+def get_hazards():
+    """
+    【人行道安全防撞雷達 API (變電箱、消防栓、施工窄頸)】
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+    lat = float(request.query.get("lat") or agent.lat)
+    lon = float(request.query.get("lon") or agent.lon)
+    heading = float(request.query.get("heading") or agent.heading_deg)
+    hazards = agent.world_model.get_sidewalk_hazards(lat, lon, heading)
+    return json_response({"success": True, "hazards": hazards})
+
+
+@app.route("/api/mrt_exits", method=["GET", "POST"])
+def get_mrt_exits():
+    """
+    【捷運站立體無障礙出入口 API (專屬電梯出口優先)】
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+    lat = float(request.query.get("lat") or agent.lat)
+    lon = float(request.query.get("lon") or agent.lon)
+    heading = float(request.query.get("heading") or agent.heading_deg)
+    exits = agent.world_model.get_mrt_accessible_exits(lat, lon, heading)
+    return json_response({"success": True, "mrt_exits": exits})
+
 
 @app.route('/api/simulation/start', method='POST')
 def simulation_start():

@@ -321,10 +321,15 @@ class WebAudioEngine {
       case "transit":
       case "bus":
       case "subway":
+      case "mrt":
+      case "elevator":
       case "train":
       case "station":
       case "crossing":
       case "traffic":
+      case "signal":
+      case "spat":
+      case "aps":
         this.playTransitTone(x, z);
         break;
       case "junction":
@@ -338,6 +343,9 @@ class WebAudioEngine {
       case "warning":
       case "danger":
       case "alert":
+      case "hazard":
+      case "obstacle":
+      case "box":
         this.playWarningTone(x, z);
         break;
       default:
@@ -1914,6 +1922,59 @@ class NmapWebApp {
 
     // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次自動掃描，杜絕腰斬吞字！
     if (now - (this.lastSpeechTime || 0) < 1800) return;
+
+    // 0. 初始化冷卻快取
+    if (!this.announcedHazardCooldown) this.announcedHazardCooldown = new Map();
+    if (!this.announcedSignalCooldown) this.announcedSignalCooldown = new Map();
+    if (!this.announcedMrtCooldown) this.announcedMrtCooldown = new Map();
+
+    // 0.1 【Scheme 3 人行道安全防撞雷達 (變電箱/消防栓/施工窄頸)】- 第一優先碰撞警戒！
+    if (data.sidewalk_hazards && data.sidewalk_hazards.length > 0) {
+      const h = data.sidewalk_hazards[0];
+      const lastHzTime = this.announcedHazardCooldown.get(h.id) || 0;
+      if (h.distance_m <= 8.0 && h.distance_m >= 1.5 && (now - lastHzTime > 25000)) {
+        this.announcedHazardCooldown.set(h.id, now);
+        this.announceObject({
+          name: h.name,
+          category: "warning",
+          distance_m: h.distance_m,
+          relative_bearing_deg: (h.lateral_offset_m || 0) > 0 ? 15 : -15
+        }, h.speech_prompt, true);
+        return;
+      }
+    }
+
+    // 0.2 【Scheme 1 交通部 TDX 路口號誌與視障有聲號誌 (SPaT & APS)】
+    if (data.traffic_signal && data.traffic_signal.distance_m <= 18.0 && data.traffic_signal.distance_m >= 4.0) {
+      const sig = data.traffic_signal;
+      const lastSigTime = this.announcedSignalCooldown.get(sig.id) || 0;
+      if (now - lastSigTime > 30000) {
+        this.announcedSignalCooldown.set(sig.id, now);
+        this.announceObject({
+          name: sig.intersection_name,
+          category: "signal",
+          distance_m: sig.distance_m,
+          relative_bearing_deg: 0
+        }, `🚦 ${sig.speech_prompt}`, false);
+        return;
+      }
+    }
+
+    // 0.3 【Scheme 4 捷運站專屬無障礙電梯出口導引】
+    if (data.mrt_exits && data.mrt_exits.length > 0) {
+      const topExit = data.mrt_exits[0];
+      const lastMrtTime = this.announcedMrtCooldown.get(topExit.exit_name) || 0;
+      if (topExit.distance_m <= 40.0 && topExit.distance_m >= 2.0 && topExit.has_elevator && (now - lastMrtTime > 40000)) {
+        this.announcedMrtCooldown.set(topExit.exit_name, now);
+        this.announceObject({
+          name: topExit.exit_name,
+          category: "transit",
+          distance_m: topExit.distance_m,
+          relative_bearing_deg: 0
+        }, `${topExit.speech_prompt}`, false);
+        return;
+      }
+    }
 
     // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 1.5 ~ 25.0 公尺，側向 <= 14.0 公尺，提前 20 秒預警)
     const realtimePois = this.getRealtimePois();
