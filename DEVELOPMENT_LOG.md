@@ -48,7 +48,7 @@
 
 ## 📝 變更日誌 (Changelog)
 
-### [v1.0.5 - 2026-08-28] - Android 全廠牌高相容性適應、GPS 乒乓與卡爾曼死鎖消除、16 方位遲滯防抖、門牌單雙號互補仲裁、拓撲路口度數修正與語音排程器
+### [v1.0.6 - 2026-08-29] - 語音朗讀前置 3D 聽覺圖標庫 (Earcons)、對話框無障礙焦點隔離 (Inert Shield) 與高中生白話設定精簡
 - **🛡️ WCAG 2.2 AAA 無障礙模態對話框焦點隔離 (Modal Inert Shield & Focus Trap) 與白話設定精簡 (`index.html`, `app.js`, `style.css`)**:
   1. **消滅 TalkBack 滑動穿透至前一層背景 (Modal Inert Shield)**：
      - **語意結構重構**：將主畫面所有內容（標題、權限橫幅、搜尋列、按鈕群、歷史訊息清單）完整包裝於獨立語意容器 `<main id="main-content">` 中，與所有對話框解耦並列。
@@ -64,10 +64,6 @@
        - `正北重震與齒輪觸覺` ➔ **正北與刻度震動**（轉到正北方時會震動提醒，轉身時也有齒輪感震動）。
        - `朗讀前播放辨識短音效` ➔ **朗讀前先播提示音**（報出店家或地標前先播短音效，聽聲音就能秒懂是什麼地點）。
      - 分類標籤改為「🧭 轉向與方位」、「📳 震動與提醒」、「🎵 地點提示音」，試聽按鈕簡潔標註為「🏪 商店音效」、「🏛️ 地標音效」等，報讀說明 1 秒內清楚易懂。
-- **🔑 永久固定簽名金鑰與全方位 APK 自動更新修復 (`nmap_keystore.jks`, `AppUpdateManager.kt`, `build.gradle.kts`, `build-and-release.yml`)**:
-  1. **消滅簽名不相容（INSTALL_FAILED_UPDATE_INCOMPATIBLE）**：建立專屬固定 Keystore 並納入專案，綁定 `release` 與 `debug` 建置類型。徹底消除 GitHub Actions 每次在臨時虛擬機隨機生成臨時金鑰引發「無法安裝應用程式 / 發生問題」的致命缺陷，確保全平台與日後所有更新版本簽名永久一致。
-  2. **強化在線自動更新管線**：升級 `AppUpdateManager.kt` 支援完整 HTTP 3xx 重新導向串流；下載目錄移至外部儲存空間（防止 Android 14+ 內部快取沙盒隔離阻擋安裝）；安裝前調度 `packageManager.getPackageArchiveInfo` 進行 APK 完整性與套件識別碼雙重校驗；顯式授權 FileProvider URI 給系統安裝器。
-  3. **正式 Release 建置標準化**：GitHub Actions 改採 `assembleRelease` 正式編譯並打包經由固定金鑰簽署之純淨 Release APK（非 debuggable）。
 - **🎵 語音朗讀前置聽覺圖標庫 (Auditory Icons / Earcons) 與 3D 空間立體聲定位 (`app.js`, `index.html`)**:
   1. **物件類別專屬音效設計 (Short & Crisp Earcons)**：
      - 🏪 **商店 / 超商 / 餐飲 (`playShopTone`)**：上升純五度雙音階叮咚聲（$E_5$ 659.3Hz $\to$ $B_5$ 987.8Hz，正弦波），時長約 210ms，清脆歡快，象徵便利商店進門與收銀機鈴聲。
@@ -83,8 +79,14 @@
   3. **物件智慧研判器 (`classifyPoiCategory`)**：
      - 自動解析 POI 的 `category`、`type`、`tags` 與真實中文店名（如「台北車站 (忠孝) 公車站牌」➔ 交通；「二二八和平公園」➔ 地標；「壽德大樓」➔ 建築；「7-Eleven」➔ 商店），100% 精準指派對應音效。
   4. **無障礙偏好設定與互動試聽面板**：
-     - 偏好設定對話框新增「朗讀前播放辨識短音效」開關（預設開啟，儲存於 LocalStorage）。
+     - 偏好設定對話框新增「朗讀前先播提示音」開關（預設開啟，儲存於 LocalStorage）。
      - 提供 6 顆專屬試聽按鈕（🏪 商店、🏛️ 地標、🏢 建築、🚏 交通、📍 路口、⚠️ 警示），點選立即播放 3D 音效並由語音提示說明特徵，方便初次使用者熟悉與辨認。
+- **🔑 永久固定簽名金鑰與全方位 APK 自動更新修復 (`nmap_keystore.jks`, `AppUpdateManager.kt`, `build.gradle.kts`, `build-and-release.yml`)**:
+  1. **消滅簽名不相容（INSTALL_FAILED_UPDATE_INCOMPATIBLE）**：建立專屬固定 Keystore 並納入專案，綁定 `release` 與 `debug` 建置類型。徹底消除 GitHub Actions 每次在臨時虛擬機隨機生成臨時金鑰引發「無法安裝應用程式 / 發生問題」的致命缺陷，確保全平台與日後所有更新版本簽名永久一致。
+  2. **強化在線自動更新管線**：升級 `AppUpdateManager.kt` 支援完整 HTTP 3xx 重新導向串流；下載目錄移至外部儲存空間（防止 Android 14+ 內部快取沙盒隔離阻擋安裝）；安裝前調度 `packageManager.getPackageArchiveInfo` 進行 APK 完整性與套件識別碼雙重校驗；顯式授權 FileProvider URI 給系統安裝器。
+  3. **正式 Release 建置標準化**：GitHub Actions 改採 `assembleRelease` 正式編譯並打包經由固定金鑰簽署之純淨 Release APK（非 debuggable）。
+
+### [v1.0.5 - 2026-08-28] - Android 全廠牌高相容性適應、GPS 乒乓與卡爾曼死鎖消除、16 方位遲滯防抖、門牌單雙號互補仲裁、拓撲路口度數修正與語音排程器
 - **🛰️ GPS 單一來源架構 (Single Source of Truth) 與防乒乓拉扯 (`LocationSensorBridge.kt`)**:
   1. **跨廠牌階層回退**：若裝置具備 Google Play Services（台灣絕大多數手機標配），僅啟用 `FusedLocationProviderClient`，完全關閉 `LocationManager` 的 GPS/Network 雙通道監聽，徹底消滅 10~37 公尺的 A-B-A 乒乓震盪；若無 Google 服務（如純 AOSP/特定客製 ROM），則自動降級回退至原生 `GPS_PROVIDER`。
   2. **靜止死鎖看門狗安全破鎖 (Deadman Safety Breakout)**：取消靜止狀態下粗暴的「座標 100% 凍結 return」。當 GPS 連續位移 $> 5.0$ 公尺（且精度 $< 15$ 米）或瞬時速度 $> 0.55\text{ m/s}$ 時，判定為真實物理行走，強制喚醒卡爾曼濾波器並重新對齊，徹底消滅在許昌街行走時座標定格長達 85 秒的 Bug。

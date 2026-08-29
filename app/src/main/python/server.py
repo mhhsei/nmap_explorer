@@ -571,7 +571,7 @@ def check_update():
     """
     import urllib.request
     import json
-    current_version = "1.0.5"
+    current_version = "1.0.6"
     try:
         api_url = "https://api.github.com/repos/mhhsei/nmap_explorer/releases/latest"
         req = urllib.request.Request(
