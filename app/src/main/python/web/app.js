@@ -624,6 +624,7 @@ class NmapWebApp {
     this.serverLat = null;
     this.lastData = null;
     this.announcedPoiCooldown = new Map();
+    this.arrivedPoiCooldown = new Map();
     this.lastIntersectionAlertTime = 0;
     this.lastSpeechTime = Date.now();
     this.currentStreetName = null;
@@ -2247,9 +2248,34 @@ class NmapWebApp {
       }
     }
 
-    // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 1.5 ~ 25.0 公尺，側向 <= 14.0 公尺，提前 20 秒預警)
+    // 0. 近身抵達感知 (Proximity Arrival Sensing: 距離 <= 3.8 公尺，宣告已抵達店家)
     const realtimePois = this.getRealtimePois();
     if (realtimePois && realtimePois.length > 0) {
+      if (!this.arrivedPoiCooldown) this.arrivedPoiCooldown = new Map();
+
+      // 優先尋找身邊 <= 3.8 公尺內的抵達目標（如超商、餐廳、重要地標）
+      const arrivalCandidate = realtimePois.find((p) => {
+        if (this.isIgnoredPoi(p.name, p.category)) return false;
+        return p.distance_m <= 3.8;
+      });
+
+      if (arrivalCandidate) {
+        const cleanedName = this.cleanPoiName(arrivalCandidate.name);
+        const lastArrival = this.arrivedPoiCooldown.get(cleanedName) || this.arrivedPoiCooldown.get(arrivalCandidate.name) || 0;
+        if (now - lastArrival > 60000) { // 60秒冷卻，進店後不重覆疲勞轟炸
+          this.arrivedPoiCooldown.set(cleanedName, now);
+          this.arrivedPoiCooldown.set(arrivalCandidate.name, now);
+          this.announcedPoiCooldown.set(cleanedName, now); // 同步刷新走廊冷卻
+          this.announcedPoiCooldown.set(arrivalCandidate.name, now);
+
+          const arrivalMsg = `🎉 已抵達【${cleanedName}】門口`;
+          if (this.audio) this.audio.playArrival();
+          this.announceObject(arrivalCandidate, arrivalMsg, true);
+          return; // 優先報讀抵達，絕不與走廊或路口混雜
+        }
+      }
+
+      // 1. 前進路徑走廊店家掃描 (Forward Corridor POIs: 前方 0.0 ~ 25.0 公尺，側向 <= 14.0 公尺，提前 20 秒預警)
       const corridorPois = realtimePois.filter((p) => {
         const d = p.distance_m;
         const relBearing = Math.abs(p.relative_bearing_deg || 0);
@@ -2258,9 +2284,9 @@ class NmapWebApp {
         // 排除停車格等雜訊設施
         if (this.isIgnoredPoi(p.name, p.category)) return false;
 
-        // 嚴格前向/側向走廊：排除後方與夾角 > 95° 的店家
+        // 嚴格前向/側向走廊：排除後方與夾角 > 90° 的店家（下限改為 0.0m，徹底消滅 1.5m 盲區）
         const isForwardOrSide = !dir.includes("後方") && relBearing <= 90;
-        return d <= 25.0 && d >= 1.5 && isForwardOrSide;
+        return d <= 25.0 && d >= 0.0 && isForwardOrSide;
       });
 
       if (corridorPois.length > 0) {
@@ -2321,8 +2347,10 @@ class NmapWebApp {
         
         // B. 踏入 / 正通過路口 (< 6.0m)
         else if (juncDist < 6.0) {
-          if (this.currentJunctionState !== "PASSING") {
+          const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
+          if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 4000) {
             this.currentJunctionState = "PASSING";
+            this.lastIntersectionAlertTime = now;
             const msg = `📍 正通過【${juncType}】，請直線前進。`;
             this.announceJunction(msg, false);
             return;

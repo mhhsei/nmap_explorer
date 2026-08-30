@@ -84,6 +84,16 @@ class VerticalLevelManager:
             name = p.get("name", "")
             cat = p.get("category", "")
             floor = p.get("floor", "1F")
+            dist = float(p.get("distance_m", 999.0))
+
+            # 近身店家豁免條款 (距離 <= 5.0m)：
+            # 即使用戶因氣壓飄移暫時誤觸 OVERPASS，身邊 5 米內的實體民生店家（如超商、餐廳門口）
+            # 視為絕對有效目標，強制納入 prioritized 佇列，絕不靜音！
+            if dist <= 5.0:
+                p_copy = dict(p)
+                p_copy["level_tag"] = "📍 門前近處"
+                prioritized.append(p_copy)
+                continue
 
             if current_level == LEVEL_OVERPASS:
                 is_elevated = (

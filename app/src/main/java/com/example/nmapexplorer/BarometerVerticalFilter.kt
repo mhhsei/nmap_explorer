@@ -65,6 +65,11 @@ class BarometerVerticalFilter(
     var currentLevel: VerticalLevel = VerticalLevel.GROUND
         private set
 
+    // 遲滯與防抖鎖定計時器
+    private var lastLevelTransitionTimeMs = 0L
+    private var sustainedCandidateLevel: VerticalLevel? = null
+    private var sustainedStartTimeMs = 0L
+
     companion object {
         /** 判定為人行天橋的進入高度門檻 (公尺)：爬上天橋通常高於地面 3.5 公尺以上 */
         const val OVERPASS_ENTER_ALTITUDE_M = 3.5f
@@ -81,11 +86,20 @@ class BarometerVerticalFilter(
         /** 離開地下二樓回到 B1 的退出門檻 (公尺) */
         const val UNDERGROUND_B2_EXIT_ALTITUDE_M = -4.8f
 
-        /** 氣壓感測器量測雜訊變異數 R (m^2)：ICP10101 等級感測器極為穩定，約 0.09 m^2 (標準差 0.3m) */
-        const val MEASUREMENT_NOISE_R = 0.09f
+        /** 靜止手持時氣壓感測器量測雜訊變異數 R (m^2)：約 0.12 m^2 (標準差 0.35m) */
+        const val MEASUREMENT_NOISE_R = 0.12f
 
         /** 垂直加速度過程雜訊 q_acc (m^2/s^3)：步行上下樓梯時的垂直擾動 */
         const val PROCESS_NOISE_Q_ACC = 0.06f
+
+        /** 人類垂直步行生理極限速度 (m/s)：上下樓梯正常為 0.2~0.4 m/s，奔跑極限不超過 0.75 m/s */
+        const val MAX_PHYSICAL_VERTICAL_VELOCITY_MPS = 0.75f
+
+        /** 樓層切換防抖冷卻鎖定 (毫秒)：切換後至少維持 8 秒，禁止瘋狂跳針切換 */
+        const val LEVEL_TRANSITION_COOLDOWN_MS = 8000L
+
+        /** 進入新樓層所需的持續穩定時間 (毫秒)：高度超標必須連續維持 2.0 秒，徹底消滅褲管活塞脈衝 */
+        const val SUSTAINED_DURATION_MS = 2000L
     }
 
     /**
@@ -94,8 +108,16 @@ class BarometerVerticalFilter(
      * @param pressureHpa 氣壓計數值 (hPa)
      * @param timestampNs 納秒時間戳記
      * @param isStationaryOnGround 使用者是否正處於地面靜止狀態（用於平滑微調基準氣壓）
+     * @param isWalking 使用者是否正在行走步行（用於動態放大阻尼，過濾步態晃動）
+     * @param isPocketLikely 手機是否被判定處於口袋或包包中（開啟強力阻尼，抵抗微壓活塞擠壓）
      */
-    fun updatePressure(pressureHpa: Float, timestampNs: Long, isStationaryOnGround: Boolean = false): Pair<VerticalLevel, Float> {
+    fun updatePressure(
+        pressureHpa: Float, 
+        timestampNs: Long, 
+        isStationaryOnGround: Boolean = false,
+        isWalking: Boolean = false,
+        isPocketLikely: Boolean = false
+    ): Pair<VerticalLevel, Float> {
         if (pressureHpa <= 300f || pressureHpa >= 1100f) {
             return Pair(currentLevel, stateAltitudeM)
         }
@@ -145,16 +167,27 @@ class BarometerVerticalFilter(
         val newP11 = p11 + q11
 
         // 4. 卡爾曼測量更新 (Measurement Update Step)
+        // 自適應動態量測雜訊 R：
+        // • 手機在口袋活塞擠壓中：R 放大至 5.50 (強力阻尼低通濾波，吃掉 8hPa 震盪)
+        // • 正常行走晃動：R 放大至 1.60 (中度阻尼)
+        // • 靜止手持：R 維持 0.12 (高靈敏度)
+        val dynamicR = when {
+            isPocketLikely -> 5.50f
+            isWalking -> 1.60f
+            else -> MEASUREMENT_NOISE_R
+        }
+
         // 新息 (Innovation): y = z - h_pred
         val innovation = rawRelativeAltitudeM - predAltitude
-        val s = newP00 + MEASUREMENT_NOISE_R
+        val s = newP00 + dynamicR
 
         // 卡爾曼增益 K = P * H^T / S
         val k0 = newP00 / s
         val k1 = newP10 / s
 
         stateAltitudeM = predAltitude + k0 * innovation
-        stateVelocityMps = predVelocity + k1 * innovation
+        // 限制垂直升降速度至人體生理極限 (防範單一脈衝引發速度暴走)
+        stateVelocityMps = (predVelocity + k1 * innovation).coerceIn(-MAX_PHYSICAL_VERTICAL_VELOCITY_MPS, MAX_PHYSICAL_VERTICAL_VELOCITY_MPS)
 
         // 更新協方差矩陣 P = (I - K * H) * P
         p00 = (1.0f - k0) * newP00
@@ -162,7 +195,7 @@ class BarometerVerticalFilter(
         p10 = -k1 * newP00 + newP10
         p11 = -k1 * newP01 + newP11
 
-        // 5. 雙向防抖遲滯狀態機 (Hysteresis Level State Machine)
+        // 5. 雙向防抖遲滯與持續時間檢驗狀態機 (Sustained Hysteresis Level State Machine)
         evaluateLevelTransition(stateAltitudeM)
 
         return Pair(currentLevel, stateAltitudeM)
@@ -170,45 +203,73 @@ class BarometerVerticalFilter(
 
     /**
      * 遲滯狀態機判斷：杜絕在樓梯邊緣上下徘徊時頻繁跳針切換
+     * 結合「持續時間門檻 (2.0s)」與「轉態防抖鎖定 (8.0s)」，徹底消滅口袋活塞誤判
      */
     private fun evaluateLevelTransition(altM: Float) {
+        val nowMs = SystemClock.uptimeMillis()
         val oldLevel = currentLevel
-        var newLevel = oldLevel
+        var rawTargetLevel = oldLevel
 
         when (oldLevel) {
             VerticalLevel.GROUND -> {
                 if (altM >= OVERPASS_ENTER_ALTITUDE_M) {
-                    newLevel = VerticalLevel.OVERPASS
+                    rawTargetLevel = VerticalLevel.OVERPASS
                 } else if (altM <= UNDERGROUND_B1_ENTER_ALTITUDE_M) {
-                    newLevel = VerticalLevel.UNDERGROUND
+                    rawTargetLevel = VerticalLevel.UNDERGROUND
                 }
             }
             VerticalLevel.OVERPASS -> {
                 if (altM < OVERPASS_EXIT_ALTITUDE_M) {
-                    newLevel = VerticalLevel.GROUND
+                    rawTargetLevel = VerticalLevel.GROUND
                 }
             }
             VerticalLevel.UNDERGROUND -> {
                 if (altM > UNDERGROUND_B1_EXIT_ALTITUDE_M) {
-                    newLevel = VerticalLevel.GROUND
+                    rawTargetLevel = VerticalLevel.GROUND
                 } else if (altM <= UNDERGROUND_B2_ENTER_ALTITUDE_M) {
-                    newLevel = VerticalLevel.UNDERGROUND_B2
+                    rawTargetLevel = VerticalLevel.UNDERGROUND_B2
                 }
             }
             VerticalLevel.UNDERGROUND_B2 -> {
                 if (altM > UNDERGROUND_B2_EXIT_ALTITUDE_M) {
-                    newLevel = VerticalLevel.UNDERGROUND
+                    rawTargetLevel = VerticalLevel.UNDERGROUND
                 }
             }
         }
 
-        if (newLevel != oldLevel) {
-            currentLevel = newLevel
-            val altSign = if (altM >= 0) "+" else ""
-            val desc = "📍 偵測${newLevel.spokenPrefix}（高度 ${altSign}${String.format(Locale.US, "%.1f", altM)} 公尺），已切換為${newLevel.displayName}圖資。"
-            Log.i(tag, "[LEVEL_TRANSITION] ${oldLevel.name} -> ${newLevel.name} (alt: ${altM}m, vz: ${String.format(Locale.US, "%.2f", stateVelocityMps)}m/s)")
-            onLevelChanged(newLevel, altM, desc)
+        // 1. 若目標樓層回到目前所在樓層，立即重置持續計時器
+        if (rawTargetLevel == oldLevel) {
+            sustainedCandidateLevel = null
+            sustainedStartTimeMs = 0L
+            return
         }
+
+        // 2. 轉態防抖鎖定：若距離上次樓層切換未滿 8 秒，直接抑制跳轉
+        if (nowMs - lastLevelTransitionTimeMs < LEVEL_TRANSITION_COOLDOWN_MS) {
+            return
+        }
+
+        // 3. 持續時間檢驗：高度超標必須連續維持超過 2.0 秒，絕不容許褲管活塞瞬態脈衝誤觸
+        if (sustainedCandidateLevel != rawTargetLevel) {
+            sustainedCandidateLevel = rawTargetLevel
+            sustainedStartTimeMs = nowMs
+            return
+        }
+
+        if (nowMs - sustainedStartTimeMs < SUSTAINED_DURATION_MS) {
+            return
+        }
+
+        // 4. 正式批准樓層切換
+        currentLevel = rawTargetLevel
+        lastLevelTransitionTimeMs = nowMs
+        sustainedCandidateLevel = null
+        sustainedStartTimeMs = 0L
+
+        val altSign = if (altM >= 0) "+" else ""
+        val desc = "📍 偵測${rawTargetLevel.spokenPrefix}（高度 ${altSign}${String.format(Locale.US, "%.1f", altM)} 公尺），已切換為${rawTargetLevel.displayName}圖資。"
+        Log.i(tag, "[LEVEL_TRANSITION] ${oldLevel.name} -> ${rawTargetLevel.name} (alt: ${altM}m, vz: ${String.format(Locale.US, "%.2f", stateVelocityMps)}m/s)")
+        onLevelChanged(rawTargetLevel, altM, desc)
     }
 
     /**

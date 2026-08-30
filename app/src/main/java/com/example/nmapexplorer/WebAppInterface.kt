@@ -663,6 +663,20 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 addEntry("7_Android系統Logcat日誌_system_logcat.log", logText)
             }
 
+            // 同步複製一份至外部儲存空間 (/sdcard/Android/data/com.example.nmapexplorer/files/logs/)
+            // 讓電腦端插上 USB 線時，可直接透過 adb pull 一鍵拉取，不需手動點擊分享
+            try {
+                val extLogDir = context.getExternalFilesDir("logs")
+                if (extLogDir != null) {
+                    if (!extLogDir.exists()) extLogDir.mkdirs()
+                    val extZip = File(extLogDir, zipFileName)
+                    zipFile.copyTo(extZip, overwrite = true)
+                    Log.i(tag, "[LOG_BACKUP] Auto-backed up diagnostic zip to: ${extZip.absolutePath}")
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to copy diagnostic zip to external logs dir", e)
+            }
+
             // 透過 Android FileProvider 安全產生 URI 並呼叫系統分享介面
             val uri = FileProvider.getUriForFile(
                 context,

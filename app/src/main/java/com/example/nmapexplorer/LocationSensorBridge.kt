@@ -70,6 +70,10 @@ class StationaryMotionDetector(
     // 最後一次偵測到實體步伐的時間戳記 (uptimeMillis)
     private var lastStepTimestampMs = 0L
 
+    // 當前加速度模長滑動變異數
+    var currentAccVariance: Float = 0f
+        private set
+
     // 當前運動狀態
     var currentState: MotionState = MotionState.STATIONARY_LOCKED
         private set
@@ -91,6 +95,14 @@ class StationaryMotionDetector(
         } catch (e: Exception) {
             System.currentTimeMillis()
         }
+    }
+
+    /**
+     * 檢查是否已超過 1.4 秒未踩出步伐
+     */
+    fun isStepTimedOut(): Boolean {
+        val now = getNowMs()
+        return (now - lastStepTimestampMs) > STEP_TIMEOUT_MS
     }
 
     /**
@@ -133,6 +145,7 @@ class StationaryMotionDetector(
             accVarSum += diff * diff
         }
         val accVariance = accVarSum / windowSize
+        currentAccVariance = accVariance
 
         val now = getNowMs()
         val stepTimedOut = (now - lastStepTimestampMs) > STEP_TIMEOUT_MS
@@ -354,9 +367,13 @@ class PedestrianKalmanFilter {
                 ((rawLat - lockedLat) * mPerLat).pow(2)
             )
 
-            // 破鎖仲裁：若物理位移 > 4.8m 且 GPS 精度合理 (< 14m)，或移動速度 > 0.55m/s：
-            // 代表使用者已開始走動，立即解除座標凍結重新對齊！
-            if ((distFromLocked > 4.8 && accuracyMeters < 14.0f) || (speedMps > 0.55f && accuracyMeters < 14.0f)) {
+            // 破鎖仲裁：
+            // A. 一般位移破鎖：物理位移 > 4.8m 且 GPS 精度合理 (< 22.0m)，或移動速度 > 0.55m/s 且精度合理 (< 22.0m)
+            // B. 騎樓/進店室內邁步破鎖：若使用者正在走動踩步且位移 > 3.0m，放寬精度限制至 28.0m，絕不讓 15m 精度把使用者凍死在店門外！
+            val isDisplaced = (distFromLocked > 4.8 && accuracyMeters < 22.0f)
+            val isSpeedBreakout = (speedMps > 0.55f && accuracyMeters < 22.0f)
+            val isIndoorStepBreakout = (distFromLocked > 3.0 && accuracyMeters < 28.0f && speedMps > 0.25f)
+            if (isDisplaced || isSpeedBreakout || isIndoorStepBreakout) {
                 Log.w("LocationSensorBridge", "[KALMAN_BREAKOUT] Stationary lock broken by displacement: dist=${String.format(Locale.US, "%.1f", distFromLocked)}m, speed=${speedMps}m/s, acc=${accuracyMeters}m")
                 anchorLat = rawLat
                 anchorLon = rawLon
@@ -670,6 +687,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var barometerFilter: BarometerVerticalFilter? = null
     private var beaconManager: BeaconAnchorManager? = null
     private var pressureSensor: Sensor? = null
+    private var proximitySensor: Sensor? = null
+    private var isProximityNear: Boolean = false
+    private var lastGpsAccuracyM: Float = 10.0f
     private var currentVerticalLevel: VerticalLevel = VerticalLevel.GROUND
     private var currentAltitudeM: Float = 0.0f
 
@@ -878,6 +898,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             Log.w(tag, "[Pressure Sensor] No hardware barometer detected.")
         }
 
+        // 5.1 註冊距離/接近感測器 (Sensor.TYPE_PROXIMITY)，用於口袋模式自動判定
+        proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+        if (proximitySensor != null) {
+            sensorManager.registerListener(this, proximitySensor, SensorManager.SENSOR_DELAY_NORMAL)
+            Log.i(tag, "[Proximity Sensor] Hardware TYPE_PROXIMITY registered for pocket detection.")
+        }
+
         // 6. 啟動藍牙 BLE 與 Wi-Fi 公眾室內信標掃描定錨引擎
         beaconManager?.start()
     }
@@ -1074,9 +1101,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             userStepLengthM = 0.8f * userStepLengthM + 0.2f * max(0.45f, min(0.85f, estimatedSL))
         }
 
-        // 若 GPS 中斷超過 0.7 秒且濾波器已初始化：在騎樓/地下道/兩次GPS間隙啟動 PDR 平滑推算，消滅滯後
+        // 若 GPS 中斷超過 0.5 秒，或者當前 GPS 精度較差 (> 12.0m，代表身處騎樓、室內或大樓陰影區) 時：
+        // 由實體步伐推算 (PDR) 介入推進，消滅進店或騎樓時的座標停滯
         val timeSinceGps = now - lastGpsFixTimeMs
-        if (timeSinceGps > 700L && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
+        val isGpsWeakOrIndoor = lastGpsAccuracyM > 12.0f
+        if ((timeSinceGps > 500L || isGpsWeakOrIndoor) && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
             val (pdrLat, pdrLon) = kalmanFilter.advanceStep(userStepLengthM.toDouble(), smoothedHeading.toDouble())
             val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
             val humanLog = "[$timeStr] [騎樓PDR計步] 座標: ($pdrLat, $pdrLon) | 自適應步長: ${String.format(Locale.US, "%.2f", userStepLengthM)}m | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}°"
@@ -1112,10 +1141,19 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             return
         }
 
+        if (event.sensor.type == Sensor.TYPE_PROXIMITY) {
+            val dist = event.values[0]
+            val maxRange = event.sensor.maximumRange
+            isProximityNear = (dist < 4.0f && dist < maxRange)
+            return
+        }
+
         if (event.sensor.type == Sensor.TYPE_PRESSURE) {
             val pressureHpa = event.values[0]
             val isStationary = stationaryDetector.currentState == MotionState.STATIONARY_LOCKED
-            barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary)
+            val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut() || stationaryDetector.currentAccVariance > 0.28f
+            val isPocketLikely = isProximityNear && isWalking
+            barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely)
             return
         }
 
@@ -1221,6 +1259,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         val rawLat = location.latitude
         val rawLon = location.longitude
         val acc = if (location.hasAccuracy()) location.accuracy else 10f
+        lastGpsAccuracyM = acc
         val bearing = if (location.hasBearing()) location.bearing else -1f
         val speed = if (location.hasSpeed()) location.speed else 0f
         lastGpsSpeedMps = speed
