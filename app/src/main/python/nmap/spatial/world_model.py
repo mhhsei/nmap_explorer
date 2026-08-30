@@ -83,6 +83,14 @@ class SpatialPOI:
         self.payment = raw_poi.get("payment", "")
         self.takeaway = raw_poi.get("takeaway", "")
         self.tags = raw_poi.get("tags", {})
+        
+        # 門牌地址與樓層完整屬性封裝
+        self.address = raw_poi.get("address", "") or self.tags.get("address", "") or self.tags.get("addr:full", "")
+        self.street = raw_poi.get("street", "") or self.tags.get("addr:street", "")
+        self.housenumber = raw_poi.get("housenumber", "") or self.tags.get("addr:housenumber", "")
+        self.floor = raw_poi.get("floor", "") or self.tags.get("floor", "") or "1F"
+        self.legal_name = raw_poi.get("legal_name", "") or self.tags.get("legal_name", "")
+        self.business_desc = raw_poi.get("business_desc", "") or self.tags.get("business_desc", "")
 
     def calculate_relative(self, ref_lat: float, ref_lon: float, heading_deg: float) -> Dict[str, Any]:
         """
@@ -99,6 +107,11 @@ class SpatialPOI:
         clock = bearing_to_clock_position(rel_brng)
         cardinal = bearing_to_cardinal(target_brng)
         rel_dir = bearing_to_relative_direction(rel_brng)
+
+        # 組裝可視化門牌地址
+        formatted_addr = self.address
+        if not formatted_addr and self.street:
+            formatted_addr = f"{self.street} {self.housenumber}號".strip() if self.housenumber else self.street
 
         return {
             "id": self.id,
@@ -121,6 +134,12 @@ class SpatialPOI:
             "brand": self.brand,
             "payment": self.payment,
             "takeaway": self.takeaway,
+            "address": formatted_addr,
+            "street": self.street,
+            "housenumber": self.housenumber,
+            "floor": self.floor,
+            "legal_name": self.legal_name,
+            "business_desc": self.business_desc,
             "tags": self.tags
         }
 
@@ -525,6 +544,27 @@ class WorldModel:
                 if rel["distance_m"] <= radius_m:
                     if not rel.get("name"):
                         rel["name"] = clean_poi_name
+                    
+                    # 門牌地址智能補全：若店家未直接記載門牌，自動結合鄰近道路與門牌空間索引
+                    if not rel.get("address"):
+                        nr, _ = self.find_nearest_road(poi.lat, poi.lon)
+                        if nr and nr.get("name") and nr["name"] not in ("未命名道路", "無名路"):
+                            r_name = nr["name"]
+                            best_door = ""
+                            best_dist = 28.0
+                            r_deg = 28.0 / 111139.0
+                            d_bounds = (poi.lon - r_deg, poi.lat - r_deg, poi.lon + r_deg, poi.lat + r_deg)
+                            for d_item in self.house_number_rtree.intersection(d_bounds, objects=True):
+                                h_obj = d_item.object
+                                d_dist = haversine_distance(poi.lat, poi.lon, h_obj["lat"], h_obj["lon"])
+                                if d_dist < best_dist:
+                                    best_dist = d_dist
+                                    best_door = str(h_obj.get("housenumber", "")).rstrip("號")
+                            if best_door:
+                                rel["address"] = f"{r_name} {best_door}號"
+                            else:
+                                rel["address"] = r_name
+
                     results.append(rel)
 
             # 2. 同步納入周遭具名社區大樓與地標建築物（如：宏國青山、大旭地社區等）
@@ -586,6 +626,7 @@ class WorldModel:
                         "wheelchair": "♿ 具備 1 樓平整入口",
                         "level": "1F",
                         "floor": "1F",
+                        "address": b_name if "號" in b_name else "",
                         "tags": {"building": "residential"}
                     })
 

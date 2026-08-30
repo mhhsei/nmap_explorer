@@ -52,8 +52,79 @@ class PoiDetailFetcher:
         "郵局": {"hours": "營業時間：週一至週五 08:30 - 17:00", "wheelchair": "♿ 具備無障礙坡道與專用服務鈴", "category_desc": "郵政與儲匯金融"},
     }
 
+    CATEGORY_MAP = {
+        "convenience": "便利超商",
+        "supermarket": "生鮮超市",
+        "cafe": "咖啡簡餐/甜點",
+        "restaurant": "餐飲小吃美食",
+        "fast_food": "速食餐飲",
+        "bakery": "西點烘焙/麵包",
+        "pharmacy": "健保特約藥局",
+        "clinic": "西醫專科診所",
+        "dentist": "牙醫診所",
+        "bank": "銀行金融機構",
+        "atm": "自動櫃員機 ATM",
+        "post_office": "中華郵政/郵局",
+        "beverages": "手搖手作飲品",
+        "hairdresser": "美髮造型沙龍",
+        "beauty": "美容美甲生活館",
+        "clothes": "服飾精品",
+        "department_store": "百貨量販",
+        "hardware": "五金水電居家",
+        "laundry": "自助洗衣/乾洗",
+        "motorcycle": "機車買賣維修",
+        "optician": "專業眼鏡驗光",
+        "hospital": "區域大型醫院",
+        "school": "教育學校機構",
+        "stationery": "文具事務用品",
+        "gym": "運動休閒健身",
+        "barber": "專業理髮店",
+        "place_of_worship": "寺廟宮廟/信仰中心",
+        "residential": "地標社區大樓"
+    }
+
     def __init__(self, cache_manager=None):
         pass
+
+    @classmethod
+    def infer_category_desc(cls, name: str, raw_cat: str = "") -> str:
+        """【智能推導店家之繁體中文商業類別】"""
+        raw_c = (raw_cat or "").lower()
+        for k, v in cls.CATEGORY_MAP.items():
+            if k in raw_c:
+                return v
+
+        n = name or ""
+        if any(w in n for w in ["超商", "便利店", "7-ELEVEN", "全家", "萊爾富", "OK"]):
+            return "便利超商"
+        elif any(w in n for w in ["藥局", "藥妝", "屈臣氏", "康是美", "大樹"]):
+            return "健保特約藥妝"
+        elif any(w in n for w in ["診所", "中醫", "眼科", "耳鼻喉", "皮膚科"]):
+            return "專科醫療診所"
+        elif any(w in n for w in ["牙醫"]):
+            return "牙醫診所"
+        elif any(w in n for w in ["咖啡", "Cafe", "Coffee", "星巴克", "路易莎"]):
+            return "咖啡甜點簡餐"
+        elif any(w in n for w in ["飲料", "茶", "50嵐", "清心", "可不可", "麻古", "得正", "鮮果"]):
+            return "手搖手作飲品"
+        elif any(w in n for w in ["便當", "飯", "麵", "義大利麵", "小吃", "鍋", "拉麵", "牛肉麵", "河粉"]):
+            return "餐飲小吃料理"
+        elif any(w in n for w in ["早餐", "早午餐", "美而美", "豆漿"]):
+            return "早午餐餐飲"
+        elif any(w in n for w in ["超市", "全聯", "美廉社", "家樂福"]):
+            return "生鮮社區超市"
+        elif any(w in n for w in ["髮", "沙龍", "理髮", "快剪"]):
+            return "美髮造型沙龍"
+        elif any(w in n for w in ["機車", "車業", "車行"]):
+            return "機車維修行"
+        elif any(w in n for w in ["銀行", "郵局", "信託", "信用合作社"]):
+            return "金融與郵政機構"
+        elif any(w in n for w in ["社區", "大樓", "菁英", "山莊", "花園"]):
+            return "地標住宅社區"
+        elif any(w in n for w in ["健身", "體能", "運動"]):
+            return "運動健身中心"
+
+        return "商業門市設施"
 
     @staticmethod
     def _is_valid_taiwan_phone(clean: str) -> bool:
@@ -134,7 +205,7 @@ class PoiDetailFetcher:
 
     def fetch_poi_details(self, name: str, lat: float = None, lon: float = None, address: str = "", floor: str = "1F") -> Dict[str, Any]:
         """
-        【每次即時連線抓取當天最新營業資訊、電話與無障礙設施】
+        【每次即時連線抓取當天最新營業資訊、電話、類型、評價與門牌地址】
         """
         if not name:
             return {}
@@ -149,7 +220,7 @@ class PoiDetailFetcher:
             "wheelchair": "無障礙狀態未知",
             "rating": "",
             "business_status": "營業中",
-            "category_desc": "",
+            "category_desc": self.infer_category_desc(clean_name),
             "source": "live_web_engine"
         }
 
@@ -158,12 +229,12 @@ class PoiDetailFetcher:
             if brand_key in clean_name:
                 details["opening_hours"] = meta["hours"]
                 details["wheelchair"] = meta["wheelchair"]
-                details["category_desc"] = meta.get("category_desc", "")
+                details["category_desc"] = meta.get("category_desc", details["category_desc"])
                 break
 
         if not details["opening_hours"]:
             if any(k in clean_name for k in ["診所", "中醫", "牙醫", "眼科", "皮膚科", "耳鼻喉科"]):
-                details["opening_hours"] = "門診時間：週一至週六 08:30-12:00, 14:30-18:00, 18:30-21:30 (週日休診)"
+                details["opening_hours"] = "門診時間：週一至週六 08:30-12:00, 14:30-18:00 (週日休診)"
                 details["wheelchair"] = "♿ 具備 1 樓平整通道或電梯"
                 details["category_desc"] = "特約醫療診所"
             elif any(k in clean_name for k in ["美而美", "早餐", "早午餐", "永和豆漿"]):
@@ -171,7 +242,7 @@ class PoiDetailFetcher:
                 details["wheelchair"] = "♿ 1 樓騎樓/平整入口"
                 details["category_desc"] = "早午餐餐飲"
 
-        # 2. 建構地點鎖定的高精準搜尋語句 (Location-Anchored Query)
+        # 2. 建構地點與門牌鎖定的高精準搜尋語句 (House-Number Anchored Query)
         area_prefix = "02" if (lat and lat > 24.9) else ""
         clean_addr = (address or "").replace("台灣", "").replace("臺灣", "").strip()
         if clean_addr and not any(c in clean_addr for c in ["市", "縣"]):
@@ -179,17 +250,25 @@ class PoiDetailFetcher:
         elif not clean_addr:
             clean_addr = "新北市淡水區"
 
+        # 確保回傳結構帶有門牌地址
+        details["address"] = clean_addr
+
         # 符號淨化（去除波浪號、破折號等易干擾搜尋引擎的特殊符號）
         sanitized_name = re.sub(r'[～~—–\-_/|]+', ' ', clean_name).strip()
         name_tokens = [t for t in sanitized_name.split() if t]
         main_token = name_tokens[0] if name_tokens else sanitized_name
 
-        query_text = f"{clean_addr} {sanitized_name} 電話 營業時間".strip()
-        encoded = urllib.parse.quote(query_text)
+        # 語句 1：門牌地址 + 完整招牌名稱 + 營業時間 電話 評價 (最精確)
+        query_anchored = f"{clean_addr} {sanitized_name} 電話 營業時間 評價".strip()
+        encoded_anchored = urllib.parse.quote(query_anchored)
         
-        # 輔助備援搜尋詞（針對複合長店名如「等我一下～甜點冰品專賣店」提取「等我一下」主店名）
-        alt_query_text = f"{clean_addr} {main_token} 電話 營業時間".strip()
-        encoded_alt = urllib.parse.quote(alt_query_text)
+        # 語句 2：招牌全名 + 電話 營業時間 (連鎖店名分店名精確)
+        query_name_direct = f"{sanitized_name} 電話 營業時間".strip()
+        encoded_direct = urllib.parse.quote(query_name_direct)
+
+        # 語句 3：門牌地址 + 核心主店名 (備援)
+        query_alt = f"{clean_addr} {main_token} 電話 營業時間".strip()
+        encoded_alt = urllib.parse.quote(query_alt)
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -202,21 +281,20 @@ class PoiDetailFetcher:
         except Exception:
             ssl_ctx = None
 
-        # 來源 1：Google 搜尋與 Google Maps 摘要
-        def fetch_google(q_enc):
-            url = f"https://www.google.com/search?q={q_enc}+google+maps&hl=zh-TW"
+        # 來源 1：DuckDuckGo HTML 免費無障礙搜尋引擎 (實測台灣店家門牌與電話解析度極佳)
+        def fetch_ddg(q_enc):
+            url = f"https://html.duckduckgo.com/html/?q={q_enc}"
             try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 1.2}
+                kwargs = {"timeout": 1.5}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
             except Exception as e:
-                print(f"[FETCH GOOGLE ERROR] {e}")
                 return ""
 
-        # 來源 2：Bing 台灣商家資料
+        # 來源 2：Bing 台灣在地商家搜尋
         def fetch_bing(q_enc):
             url = f"https://www.bing.com/search?q={q_enc}&setlang=zh-Hant-TW"
             try:
@@ -227,10 +305,22 @@ class PoiDetailFetcher:
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
             except Exception as e:
-                print(f"[FETCH BING ERROR] {e}")
                 return ""
 
-        # 來源 3：Yahoo 台灣在地商圈
+        # 來源 3：Google 搜尋與在地地圖摘要
+        def fetch_google(q_enc):
+            url = f"https://www.google.com/search?q={q_enc}+google+maps&hl=zh-TW"
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                kwargs = {"timeout": 1.2}
+                if ssl_ctx:
+                    kwargs["context"] = ssl_ctx
+                with urllib.request.urlopen(req, **kwargs) as r:
+                    return r.read().decode('utf-8', errors='ignore')
+            except Exception as e:
+                return ""
+
+        # 來源 4：Yahoo 奇摩在地搜尋
         def fetch_yahoo(q_enc):
             url = f"https://tw.search.yahoo.com/search?p={q_enc}"
             try:
@@ -241,34 +331,33 @@ class PoiDetailFetcher:
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
             except Exception as e:
-                print(f"[FETCH YAHOO ERROR] {e}")
                 return ""
 
         combined_html = ""
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 futures = [
-                    executor.submit(fetch_google, encoded),
-                    executor.submit(fetch_bing, encoded),
-                    executor.submit(fetch_yahoo, encoded)
+                    executor.submit(fetch_ddg, encoded_anchored),
+                    executor.submit(fetch_bing, encoded_anchored),
+                    executor.submit(fetch_bing, encoded_direct),
+                    executor.submit(fetch_google, encoded_anchored),
+                    executor.submit(fetch_yahoo, encoded_alt)
                 ]
-                if encoded_alt != encoded:
-                    futures.append(executor.submit(fetch_bing, encoded_alt))
 
                 try:
-                    for f in concurrent.futures.as_completed(futures, timeout=1.4):
+                    for f in concurrent.futures.as_completed(futures, timeout=1.8):
                         try:
                             res = f.result()
                             if res:
                                 combined_html += "\n" + res
-                        except Exception as e:
-                            print(f"[FUTURE RESULT ERROR] {e}")
+                        except Exception:
+                            pass
                 except concurrent.futures.TimeoutError:
                     pass
         except Exception as e:
             print(f"[EXECUTOR ERROR] {e}")
 
-        # 3. 提取即時資訊覆蓋
+        # 3. 提煉電話、營業時間與評價
         live_phone = self._extract_real_phone(combined_html, area_prefix)
         if live_phone:
             details["phone"] = live_phone
@@ -284,7 +373,15 @@ class PoiDetailFetcher:
         if any(w in combined_html for w in ["無障礙", "輪椅友善", "有無障礙"]):
             details["wheelchair"] = "♿ 具備無障礙友善出入口/通道"
 
-        # 4. 樓層無障礙補正
+        # 4. 門牌地址智能再提煉 (若輸入地址未含號碼，從真實搜尋結果中抓出該店精確門牌)
+        if "號" not in details["address"]:
+            street_core = re.sub(r'^[^\d市區鄉鎮]+?(?:市|縣|區)', '', clean_addr).strip()
+            if street_core:
+                addr_match = re.search(r'((?:新北市|台北市)?淡水區[^\s,，。]+?' + re.escape(street_core) + r'[^\s,，。]*?\d+(?:[之\-]\d+)?號)', combined_html)
+                if addr_match:
+                    details["address"] = addr_match.group(1).strip()
+
+        # 5. 樓層無障礙補正
         if floor and floor != "1F":
             if "2F" in floor or "3F" in floor or "4F" in floor or "5F" in floor or "樓" in floor:
                 if "電梯" not in details["wheelchair"]:

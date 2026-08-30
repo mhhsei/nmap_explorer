@@ -807,6 +807,30 @@ def get_poi_detail():
     lat = float(lat_str) if (lat_str and str(lat_str).strip() != "") else None
     lon = float(lon_str) if (lon_str and str(lon_str).strip() != "") else None
 
+    # 門牌地址雙重補強：若前端傳入空地址，自動從 world_model 查出該店或該座標的真實門牌
+    if (not address or address.strip() == "") and lat is not None and lon is not None:
+        try:
+            if hasattr(agent, "world_model") and agent.world_model:
+                from nmap.spatial.geometry import haversine_distance
+                for p in agent.world_model.pois:
+                    if (p.name == name or haversine_distance(lat, lon, p.lat, p.lon) < 8.0) and getattr(p, "address", None):
+                        address = p.address
+                        break
+                if not address:
+                    nr, _ = agent.world_model.find_nearest_road(lat, lon)
+                    r_name = nr.get("name", "") if nr else ""
+                    if r_name and r_name not in ("未命名道路", "無名路"):
+                        d_est = agent.world_model.get_interpolated_door_numbers(lat, lon, 0.0)
+                        l_num = d_est.get("left_number") or ""
+                        r_num = d_est.get("right_number") or ""
+                        door_num = l_num or r_num or ""
+                        if door_num:
+                            address = f"新北市淡水區 {r_name} {door_num}號"
+                        else:
+                            address = f"新北市淡水區 {r_name}"
+        except Exception as e:
+            print(f"[POI DETAIL ADDR RESOLVE ERROR] {e}")
+
     print(f"[POI DETAIL FETCH] Decoded params: Name='{name}', Addr='{address}', Lat={lat}, Lon={lon}")
     details = poi_detail_fetcher.fetch_poi_details(name, lat, lon, address, floor)
     print(f"[POI DETAIL RESULT] '{name}' -> Phone='{details.get('phone')}', Hours='{details.get('opening_hours')}', Rating='{details.get('rating')}'")

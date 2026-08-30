@@ -1523,18 +1523,18 @@ class NmapWebApp {
     // 即時動態渲染函式
     const renderModalContent = (richData = {}, isLoading = false) => {
       const merged = Object.assign({}, poi, richData);
+      const displayAddress = merged.address || (merged.street ? `${merged.street} ${merged.housenumber ? merged.housenumber + '號' : ''}`.trim() : "") || "新北市淡水區 (近無登錄門牌)";
+      const displayCategory = merged.category_desc || cat;
+
       let infoRows = [
-        `<div><strong>🏪 招牌店名：</strong>${merged.name}</div>`,
-        `<div><strong>📍 類別：</strong>${cat} ${merged.category_desc ? `(${merged.category_desc})` : ''}</div>`,
-        `<div><strong>🧭 方位：</strong>${merged.clock_position || '正前方'} (${merged.relative_direction || '前方'})</div>`,
-        `<div><strong>📏 距離：</strong>約 ${merged.distance_m} 公尺 (座標: ${merged.lat.toFixed(5)}, ${merged.lon.toFixed(5)})</div>`
+        `<div><strong>🏪 招牌店名：</strong><span style="color:#38bdf8;font-weight:bold;">${merged.name}</span></div>`,
+        `<div><strong>📍 門牌地址：</strong><span style="color:#f8fafc;font-weight:bold;">${displayAddress}${floorStr}</span></div>`,
+        `<div><strong>🏷️ 商家類型：</strong><span style="color:#cbd5e1;">${displayCategory}</span></div>`,
+        `<div><strong>🧭 方位距離：</strong>${merged.clock_position || '正前方'} (${merged.relative_direction || '前方'})，約 ${merged.distance_m} 公尺</div>`
       ];
 
       if (merged.legal_name && merged.legal_name !== merged.name) {
-        infoRows.push(`<div><strong>🏢 登記名稱：</strong>${merged.legal_name}</div>`);
-      }
-      if (merged.address) {
-        infoRows.push(`<div><strong>📍 門牌地址：</strong>${merged.address}${floorStr}</div>`);
+        infoRows.push(`<div><strong>🏢 商業登記：</strong>${merged.legal_name}</div>`);
       }
       if (merged.business_desc) {
         infoRows.push(`<div><strong>📋 營業項目：</strong>${merged.business_desc}</div>`);
@@ -1552,13 +1552,13 @@ class NmapWebApp {
       infoRows.push(`<div><strong>♿ 無障礙：</strong><span style="color:#38bdf8;">${wheelchair}</span></div>`);
 
       if (merged.phone) {
-        infoRows.push(`<div><strong>📞 電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${merged.phone} (點擊撥打)</a></div>`);
+        infoRows.push(`<div><strong>📞 聯絡電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;" aria-label="撥打電話給 ${merged.name}：${merged.phone}">${merged.phone} (點擊撥打)</a></div>`);
       } else if (!isLoading) {
-        infoRows.push(`<div><strong>📞 電話：</strong><span style="color:#94a3b8;">無登記公開市話（可直接依門牌或導航前往）</span></div>`);
+        infoRows.push(`<div><strong>📞 聯絡電話：</strong><span style="color:#94a3b8;">無登記公開市話（可直接依門牌前往）</span></div>`);
       }
 
       if (merged.rating) {
-        infoRows.push(`<div><strong>⭐ 評價：</strong><span style="color:#facc15; font-weight:bold;">${merged.rating}</span></div>`);
+        infoRows.push(`<div><strong>⭐ 大眾評價：</strong><span style="color:#facc15; font-weight:bold;">${merged.rating}</span></div>`);
       }
 
       body.innerHTML = infoRows.join("");
@@ -1588,9 +1588,20 @@ class NmapWebApp {
       this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺。背景播報已暫停。`, false, true);
     }, 180);
 
-    // 非同步極速向後端獲取當日即時營業時間、電話與無障礙資訊 (< 0.55s)
+    // 優先使用 POI 自身地址門牌；若無，自動結合當前所在路名與推估門牌
+    let targetAddr = poi.address || "";
+    if (!targetAddr && poi.street) {
+      targetAddr = `${poi.street} ${poi.housenumber ? poi.housenumber + '號' : ''}`.trim();
+    }
+    if (!targetAddr) {
+      const road = this.currentRoadName || this.currentStreetName || "";
+      const door = this.lastSpokenDoor || "";
+      targetAddr = `${road} ${door}`.trim();
+    }
+
+    // 非同步極速向後端獲取當日即時營業時間、電話、類型與無障礙資訊 (< 0.55s)
     const encodedName = encodeURIComponent(poi.name || "");
-    const encodedAddr = encodeURIComponent(poi.address || "");
+    const encodedAddr = encodeURIComponent(targetAddr);
     const floorParam = encodeURIComponent(poi.floor || "1F");
     fetch(`/api/poi_detail?name=${encodedName}&lat=${poi.lat}&lon=${poi.lon}&address=${encodedAddr}&floor=${floorParam}`)
       .then(res => res.json())
@@ -1598,11 +1609,15 @@ class NmapWebApp {
         if (data.success && data.details) {
           renderModalContent(data.details, false);
           
-          // 搜尋完成播放清脆提示音，不強制語音打斷 TalkBack，讓使用者依喜好自然聽讀
+          // 搜尋完成播放清脆提示音，並即時報讀門牌地址、電話與營業時間
           if (this.audio && this.audio.playSearchCompleteTone) {
             this.audio.playSearchCompleteTone();
           }
-          this.updateLiveLog(`【${poi.name}】已取得最新營業與電話資訊。`, false, false);
+          const finAddr = data.details.address || targetAddr || "";
+          const finPhone = data.details.phone ? `，電話：${data.details.phone}` : "";
+          const finHours = data.details.opening_hours ? `，營業時間：${data.details.opening_hours}` : "";
+          const finCat = data.details.category_desc ? `，類型：${data.details.category_desc}` : "";
+          this.updateLiveLog(`【${poi.name}】地址：${finAddr}${finCat}${finPhone}${finHours}。`, false, true);
         }
       })
       .catch(err => {
