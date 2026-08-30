@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.nmapexplorer"
         minSdk = 24
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.0.13"
+        versionCode = 13
+        versionName = "1.0.14"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
         }
@@ -84,7 +84,17 @@ chaquopy {
 dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("androidx.fragment:fragment-ktx:1.8.2")
-  val composeBom = platform(libs.androidx.compose.bom)
+
+    // CameraX 輕量原生相機與影像分析
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+
+    // TensorFlow Lite 端側紅綠燈 AI 深度學習推論
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+
+    val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
 

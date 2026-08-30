@@ -2375,6 +2375,15 @@ class NmapWebApp {
             let signalPart = "";
             if (isSignalized) {
               signalPart = hasAps ? "：有紅綠燈（設有聲號誌）" : "：有紅綠燈";
+              // 【自動啟動紅綠燈相機】：接近號誌化路口自動開鏡並以快門音效提示
+              if (!this.isSignalCameraActive) {
+                this.isSignalCameraActive = true;
+                if (window.AndroidBridge && window.AndroidBridge.startTrafficSignalCamera) {
+                  const bearing = data.intersection.bearing_deg || 0;
+                  const clock = data.intersection.clock_position || "12點鐘方向";
+                  window.AndroidBridge.startTrafficSignalCamera(bearing, clock);
+                }
+              }
             } else {
               signalPart = "：無號誌巷口，請側聽車聲";
             }
@@ -2387,6 +2396,14 @@ class NmapWebApp {
         
         // B. 踏入 / 正通過路口 (< 6.0m)
         else if (juncDist < 6.0) {
+          // 【自動關閉相機】：已踏入路口過馬路中，自動關鏡並以收鏡音效提示
+          if (this.isSignalCameraActive) {
+            this.isSignalCameraActive = false;
+            if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+              window.AndroidBridge.stopTrafficSignalCamera();
+            }
+          }
+
           const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
           if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 4000) {
             this.currentJunctionState = "PASSING";
@@ -2401,6 +2418,14 @@ class NmapWebApp {
         // C. 通過後繼續前進 (> 28.0m) - 【防死鎖恢復核心】：
         // 只要距離大於 28.0m 且非 IDLE，無條件重置為 IDLE，杜絕因 GPS 步進略過 < 6m 導致後續路口全部罷工！
         else if (juncDist > 28.0 && this.currentJunctionState !== "IDLE") {
+          // 【自動關閉相機】：已遠離路口，自動關鏡
+          if (this.isSignalCameraActive) {
+            this.isSignalCameraActive = false;
+            if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+              window.AndroidBridge.stopTrafficSignalCamera();
+            }
+          }
+
           const wasPassing = (this.currentJunctionState === "PASSING");
           this.currentJunctionState = "IDLE";
           if (wasPassing && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
@@ -2409,6 +2434,13 @@ class NmapWebApp {
             this.announceRoad(msg, false);
             return;
           }
+        }
+      }
+    } else {
+      if (this.isSignalCameraActive) {
+        this.isSignalCameraActive = false;
+        if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+          window.AndroidBridge.stopTrafficSignalCamera();
         }
       }
     }
@@ -2716,6 +2748,12 @@ class NmapWebApp {
     this.lastJunctionName = null;
     this.currentStreetName = null;
     this.lastIntersectionAlertTime = 0;
+    if (this.isSignalCameraActive) {
+      this.isSignalCameraActive = false;
+      if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+        window.AndroidBridge.stopTrafficSignalCamera();
+      }
+    }
     if (this.announcedPoiCooldown) this.announcedPoiCooldown.clear();
     if (this.arrivedPoiCooldown) this.arrivedPoiCooldown.clear();
     this.updateLiveLog(`正在定位移至「${locationInput}」，請稍候...`);

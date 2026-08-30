@@ -106,6 +106,34 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         }
     }
 
+    var trafficSignalCameraManager: TrafficSignalCameraManager? = null
+
+    /**
+     * 【啟動路口紅綠燈相機即時辨識】
+     * 由前端 WebView 在接近號誌路口時自動調用
+     * 作用：以快門音效開鏡、空間姿態引導對準對街號誌、並以 Google 原生 TTS 直報燈號
+     */
+    @JavascriptInterface
+    fun startTrafficSignalCamera(bearingDeg: Double, clockPosition: String) {
+        Log.i(tag, "[CAMERA_SIGNAL] startTrafficSignalCamera: bearing=$bearingDeg, clock=$clockPosition")
+        (context as? android.app.Activity)?.runOnUiThread {
+            trafficSignalCameraManager?.startCamera(bearingDeg, clockPosition)
+        }
+    }
+
+    /**
+     * 【關閉路口紅綠燈相機】
+     * 由前端 WebView 在過馬路中或離開路口時自動調用
+     * 作用：收鏡音效確認、釋放相機硬體資源節省電量
+     */
+    @JavascriptInterface
+    fun stopTrafficSignalCamera() {
+        Log.i(tag, "[CAMERA_SIGNAL] stopTrafficSignalCamera")
+        (context as? android.app.Activity)?.runOnUiThread {
+            trafficSignalCameraManager?.stopCamera()
+        }
+    }
+
     /**
      * 原生即時語音朗讀通道 (Native Speech Broadcast with Smart Sequencer)
      * 

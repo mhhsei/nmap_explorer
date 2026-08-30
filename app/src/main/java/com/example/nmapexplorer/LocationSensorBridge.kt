@@ -1410,6 +1410,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         @Volatile
         private var activeInstance: LocationSensorBridge? = null
 
+        val currentHeadingDeg: Float
+            get() = activeInstance?.smoothedHeading ?: 0f
+
+        val currentPitchDeg: Float
+            get() = activeInstance?.phonePitchDeg ?: 0f
+
         fun getDiagnosticsSnapshot(): org.json.JSONObject {
             val inst = activeInstance
             return org.json.JSONObject().apply {

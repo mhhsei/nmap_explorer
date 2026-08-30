@@ -124,7 +124,8 @@ class MainActivity : ComponentActivity() {
     private fun checkAndRequestLocationPermissions() {
         val permissions = mutableListOf(
             android.Manifest.permission.ACCESS_FINE_LOCATION,
-            android.Manifest.permission.ACCESS_COARSE_LOCATION
+            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            android.Manifest.permission.CAMERA
         )
         // Android 10+ 需要動作識別權限來讀取硬體計步器
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -244,8 +245,11 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) 
                 webViewClient = WebViewClient()
                 webChromeClient = android.webkit.WebChromeClient()
                 WebView.setWebContentsDebuggingEnabled(true)
+                val appInterface = WebAppInterface(context, this)
+                val signalCamera = TrafficSignalCameraManager(context, appInterface)
+                appInterface.trafficSignalCameraManager = signalCamera
                 // 將 WebAppInterface 綁定為 window.AndroidBridge
-                addJavascriptInterface(WebAppInterface(context, this), "AndroidBridge")
+                addJavascriptInterface(appInterface, "AndroidBridge")
                 loadUrl(url)
 
             }
