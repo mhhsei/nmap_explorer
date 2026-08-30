@@ -2339,6 +2339,11 @@ class NmapWebApp {
       const isRealJunction = juncType && juncType !== "直行道路";
 
       if (isRealJunction && juncDist !== null) {
+        const juncName = data.intersection.junction_name || juncType;
+        const isSignalized = !!data.intersection.is_signalized;
+        const hasAps = !!data.intersection.has_aps;
+        const hasIsland = !!data.intersection.has_refuge_island;
+
         // A. 提前接近路口 (6.0m ~ 28.0m)
         if (juncDist <= 28.0 && juncDist >= 6.0) {
           if (this.currentJunctionState !== "APPROACHING" && (now - (this.lastIntersectionAlertTime || 0) > 25000)) {
@@ -2348,13 +2353,20 @@ class NmapWebApp {
             let roads = "";
             const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "";
             const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路");
-            if (filteredRoads.length > 0) {
-              roads = `（即將交會 ${filteredRoads.join("、")}）`;
+            // 若路口名稱未包含交會路名，才補上交會道路
+            if (filteredRoads.length > 0 && !filteredRoads.some(r => juncName.includes(r))) {
+              roads = `（交會 ${filteredRoads.join("、")}）`;
             }
-            const lanes = (data.road_info && data.road_info.lanes) ? data.road_info.lanes : 2;
-            const oneway = (data.road_info && data.road_info.oneway) ? data.road_info.oneway : "雙向";
-            const widthM = Math.round(lanes * 3.5);
-            const msg = `📍 前方 ${Math.round(juncDist)}公尺【${juncType}】${roads}，${oneway}${lanes}線道約${widthM}米，無有聲號誌。`;
+
+            // 嚴格遵守視障「1.5 秒省話模式」：
+            let signalPart = "";
+            if (isSignalized) {
+              signalPart = hasAps ? "：有紅綠燈（設有聲號誌）" : "：有紅綠燈";
+            } else {
+              signalPart = "：無號誌巷口，請側聽車聲";
+            }
+            const islandPart = hasIsland ? "，設庇護島" : "";
+            const msg = `📍 前方 ${Math.round(juncDist)}公尺【${juncName}】${roads}${signalPart}${islandPart}。`;
             this.announceJunction(msg, true);
             return;
           }
@@ -2366,7 +2378,8 @@ class NmapWebApp {
           if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 4000) {
             this.currentJunctionState = "PASSING";
             this.lastIntersectionAlertTime = now;
-            const msg = `📍 正通過【${juncType}】，請直線前進。`;
+            const islandGuide = hasIsland ? "，中央設庇護島" : "";
+            const msg = `📍 正通過【${juncName}】${islandGuide}，請直線前進。`;
             this.announceJunction(msg, false);
             return;
           }

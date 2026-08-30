@@ -298,29 +298,13 @@ class WorldModel:
                     rev_brng = (brng + 180.0) % 360.0
                     self.road_graph.add_edge(v_id, u_id, weight=dist, name=road["name"], bearing=rev_brng, road=road)
 
-        # 構建路口節點空間索引：
-        # 關鍵修正：必須使用「無向實體相鄰鄰居數 (Physical Degree)」！
-        # 在 MultiDiGraph 中，雙向道路的直線中間點其有向度數為 4（2 入 2 出），過去被誤判為十字路口。
-        # 真正的實體路口，其不重複實體相鄰節點數必須 >= 3（3 為 T 字/岔路口，4 為十字路口，5+ 為多向圓環/路口）。
-        j_idx = 0
-        for node_id in self.road_graph.nodes:
-            physical_neighbors = (set(self.road_graph.predecessors(node_id)) | set(self.road_graph.successors(node_id))) - {node_id}
-            physical_degree = len(physical_neighbors)
-            if physical_degree >= 3:
-                node_data = self.road_graph.nodes[node_id]
-                n_lat, n_lon = node_data["lat"], node_data["lon"]
-                self.junction_rtree.insert(j_idx, (n_lon, n_lat, n_lon, n_lat), obj=(node_id, physical_degree, n_lat, n_lon))
-                j_idx += 1
+        # 1. 率先構建交通號誌空間索引 (供路口智能關聯)
+        ts_idx = 0
+        for ts in self.traffic_signals:
+            self.traffic_signal_rtree.insert(ts_idx, (ts["lon"], ts["lat"], ts["lon"], ts["lat"]), obj=ts)
+            ts_idx += 1
 
-        # 構建大樓輪廓空間索引
-        b_idx = 0
-        for b in self.buildings:
-            c_lat = b["center_lat"]
-            c_lon = b["center_lon"]
-            self.building_rtree.insert(b_idx, (c_lon, c_lat, c_lon, c_lat), obj=b)
-            b_idx += 1
-
-        # 構建斑馬線空間索引
+        # 2. 率先構建斑馬線空間索引 (供路口庇護島智能關聯)
         c_idx = 0
         for c in self.crossings:
             c_lat = c["lat"]
@@ -328,13 +312,84 @@ class WorldModel:
             self.crossing_rtree.insert(c_idx, (c_lon, c_lat, c_lon, c_lat), obj=c)
             c_idx += 1
 
-        # 構建交通號誌空間索引
-        ts_idx = 0
-        for ts in self.traffic_signals:
-            self.traffic_signal_rtree.insert(ts_idx, (ts["lon"], ts["lat"], ts["lon"], ts["lat"]), obj=ts)
-            ts_idx += 1
+        # 3. 構建路口節點空間索引：
+        # 關鍵修正：必須使用「無向實體相鄰鄰居數 (Physical Degree)」！
+        # 在 MultiDiGraph 中，雙向道路的直線中間點其有向度數為 4（2 入 2 出），過去被誤判為十字路口。
+        # 真正的實體路口，其不重複實體相鄰節點數必須 >= 3（3 為 T 字/岔路口，4 為十字路口，5+ 為多向圓環/路口）。
+        # 並全時注入「交通號誌 (Traffic Signals)」、「視障有聲號誌 (APS)」與「行人庇護島 (Refuge Island)」
+        j_idx = 0
+        for node_id in self.road_graph.nodes:
+            physical_neighbors = (set(self.road_graph.predecessors(node_id)) | set(self.road_graph.successors(node_id))) - {node_id}
+            physical_degree = len(physical_neighbors)
+            if physical_degree >= 3:
+                node_data = self.road_graph.nodes[node_id]
+                n_lat, n_lon = node_data["lat"], node_data["lon"]
 
-        # 構建門牌空間索引
+                # A. 查詢官方有聲號誌資料庫 (TaiwanSignalManager)
+                official_sig = self.signal_manager.find_signal_near(n_lat, n_lon, max_dist_m=32.0)
+
+                # B. 查詢現場 28 米內實體號誌桿
+                has_osm_signal = False
+                osm_sound_yes = False
+                sig_radius_deg = 28.0 / 111139.0
+                s_bounds = (n_lon - sig_radius_deg, n_lat - sig_radius_deg, n_lon + sig_radius_deg, n_lat + sig_radius_deg)
+                for s_item in self.traffic_signal_rtree.intersection(s_bounds, objects=True):
+                    s_obj = s_item.object
+                    if haversine_distance(n_lat, n_lon, s_obj["lat"], s_obj["lon"]) <= 28.0:
+                        has_osm_signal = True
+                        if s_obj.get("sound") in ("yes", "acoustic", "buzzer"):
+                            osm_sound_yes = True
+
+                # C. 查詢現場 25 米內斑馬線與庇護島
+                has_crossing = False
+                has_refuge_island = False
+                c_radius_deg = 25.0 / 111139.0
+                cr_bounds = (n_lon - c_radius_deg, n_lat - c_radius_deg, n_lon + c_radius_deg, n_lat + c_radius_deg)
+                for cr_item in self.crossing_rtree.intersection(cr_bounds, objects=True):
+                    cr_obj = cr_item.object
+                    if haversine_distance(n_lat, n_lon, cr_obj["lat"], cr_obj["lon"]) <= 25.0:
+                        has_crossing = True
+                        cr_tags = cr_obj.get("tags", {})
+                        if cr_tags.get("crossing:island") in ("yes", "separate") or cr_tags.get("traffic_calming") == "island":
+                            has_refuge_island = True
+                        if cr_obj.get("crossing_signals") in ("yes", "traffic_signals"):
+                            has_osm_signal = True
+
+                is_signalized = bool(official_sig) or has_osm_signal
+                has_aps = (official_sig and official_sig.get("has_aps")) or osm_sound_yes
+                if official_sig and official_sig.get("has_refuge_island"):
+                    has_refuge_island = True
+
+                sound_desc = ""
+                if has_aps:
+                    if official_sig:
+                        sound_desc = f"{official_sig.get('ns_sound', '布穀鳥聲')} / {official_sig.get('ew_sound', '鳥鳴聲')}"
+                    else:
+                        sound_desc = "設有有聲號誌"
+
+                junction_meta = {
+                    "is_signalized": is_signalized,
+                    "has_aps": has_aps,
+                    "sound_desc": sound_desc,
+                    "has_refuge_island": has_refuge_island,
+                    "has_crossing": has_crossing,
+                    "has_button": official_sig.get("has_button", False) if official_sig else False,
+                    "button_guide": official_sig.get("button_guide", "") if official_sig else "",
+                    "signal_name": official_sig.get("intersection_name", "") if official_sig else ""
+                }
+
+                self.junction_rtree.insert(j_idx, (n_lon, n_lat, n_lon, n_lat), obj=(node_id, physical_degree, n_lat, n_lon, junction_meta))
+                j_idx += 1
+
+        # 4. 構建大樓輪廓空間索引
+        b_idx = 0
+        for b in self.buildings:
+            c_lat = b["center_lat"]
+            c_lon = b["center_lon"]
+            self.building_rtree.insert(b_idx, (c_lon, c_lat, c_lon, c_lat), obj=b)
+            b_idx += 1
+
+        # 5. 構建門牌空間索引
         hn_idx = 0
         for hn in self.house_numbers:
             self.house_number_rtree.insert(hn_idx, (hn["lon"], hn["lat"], hn["lon"], hn["lat"]), obj=hn)

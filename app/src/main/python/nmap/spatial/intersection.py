@@ -111,9 +111,11 @@ class IntersectionAnalyzer:
         max_junction_distance_m = max(max_distance_m, 500.0)
         j_radius_deg = max_junction_distance_m / 111139.0
         j_bounds = (lon - j_radius_deg, lat - j_radius_deg, lon + j_radius_deg, lat + j_radius_deg)
+        closest_junction_meta = {}
 
         for item in world_model.junction_rtree.intersection(j_bounds, objects=True):
-            node_id, degree, n_lat, n_lon = item.object
+            node_id, degree, n_lat, n_lon = item.object[:4]
+            junction_meta = item.object[4] if len(item.object) > 4 else {}
             dist = haversine_distance(lat, lon, n_lat, n_lon)
             
             if dist <= max_junction_distance_m:
@@ -125,6 +127,7 @@ class IntersectionAnalyzer:
                     real_degree = len(physical_neighbors)
                     if real_degree >= 3:
                         closest_junction_dist = dist
+                        closest_junction_meta = junction_meta
                         junction_type = "十字路口" if real_degree >= 4 else "T字/岔路口"
                         
                         intersecting_roads.clear()
@@ -182,22 +185,44 @@ class IntersectionAnalyzer:
             junction_type = "行人穿越路口"
             closest_junction_dist = nearby_crossings[0]["distance_m"]
 
+        # 提取融合號誌與無障礙安全情報
+        is_signalized = closest_junction_meta.get("is_signalized", False)
+        has_aps = closest_junction_meta.get("has_aps", False)
+        sound_desc = closest_junction_meta.get("sound_desc", "")
+        has_refuge_island = closest_junction_meta.get("has_refuge_island", False)
+        has_button = closest_junction_meta.get("has_button", False)
+        button_guide = closest_junction_meta.get("button_guide", "")
+        signal_name = closest_junction_meta.get("signal_name", "")
+
+        # 組合親切易懂的路口專屬名稱 (例如「北新路與大忠街口」或「大忠街口」)
+        junction_display_name = junction_type
+        if signal_name:
+            junction_display_name = signal_name
+        elif intersecting_roads:
+            cross_first = list(intersecting_roads)[0]
+            junction_display_name = f"{cross_first}口" if not cross_first.endswith("口") else cross_first
+
         # Build accessibility & safety summary text for NVDA
         safety_notes = []
+        if is_signalized:
+            if has_aps:
+                safety_notes.append(f"設有紅綠燈，具備【{sound_desc or '視障有聲號誌'}】")
+            else:
+                safety_notes.append("設有紅綠燈管制（無有聲號誌）")
+        else:
+            if junction_type != "直行道路":
+                safety_notes.append("⚠️ 此處為無號誌路口，過馬路請注意左右來車")
+
+        if has_refuge_island:
+            safety_notes.append("馬路中央設有行人庇護島")
+
         if nearby_crossings:
             c = nearby_crossings[0]
-            sig_text = "有行人專用號誌" if c["crossing_signals"] in ["yes", "traffic_signals"] else "無號誌管制"
+            sig_text = "有行人號誌" if (is_signalized or c["crossing_signals"] in ["yes", "traffic_signals"]) else "無號誌"
             tac_text = "有導盲磚" if c["tactile_paving"] == "yes" else "未標示導盲磚"
-            safety_notes.append(f"前方 {c['distance_m']} 公尺 ({c['clock_position']}) 有斑馬線 ({sig_text}，{tac_text})")
+            safety_notes.append(f"前方 {c['distance_m']} 公尺 ({c['clock_position']}) 設有斑馬線 ({sig_text}，{tac_text})")
         else:
             safety_notes.append("前方 50 公尺內暫無明顯斑馬線")
-
-        signal_nearby = False
-        if nearby_signals and nearby_signals[0]["distance_m"] <= signal_announce_distance_m:
-            signal_nearby = True
-            s = nearby_signals[0]
-            sound_text = "設有語音導引號誌 (Acoustic Signal)" if s["sound"] == "yes" else "未標示語音號誌"
-            safety_notes.append(f"設有交通號誌 ({sound_text})")
 
         if intersecting_roads:
             roads_str = "、".join(intersecting_roads)
@@ -210,12 +235,25 @@ class IntersectionAnalyzer:
         report_lines = []
         if junction_type != "直行道路" and closest_junction_dist < 900:
             if closest_junction_dist <= 30.0:
-                report_lines.append(f"前方 {round(closest_junction_dist)} 公尺為【{junction_type}】。")
+                report_lines.append(f"前方 {round(closest_junction_dist)} 公尺為【{junction_display_name}】。")
             else:
-                report_lines.append(f"前方下一個路口（約 {round(closest_junction_dist)} 公尺）為【{junction_type}】。")
+                report_lines.append(f"前方下一個路口（約 {round(closest_junction_dist)} 公尺）為【{junction_display_name}】。")
 
             if intersecting_roads:
                 report_lines.append(f"即將交會：{'、'.join(intersecting_roads)}。")
+
+            # 號誌與無障礙設施說明
+            if is_signalized:
+                aps_info = f"，設有【{sound_desc}】有聲鳥鳴導引" if has_aps else "，無有聲號誌"
+                report_lines.append(f"號誌設施：設有行車紅綠燈管制{aps_info}。")
+            else:
+                report_lines.append("號誌設施：⚠️ 無交通號誌管制路口，過馬路請注意左右轉彎車聲。")
+
+            if has_refuge_island:
+                report_lines.append("無障礙設施：馬路中央設有實體行人庇護島（安全島）。")
+
+            if has_button:
+                report_lines.append(f"行人觸動按鈕：{button_guide}")
 
             if branches_info:
                 seen_branches = set()
@@ -230,7 +268,7 @@ class IntersectionAnalyzer:
                     report_lines.append("各分支走向：\n" + "\n".join(branch_texts))
             if nearby_crossings:
                 c = nearby_crossings[0]
-                sig = "有行人專用號誌" if c["crossing_signals"] in ["yes", "traffic_signals"] else "無號誌管制"
+                sig = "有行人專用號誌" if (is_signalized or c["crossing_signals"] in ["yes", "traffic_signals"]) else "無號誌管制"
                 report_lines.append(f"過馬路設施：前方 {c['distance_m']} 公尺設有斑馬線（{sig}）。")
         else:
             curr_road = world_model.get_road_info(lat, lon, heading_deg)
@@ -244,12 +282,19 @@ class IntersectionAnalyzer:
 
         return {
             "junction_type": junction_type,
+            "junction_name": junction_display_name,
             "junction_distance_m": round(closest_junction_dist, 1) if closest_junction_dist < 900 else None,
+            "is_signalized": is_signalized,
+            "has_aps": has_aps,
+            "sound_desc": sound_desc,
+            "has_refuge_island": has_refuge_island,
+            "has_button": has_button,
+            "button_guide": button_guide,
             "intersecting_roads": list(intersecting_roads),
             "branches_info": branches_info,
             "crossings": nearby_crossings,
             "traffic_signals": nearby_signals,
-            "signal_nearby": signal_nearby,
+            "signal_nearby": is_signalized,
             "safety_summary": "；".join(safety_notes),
             "detailed_report": detailed_report_str
         }
