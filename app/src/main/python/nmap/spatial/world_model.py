@@ -573,6 +573,81 @@ class WorldModel:
 
         return best_road, min_dist
 
+    def resolve_poi_address_by_consensus(self, poi_lat: float, poi_lon: float, street: str = "", housenumber: str = "") -> str:
+        """
+        【門牌地址空間共識仲裁 (Neighborhood Address Consensus)】
+        作用：
+        1. 若 POI 本身已記載 street，且有 housenumber，直接返回真實門牌地址。
+        2. 若 POI 位於十字路口三角窗（如北新路與淡金路交叉口），透過周遭 50 公尺內實體門牌之路名多數決投票，
+           消除因幾何折線數十公分誤差導致誤判為另一條大馬路的現象。
+        3. 若該道路周遭有實體門牌，精確標註「近 XX號，無登錄門牌」，讓視障者清楚得知相對門牌位置。
+        """
+        clean_hn = str(housenumber or "").strip().rstrip("號")
+        if street and street not in ("未命名道路", "無名路"):
+            return f"{street} {clean_hn}號" if clean_hn else f"{street} (未登錄門牌)"
+
+        # 搜尋方圓 25 米內所有具名候選道路
+        cos_lat = max(math.cos(math.radians(poi_lat)), 0.1)
+        r_deg_lon = 25.0 / (111139.0 * cos_lat)
+        r_deg_lat = 25.0 / 111139.0
+        r_bounds = (poi_lon - r_deg_lon, poi_lat - r_deg_lat, poi_lon + r_deg_lon, poi_lat + r_deg_lat)
+
+        candidate_roads = []
+        min_dist = 9999.0
+        for item in self.road_rtree.intersection(r_bounds, objects=True):
+            r = item.object
+            geom = r.get("geometry", [])
+            if len(geom) < 2:
+                continue
+            d, _, _ = find_closest_point_on_line(poi_lat, poi_lon, geom)
+            name = r.get("name")
+            if d <= 25.0 and name and name not in ("未命名道路", "無名路"):
+                candidate_roads.append((d, name))
+                if d < min_dist:
+                    min_dist = d
+
+        if not candidate_roads:
+            return "周遭道路 (未登錄門牌)"
+
+        candidate_roads.sort()
+
+        # 檢索方圓 50 米內周遭實體門牌，統計各路名票數與最近門牌號
+        hn_deg_lon = 50.0 / (111139.0 * cos_lat)
+        hn_deg_lat = 50.0 / 111139.0
+        hn_bounds = (poi_lon - hn_deg_lon, poi_lat - hn_deg_lat, poi_lon + hn_deg_lon, poi_lat + hn_deg_lat)
+
+        hn_votes: Dict[str, int] = {}
+        closest_hn_per_street: Dict[str, Tuple[float, str]] = {}
+        for h_item in self.house_number_rtree.intersection(hn_bounds, objects=True):
+            h = h_item.object
+            d = haversine_distance(poi_lat, poi_lon, h["lat"], h["lon"])
+            st = h.get("street")
+            num = str(h.get("housenumber", "")).strip().rstrip("號")
+            if d <= 50.0 and st and num:
+                hn_votes[st] = hn_votes.get(st, 0) + 1
+                if st not in closest_hn_per_street or d < closest_hn_per_street[st][0]:
+                    closest_hn_per_street[st] = (d, num)
+
+        # 在距離最接近的前段道路中 (min_dist + 8.5m 內，包含大路口不同車道折線)，依門牌多數決共識仲裁
+        close_road_names = list(dict.fromkeys([r_name for d, r_name in candidate_roads if d <= min_dist + 8.5]))
+
+        best_road = candidate_roads[0][1]
+        max_votes = 0
+        voted_road = None
+        for r_name in close_road_names:
+            votes = hn_votes.get(r_name, 0)
+            if votes > max_votes:
+                max_votes = votes
+                voted_road = r_name
+
+        final_road = voted_road if (voted_road and max_votes >= 2) else best_road
+
+        if final_road in closest_hn_per_street:
+            near_hn = closest_hn_per_street[final_road][1]
+            return f"{final_road} (近 {near_hn}號，無登錄門牌)"
+        else:
+            return f"{final_road} (未登錄門牌)"
+
     def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 60.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         【查詢半徑 radius_m 內的所有店家、設施與地標大樓】
@@ -626,11 +701,11 @@ class WorldModel:
                     if category_lower not in poi.category.lower() and category_lower not in clean_poi_name.lower():
                         continue
 
-                # 同名店家 3.0 公尺以內去重判定（距離 <= 3.0m 視為同一店家/重複標記；> 3.0m 視為不同分店或出入口）
+                # 同名店家 18.0 公尺以內去重判定（跨資料庫 OSM/Overture 經緯度微差視為同一店家/重複標記；> 18.0m 視為不同分店）
                 is_dup = False
                 for existing in results:
                     if existing.get("name") == clean_poi_name:
-                        if haversine_distance(poi.lat, poi.lon, existing["lat"], existing["lon"]) <= 3.0:
+                        if haversine_distance(poi.lat, poi.lon, existing["lat"], existing["lon"]) <= 18.0:
                             is_dup = True
                             break
                 if is_dup:
@@ -641,26 +716,11 @@ class WorldModel:
                     if not rel.get("name"):
                         rel["name"] = clean_poi_name
                     
-                    # 門牌地址智能補全：若店家未直接記載門牌，自動結合鄰近道路與門牌空間索引
+                    # 門牌地址空間共識仲裁：若店家未直接記載門牌，透過周遭實體門牌投票消除十字路口路名誤判
                     if not rel.get("address"):
-                        nr, _ = self.find_nearest_road(poi.lat, poi.lon)
-                        if nr and nr.get("name") and nr["name"] not in ("未命名道路", "無名路"):
-                            r_name = nr["name"]
-                            best_door = ""
-                            best_dist = 28.0
-                            r_deg_lon = 28.0 / (111139.0 * cos_lat)
-                            r_deg_lat = 28.0 / 111139.0
-                            d_bounds = (poi.lon - r_deg_lon, poi.lat - r_deg_lat, poi.lon + r_deg_lon, poi.lat + r_deg_lat)
-                            for d_item in self.house_number_rtree.intersection(d_bounds, objects=True):
-                                h_obj = d_item.object
-                                d_dist = haversine_distance(poi.lat, poi.lon, h_obj["lat"], h_obj["lon"])
-                                if d_dist < best_dist:
-                                    best_dist = d_dist
-                                    best_door = str(h_obj.get("housenumber", "")).rstrip("號")
-                            if best_door:
-                                rel["address"] = f"{r_name} {best_door}號"
-                            else:
-                                rel["address"] = r_name
+                        rel["address"] = self.resolve_poi_address_by_consensus(
+                            poi.lat, poi.lon, rel.get("street", ""), rel.get("housenumber", "")
+                        )
 
                     results.append(rel)
 

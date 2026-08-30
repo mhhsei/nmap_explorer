@@ -1523,7 +1523,7 @@ class NmapWebApp {
     // 即時動態渲染函式
     const renderModalContent = (richData = {}, isLoading = false) => {
       const merged = Object.assign({}, poi, richData);
-      const displayAddress = merged.address || (merged.street ? `${merged.street} ${merged.housenumber ? merged.housenumber + '號' : ''}`.trim() : "") || "新北市淡水區 (近無登錄門牌)";
+      const displayAddress = merged.address || (merged.street ? `${merged.street} ${merged.housenumber ? merged.housenumber + '號' : ''}`.trim() : "") || "（周遭無登錄門牌號）";
       const displayCategory = merged.category_desc || cat;
 
       let infoRows = [

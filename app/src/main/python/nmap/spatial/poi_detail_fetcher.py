@@ -123,6 +123,8 @@ class PoiDetailFetcher:
             return "地標住宅社區"
         elif any(w in n for w in ["健身", "體能", "運動"]):
             return "運動健身中心"
+        elif any(w in n for w in ["宮", "廟", "寺", "堂", "壇", "佛堂", "教堂", "禮拜堂", "福德"]):
+            return "寺廟宮廟/信仰中心"
 
         return "商業門市設施"
 
@@ -241,6 +243,10 @@ class PoiDetailFetcher:
                 details["opening_hours"] = "今日營業時段：05:30 - 13:30"
                 details["wheelchair"] = "♿ 1 樓騎樓/平整入口"
                 details["category_desc"] = "早午餐餐飲"
+            elif any(k in clean_name for k in ["宮", "廟", "寺", "土地公", "福德宮", "佛堂"]):
+                details["opening_hours"] = "參拜時間：每日常態開放（約 06:00 - 21:00）"
+                details["wheelchair"] = "♿ 具備平整廟埕通道"
+                details["category_desc"] = "寺廟宮廟/信仰中心"
 
         # 2. 建構地點與門牌鎖定的高精準搜尋語句 (House-Number Anchored Query)
         area_prefix = "02" if (lat and lat > 24.9) else ""
