@@ -825,9 +825,10 @@ def get_poi_detail():
                         r_num = d_est.get("right_number") or ""
                         door_num = l_num or r_num or ""
                         if door_num:
-                            address = f"新北市淡水區 {r_name} {door_num}號"
+                            clean_door = str(door_num).rstrip("號")
+                            address = f"{r_name} {clean_door}號"
                         else:
-                            address = f"新北市淡水區 {r_name}"
+                            address = r_name
         except Exception as e:
             print(f"[POI DETAIL ADDR RESOLVE ERROR] {e}")
 

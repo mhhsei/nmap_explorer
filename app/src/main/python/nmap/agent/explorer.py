@@ -196,13 +196,11 @@ class ExplorerAgent:
 
         new_lat, new_lon = destination_point(self.lat, self.lon, dist, move_angle)
 
-        # Collision Check: Check if moving directly into a building within 3m
+        # Collision Check: Check if moving directly into a building within 3.5m
         buildings = self.world_model.get_nearby_buildings(self.lat, self.lon, move_angle, radius_m=15.0)
         for b in buildings:
-            # Check if building is directly ahead in move direction (< 25 deg angle offset) and very close (< 4.0 meters)
-            t_brng = calculate_bearing(self.lat, self.lon, b["distance_m"], 0) # approximation
-            rel = relative_bearing(move_angle, calculate_bearing(self.lat, self.lon, self.lat, self.lon))
-            if b["distance_m"] <= 3.5 and "正前" in b["relative_direction"]:
+            # get_nearby_buildings 傳入 move_angle，relative_direction 已相對於移動朝向
+            if b["distance_m"] <= 3.5 and "正前" in b.get("relative_direction", ""):
                 self.sound_manager.play_bump_collision()
                 return False, f"⚠️ 【撞擊/碰壁提示】「扣咚！」前方 {b['distance_m']} 公尺處有建築物/牆面牆壁 ({b['name']})，撞到障礙物無法前進！請右轉或左轉繞行。"
 
@@ -286,7 +284,8 @@ class ExplorerAgent:
             geom = best_road.get("geometry", [])
             if geom and len(geom) >= 2:
                 last_side = getattr(self, "_current_road_side", None)
-                _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side)
+                cur_h = heading_deg if (heading_deg is not None and heading_deg >= 0) else self.heading_deg
+                _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side, user_heading=cur_h)
                 self._current_road_side = side
                 lat = snap_lat
                 lon = snap_lon
@@ -326,7 +325,7 @@ class ExplorerAgent:
             geom = best_road.get("geometry", [])
             if geom and len(geom) >= 2:
                 last_side = getattr(self, "_current_road_side", None)
-                _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side)
+                _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side, user_heading=heading_deg)
                 self._current_road_side = side
                 lat = snap_lat
                 lon = snap_lon

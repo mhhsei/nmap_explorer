@@ -482,9 +482,10 @@ class PedestrianKalmanFilter {
         val mahalanobisSq = (innovX * innovX / sX) + (innovY * innovY / sY)
 
         val maxGate = if (motionState == MotionState.VEHICULAR_TRANSIT) 64.0 else 16.0
+        val maxRejDist = if (motionState == MotionState.VEHICULAR_TRANSIT) 50.0 else 15.0
         if (mahalanobisSq > maxGate) {
             val distToLastRej = sqrt((zx - lastRejectedZx) * (zx - lastRejectedZx) + (zy - lastRejectedZy) * (zy - lastRejectedZy))
-            if (distToLastRej < 15.0) {
+            if (distToLastRej < maxRejDist) {
                 consecutiveRejections++
             } else {
                 consecutiveRejections = 1
@@ -500,6 +501,8 @@ class PedestrianKalmanFilter {
                 vy = 0.0
                 p00 = baseR
                 p11 = baseR
+                p22 = 1.0
+                p33 = 1.0
                 consecutiveRejections = 0
             } else {
                 // 單點折射瞬移雜訊，予以過濾
@@ -548,11 +551,17 @@ class PedestrianKalmanFilter {
         p00 *= (1.0 - k0)
         p11 *= (1.0 - k1)
 
+        // 【速度協方差閉環收斂防發散】：
+        // 過去漏掉了 p22 與 p33 的測量更新，導致方差單調暴增使 k0/k1 永久逼近 1.0 喪失濾波能力。
+        // 此處加入閉環收斂，將速度協方差穩定在 0.2 ~ 3.0 的健康區間：
+        p22 = max(p22 * (1.0 - k0 * 0.5), 0.2)
+        p33 = max(p33 * (1.0 - k1 * 0.5), 0.2)
+
         vx = (k0 * effectiveInnovX) / dt
         vy = (k1 * effectiveInnovY) / dt
 
-        // 速度鉗制防護
-        val maxSpeed = if (motionState == MotionState.VEHICULAR_TRANSIT) 25.0 else 4.0
+        // 速度鉗制防護：車載模式上限提升至 35.0 m/s (126 km/h)，滿足台灣高鐵、國道客運與快速道路行駛需求
+        val maxSpeed = if (motionState == MotionState.VEHICULAR_TRANSIT) 35.0 else 4.5
         val curSpd = sqrt(vx * vx + vy * vy)
         if (curSpd > maxSpeed) {
             val scale = maxSpeed / curSpd
@@ -920,13 +929,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sensorManager.unregisterListener(this, it) }
             sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sensorManager.unregisterListener(this, it) }
         } else {
+            // 喚醒時：無條件重新註冊加速度計（供 PDR 步長推算、波峰計步與靜止偵測），徹底杜絕口袋模式取出後感測器脫鉤停擺！
+            sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+            }
             val rotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
             if (rotVectorSensor != null) {
                 sensorManager.registerListener(this, rotVectorSensor, SensorManager.SENSOR_DELAY_GAME)
             } else {
-                sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
-                    sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-                }
                 sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.also {
                     sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
                 }

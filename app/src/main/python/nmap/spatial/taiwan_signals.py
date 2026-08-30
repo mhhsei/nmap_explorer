@@ -333,9 +333,11 @@ class TaiwanSignalManager:
         self.spatial_index.insert(idx, (lon, lat, lon, lat), obj=signal_data)
 
     def find_signal_near(self, lat: float, lon: float, max_dist_m: float = 32.0) -> Optional[Dict[str, Any]]:
-        """在指定座標半徑內搜尋最近的號誌化資料庫節點"""
-        r_deg = max_dist_m / 111139.0
-        bounds = (lon - r_deg, lat - r_deg, lon + r_deg, lat + r_deg)
+        """在指定座標半徑內搜尋最近的號誌化資料庫節點（經度依緯度餘弦補正）"""
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_deg_lon = max_dist_m / (111139.0 * cos_lat)
+        r_deg_lat = max_dist_m / 111139.0
+        bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
         best_sig = None
         min_dist = max_dist_m
 
@@ -389,27 +391,15 @@ class TaiwanSignalManager:
         remaining_seconds = 0
         sig_id = closest_signal["id"]
 
+        # 1. 取得即時連線號誌秒數 (Live SPaT)
+        # 【生命安全鐵律】：絕不虛構秒數！只有當收到交通局/交控中心真實推播且更新時間在 5 秒內時，才標記 has_live_seconds = True
+        # 嚴禁使用 (time.time() % cycle) 進行任何偽造推算，防止視障者在真實紅燈時誤入車道！
         if sig_id in self._live_spat_cache:
             cache_entry = self._live_spat_cache[sig_id]
             if time.time() - cache_entry["updated_at"] <= 5.0:
                 has_live_seconds = True
                 light_status = cache_entry["light_status"]
                 remaining_seconds = cache_entry["remaining_seconds"]
-        elif closest_signal.get("is_connected_spat", False):
-            now_sec = int(time.time())
-            cycle = closest_signal.get("base_cycle_sec", 90)
-            pos = now_sec % cycle
-            green_len = int(cycle * 0.45)
-            has_live_seconds = True
-            if pos < green_len:
-                light_status = "GREEN"
-                remaining_seconds = green_len - pos
-            elif pos < green_len + 5:
-                light_status = "AMBER"
-                remaining_seconds = (green_len + 5) - pos
-            else:
-                light_status = "RED"
-                remaining_seconds = cycle - pos
 
         # 2. 取得行人觸動按鈕位置導引
         has_button = closest_signal.get("has_button", False)

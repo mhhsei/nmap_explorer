@@ -108,10 +108,11 @@ class SpatialPOI:
         cardinal = bearing_to_cardinal(target_brng)
         rel_dir = bearing_to_relative_direction(rel_brng)
 
-        # 組裝可視化門牌地址
+        # 組裝可視化門牌地址 (清洗重複「號」字尾)
         formatted_addr = self.address
         if not formatted_addr and self.street:
-            formatted_addr = f"{self.street} {self.housenumber}號".strip() if self.housenumber else self.street
+            clean_hn = str(self.housenumber).rstrip("號")
+            formatted_addr = f"{self.street} {clean_hn}號".strip() if self.housenumber else self.street
 
         return {
             "id": self.id,
@@ -224,6 +225,7 @@ class WorldModel:
         # 構建 POI 列表與空間網格索引
         raw_pois = parsed_data.get("pois", [])
         self.pois = []
+        seen_hn_keys = {(h.get("housenumber"), h.get("lat")) for h in self.house_numbers}
         p_idx = 0
         for p in raw_pois:
             sp = SpatialPOI(p)
@@ -232,7 +234,7 @@ class WorldModel:
                 self.poi_rtree.insert(p_idx, (sp.lon, sp.lat, sp.lon, sp.lat), obj=sp)
             p_idx += 1
 
-            # 【方案 A 核心】：若 OSM POI 帶有門牌或地址標籤，同步納入門牌清單
+            # 【方案 A 核心】：若 OSM POI 帶有門牌或地址標籤，同步納入門牌清單 (O(1) 雜湊查重)
             p_tags = p.get("tags", {}) if isinstance(p, dict) else getattr(p, "tags", {})
             p_hn = p_tags.get("addr:housenumber", "")
             p_st = p_tags.get("addr:street", "")
@@ -241,16 +243,19 @@ class WorldModel:
                 if m:
                     p_st = p_st or m.group(1) or ""
                     p_hn = m.group(2) or ""
-            if p_hn and not any(h.get("housenumber") == p_hn and h.get("lat") == sp.lat for h in self.house_numbers):
-                self.house_numbers.append({
-                    "id": p.get("id") if isinstance(p, dict) else getattr(p, "id", None),
-                    "housenumber": p_hn,
-                    "street": p_st,
-                    "name": sp.name,
-                    "lat": sp.lat,
-                    "lon": sp.lon,
-                    "tags": p_tags
-                })
+            if p_hn:
+                hn_key = (p_hn, sp.lat)
+                if hn_key not in seen_hn_keys:
+                    seen_hn_keys.add(hn_key)
+                    self.house_numbers.append({
+                        "id": p.get("id") if isinstance(p, dict) else getattr(p, "id", None),
+                        "housenumber": p_hn,
+                        "street": p_st,
+                        "name": sp.name,
+                        "lat": sp.lat,
+                        "lon": sp.lon,
+                        "tags": p_tags
+                    })
 
         # 若公共運輸站點不在 POI 中，追加建置
         for ts in self.transit_stops:
@@ -324,18 +329,49 @@ class WorldModel:
             if physical_degree >= 3:
                 node_data = self.road_graph.nodes[node_id]
                 n_lat, n_lon = node_data["lat"], node_data["lon"]
+                cos_n_lat = max(math.cos(math.radians(n_lat)), 0.1)
+
+                # 提取此路口相連之道路名稱與類型，用於防止巷弄號誌跨路口污染
+                connected_road_names = set()
+                road_types = []
+                for neighbor in physical_neighbors:
+                    for u, v in [(node_id, neighbor), (neighbor, node_id)]:
+                        if self.road_graph.has_edge(u, v):
+                            edge_data = self.road_graph[u][v]
+                            r_name = edge_data.get("name", "")
+                            if r_name and not r_name.startswith("無名"):
+                                connected_road_names.add(r_name)
+                            road_types.append(edge_data.get("type", "residential"))
+
+                is_narrow_alley_junction = bool(road_types and all(t in ("residential", "service", "living_street", "footway", "path", "unclassified") for t in road_types))
 
                 # A. 查詢官方有聲號誌資料庫 (TaiwanSignalManager)
-                official_sig = self.signal_manager.find_signal_near(n_lat, n_lon, max_dist_m=32.0)
+                # 【防污染安全機制】：小巷弄半徑緊縮至 16m；幹道允許 32m 但若距離 > 18m 必須驗證路名相符
+                search_sig_dist = 16.0 if is_narrow_alley_junction else 32.0
+                official_sig = self.signal_manager.find_signal_near(n_lat, n_lon, max_dist_m=search_sig_dist)
+                if official_sig:
+                    sig_dist = haversine_distance(n_lat, n_lon, official_sig["lat"], official_sig["lon"])
+                    if sig_dist > 18.0:
+                        name_matches = False
+                        sig_int_name = official_sig.get("intersection_name", "")
+                        for cr in connected_road_names:
+                            if len(cr) >= 2 and cr in sig_int_name:
+                                name_matches = True
+                                break
+                        if not name_matches:
+                            # 距離大於 18m 且路名完全不吻合，判定為相鄰主幹道之跨路口雜訊，予以排除
+                            official_sig = None
 
-                # B. 查詢現場 28 米內實體號誌桿
+                # B. 查詢現場 28 米內實體號誌桿 (巷弄上限 18m)
                 has_osm_signal = False
                 osm_sound_yes = False
-                sig_radius_deg = 28.0 / 111139.0
-                s_bounds = (n_lon - sig_radius_deg, n_lat - sig_radius_deg, n_lon + sig_radius_deg, n_lat + sig_radius_deg)
+                max_osm_sig_dist = 18.0 if is_narrow_alley_junction else 28.0
+                sig_radius_deg_lon = max_osm_sig_dist / (111139.0 * cos_n_lat)
+                sig_radius_deg_lat = max_osm_sig_dist / 111139.0
+                s_bounds = (n_lon - sig_radius_deg_lon, n_lat - sig_radius_deg_lat, n_lon + sig_radius_deg_lon, n_lat + sig_radius_deg_lat)
                 for s_item in self.traffic_signal_rtree.intersection(s_bounds, objects=True):
                     s_obj = s_item.object
-                    if haversine_distance(n_lat, n_lon, s_obj["lat"], s_obj["lon"]) <= 28.0:
+                    if haversine_distance(n_lat, n_lon, s_obj["lat"], s_obj["lon"]) <= max_osm_sig_dist:
                         has_osm_signal = True
                         if s_obj.get("sound") in ("yes", "acoustic", "buzzer"):
                             osm_sound_yes = True
@@ -343,8 +379,9 @@ class WorldModel:
                 # C. 查詢現場 25 米內斑馬線與庇護島
                 has_crossing = False
                 has_refuge_island = False
-                c_radius_deg = 25.0 / 111139.0
-                cr_bounds = (n_lon - c_radius_deg, n_lat - c_radius_deg, n_lon + c_radius_deg, n_lat + c_radius_deg)
+                c_radius_deg_lon = 25.0 / (111139.0 * cos_n_lat)
+                c_radius_deg_lat = 25.0 / 111139.0
+                cr_bounds = (n_lon - c_radius_deg_lon, n_lat - c_radius_deg_lat, n_lon + c_radius_deg_lon, n_lat + c_radius_deg_lat)
                 for cr_item in self.crossing_rtree.intersection(cr_bounds, objects=True):
                     cr_obj = cr_item.object
                     if haversine_distance(n_lat, n_lon, cr_obj["lat"], cr_obj["lon"]) <= 25.0:
@@ -516,8 +553,10 @@ class WorldModel:
         if not self.roads:
             return None, 999999.0
 
-        radius_deg = 150.0 / 111000.0 # 約 150m
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = 150.0 / (111139.0 * cos_lat)
+        radius_deg_lat = 150.0 / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
         min_dist = 999999.0
         best_road = None
 
@@ -527,22 +566,24 @@ class WorldModel:
             if len(geom) < 2:
                 continue
             
-            dist_m, _, _ = find_closest_point_on_line(lat, lon, geom)
-            if dist_m < min_dist:
-                min_dist = dist_m
+            dist, _, _ = find_closest_point_on_line(lat, lon, geom)
+            if dist < min_dist:
+                min_dist = dist
                 best_road = road
 
         return best_road, min_dist
 
-    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 150.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 60.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         【查詢半徑 radius_m 內的所有店家、設施與地標大樓】
         作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的完整 POI 列表。
         精準依據 3.0 公尺閾值去重同名實體，並將無名建築過濾或轉正為門牌地址，徹底消滅無意義的 apartments 雜訊。
         """
         results = []
-        radius_deg = radius_m / 111139.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = radius_m / (111139.0 * cos_lat)
+        radius_deg_lat = radius_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
         category_lower = category.lower() if category else None
 
         generic_tags = {
@@ -607,8 +648,9 @@ class WorldModel:
                             r_name = nr["name"]
                             best_door = ""
                             best_dist = 28.0
-                            r_deg = 28.0 / 111139.0
-                            d_bounds = (poi.lon - r_deg, poi.lat - r_deg, poi.lon + r_deg, poi.lat + r_deg)
+                            r_deg_lon = 28.0 / (111139.0 * cos_lat)
+                            r_deg_lat = 28.0 / 111139.0
+                            d_bounds = (poi.lon - r_deg_lon, poi.lat - r_deg_lat, poi.lon + r_deg_lon, poi.lat + r_deg_lat)
                             for d_item in self.house_number_rtree.intersection(d_bounds, objects=True):
                                 h_obj = d_item.object
                                 d_dist = haversine_distance(poi.lat, poi.lon, h_obj["lat"], h_obj["lon"])
@@ -634,8 +676,8 @@ class WorldModel:
                     b_lat = sum(p[0] for p in b_geom) / len(b_geom)
                     b_lon = sum(p[1] for p in b_geom) / len(b_geom)
                 else:
-                    b_lat = bldg.get("lat") if isinstance(bldg, dict) else getattr(bldg, "lat", lat)
-                    b_lon = bldg.get("lon") if isinstance(bldg, dict) else getattr(bldg, "lon", lon)
+                    b_lat = (bldg.get("center_lat") or bldg.get("lat") or lat) if isinstance(bldg, dict) else getattr(bldg, "center_lat", getattr(bldg, "lat", lat))
+                    b_lon = (bldg.get("center_lon") or bldg.get("lon") or lon) if isinstance(bldg, dict) else getattr(bldg, "center_lon", getattr(bldg, "lon", lon))
 
                 # 同名地標/大樓 3.0 公尺以內去重
                 is_dup = False
@@ -732,8 +774,10 @@ class WorldModel:
         【查詢周遭建築物、樓層與距離】
         """
         results = []
-        radius_deg = radius_m / 100000.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = radius_m / (111139.0 * cos_lat)
+        radius_deg_lat = radius_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
         for item in self.building_rtree.intersection(bounds, objects=True):
             b = item.object
             c_lat = b["center_lat"]
@@ -764,8 +808,10 @@ class WorldModel:
         【查詢周遭行人斑馬線與導盲磚標記】
         """
         results = []
-        radius_deg = radius_m / 100000.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = radius_m / (111139.0 * cos_lat)
+        radius_deg_lat = radius_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
         for item in self.crossing_rtree.intersection(bounds, objects=True):
             c = item.object
             dist = haversine_distance(lat, lon, c["lat"], c["lon"])

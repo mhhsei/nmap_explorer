@@ -58,18 +58,18 @@ class ServerForegroundService : Service() {
                     // 已取得權限：以 location 類型啟動前台服務
                     startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
                 } else {
-                    // 尚未取得權限：在 Android 14 (API 34) 下若無權限調用 typed startForeground 會拋異常，故需降級防禦
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        Log.w(tag, "Location permission not granted yet, deferring typed startForeground.")
-                    } else {
-                        startForeground(1, notification)
-                    }
+                    // 尚未取得權限：在 Android 14 (API 34+) 下若無權限且未在 5 秒內 startForeground 會引發致命崩潰
+                    // 故立即 stopSelf() 進行優雅關閉，杜絕 ForegroundServiceDidNotStartInTimeException 閃退！
+                    Log.w(tag, "Location permission not granted. Stopping foreground service immediately to prevent Android 14 crash.")
+                    stopSelf()
+                    return START_NOT_STICKY
                 }
             } else {
                 startForeground(1, notification)
             }
         } catch (e: Exception) {
             Log.e(tag, "Failed to startForeground: ${e.message}", e)
+            stopSelf()
         }
         
         // 若服務被系統意外終止，不要自動重啟（避免使用者已不需要時耗電）

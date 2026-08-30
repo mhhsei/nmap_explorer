@@ -115,7 +115,8 @@ def snap_pedestrian_to_road(
     lon: float,
     geom: List[Tuple[float, float]],
     road: dict,
-    last_side: Optional[str] = None
+    last_side: Optional[str] = None,
+    user_heading: Optional[float] = None
 ) -> Tuple[float, float, float, str]:
     """
     【自適應行人道路吸附演算法 (Adaptive Pedestrian Road Snapping)】
@@ -123,12 +124,12 @@ def snap_pedestrian_to_road(
     為什麼要特別區分寬路與小巷？
     1. 小巷弄（寬度 < 8m）：視障者走在巷子裡本來就偏向路中間或隨意走動，若強行區分左右會造成左右亂跳，因此直接吸附至「道路中心線 (Centerline)」。
     2. 大馬路（寬度 >= 8m，如敦化南路、中山北路）：行人絕對是走在兩側人行道或騎樓上，絕不能走在馬路正中央被車撞！
-       系統利用「向量外積 (Cross Product)」判斷使用者偏向道路的左側還是右側，並沿法向量向路側偏移至人行道。
+       系統利用「向量外積 (Cross Product)」與使用者「行走朝向 (user_heading)」進行同向化投影，
+       精準判斷是走在視障者第一人稱視角的「左側」還是「右側」人行道，並沿法向量向路側偏移。
     3. 遲滯保護 (Hysteresis)：當在道路中線附近 1.5m 內徘徊時，保持上一次的左/右側狀態，避免視障語音頻繁左右跳動。
     """
     if not geom or len(geom) < 2:
         return 0.0, lat, lon, "center"
-
 
     min_dist_sq = float('inf')
     best_proj_lat = lat
@@ -139,7 +140,7 @@ def snap_pedestrian_to_road(
     avg_lat = math.radians(lat)
     cos_lat = math.cos(avg_lat)
     m_per_deg_lat = 111139.0
-    m_per_deg_lon = 111139.0 * cos_lat
+    m_per_deg_lon = max(111139.0 * cos_lat, 1e-6)
 
     for i in range(len(geom) - 1):
         lat1, lon1 = geom[i]
@@ -168,14 +169,13 @@ def snap_pedestrian_to_road(
             best_proj_lon = lon1 + t * (lon2 - lon1)
 
     min_dist = math.sqrt(min_dist_sq)
-
     road_width = estimate_road_width_m(road)
 
-    # 1. Narrow Street (< 8.0m): Snap directly to centerline (Center)
+    # 1. 窄巷弄 (< 8.0m)：直接吸附至道路中心線 (Center)
     if road_width < 8.0:
         return min_dist, best_proj_lat, best_proj_lon, "center"
 
-    # 2. Wide Road (>= 8.0m): Compute Side & Sidewalk Offset
+    # 2. 大馬路 (>= 8.0m)：計算第一人稱左右側與人行道向外偏移量
     lat1, lon1 = geom[best_seg_idx]
     lat2, lon2 = geom[best_seg_idx + 1]
 
@@ -188,9 +188,24 @@ def snap_pedestrian_to_road(
     px = (lon - lon1) * m_per_deg_lon
     py = (lat - lat1) * m_per_deg_lat
 
-    cross = vx * py - vy * px
-    raw_side = "left" if cross > 0 else "right"
-    lateral_dist = abs(cross) / seg_len
+    # 幾何外積 (相對於 OSM 線段方向)：> 0 為線段左側，< 0 為線段右側
+    geom_cross = vx * py - vy * px
+    lateral_dist = abs(geom_cross) / seg_len
+
+    # 同向化檢查：比對線段向量與使用者行進朝向
+    is_walking_backward = False
+    if user_heading is not None and user_heading >= 0:
+        ux = math.sin(math.radians(user_heading))
+        uy = math.cos(math.radians(user_heading))
+        dot = vx * ux + vy * uy
+        if dot < 0:
+            is_walking_backward = True
+
+    # 依據使用者視角決定第一人稱的 left / right
+    if is_walking_backward:
+        raw_side = "right" if geom_cross > 0 else "left"
+    else:
+        raw_side = "left" if geom_cross > 0 else "right"
 
     current_side = raw_side
     if lateral_dist < 1.5 and last_side in ("left", "right"):
@@ -198,12 +213,18 @@ def snap_pedestrian_to_road(
 
     sidewalk_offset_m = min(max(road_width / 2.0 - 1.0, 2.5), 18.0)
 
-    if current_side == "right":
-        nx = vy / seg_len
-        ny = -vx / seg_len
-    else:
+    # 決定法向量投影方向 (始終朝向行人所在側)
+    # 若行人處於線段左側 (geom_cross > 0)，法向量為 (-vy, vx)
+    # 若行人處於線段右側 (geom_cross <= 0)，法向量為 (vy, -vx)
+    # 考量遲滯效應反推物理所在側：
+    physical_on_geom_left = (current_side == "right") if is_walking_backward else (current_side == "left")
+
+    if physical_on_geom_left:
         nx = -vy / seg_len
         ny = vx / seg_len
+    else:
+        nx = vy / seg_len
+        ny = -vx / seg_len
 
     offset_lat = best_proj_lat + (ny * sidewalk_offset_m) / m_per_deg_lat
     offset_lon = best_proj_lon + (nx * sidewalk_offset_m) / m_per_deg_lon

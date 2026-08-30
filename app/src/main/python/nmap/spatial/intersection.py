@@ -8,6 +8,7 @@
    - 有聲號誌 (Acoustic Signals)：回報是否有布穀鳥聲、蟋蟀聲等無障礙有聲導引。
 3. 分支走向導覽：精確指出例如「2點鐘方向往北新路一段」、「9點鐘方向往中正路」。
 """
+import math
 import logging
 from typing import List, Dict, Any, Optional
 from nmap.spatial.geometry import (
@@ -34,8 +35,11 @@ class IntersectionAnalyzer:
         利用 WorldModel 預先建立的空間網格索引 (crossing_rtree, traffic_signal_rtree, junction_rtree)，
         只檢索方圓 60 公尺內的實體設施與路口節點，將查詢複雜度由 O(N) 降至 O(1)。
         """
-        radius_deg = max_distance_m / 111139.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        # 依據緯度餘弦校正經度搜尋半徑，消除台灣地區 9.4% 的東西向檢索盲區
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = max_distance_m / (111139.0 * cos_lat)
+        radius_deg_lat = max_distance_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
 
         # 1. 空間索引搜尋前方附近的斑馬線節點
         nearby_crossings = []
@@ -87,20 +91,9 @@ class IntersectionAnalyzer:
 
         nearby_signals.sort(key=lambda x: x["distance_m"])
 
-        # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3)
-        junction_type = "直行道路"
-        closest_junction_dist = 999.0
-
-        intersecting_roads = set()
-        branches_info = []
-        if curr_road_info is None:
-            curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
-        curr_street = curr_road_info.get("street_name", "")
-
         # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3，延伸搜尋下一個路口，最遠 500 公尺)
         junction_type = "直行道路"
         closest_junction_dist = 999.0
-
         intersecting_roads = set()
         branches_info = []
         if curr_road_info is None:
@@ -109,8 +102,9 @@ class IntersectionAnalyzer:
 
         # 延伸至前方 500 公尺搜尋下一個實體路口，消除距離限制
         max_junction_distance_m = max(max_distance_m, 500.0)
-        j_radius_deg = max_junction_distance_m / 111139.0
-        j_bounds = (lon - j_radius_deg, lat - j_radius_deg, lon + j_radius_deg, lat + j_radius_deg)
+        j_radius_deg_lon = max_junction_distance_m / (111139.0 * cos_lat)
+        j_radius_deg_lat = max_junction_distance_m / 111139.0
+        j_bounds = (lon - j_radius_deg_lon, lat - j_radius_deg_lat, lon + j_radius_deg_lon, lat + j_radius_deg_lat)
         closest_junction_meta = {}
 
         for item in world_model.junction_rtree.intersection(j_bounds, objects=True):
@@ -121,8 +115,9 @@ class IntersectionAnalyzer:
             if dist <= max_junction_distance_m:
                 t_brng = calculate_bearing(lat, lon, n_lat, n_lon)
                 rel_brng = relative_bearing(heading_deg, t_brng)
-                # 關注前方視角 (朝向 ±85° 以內) 或極度接近 (< 15m) 的路口節點
-                if (abs(rel_brng) <= 85 or dist < 15.0) and dist < closest_junction_dist:
+                # 關注前方視野 (朝向 ±75° 以內) 或近距離但非身後 (< 12m 且 abs(rel_brng) <= 90°) 的路口節點
+                is_front_junction = abs(rel_brng) <= 75 or (dist < 12.0 and abs(rel_brng) <= 90)
+                if is_front_junction and dist < closest_junction_dist:
                     physical_neighbors = (set(world_model.road_graph.predecessors(node_id)) | set(world_model.road_graph.successors(node_id))) - {node_id}
                     real_degree = len(physical_neighbors)
                     if real_degree >= 3:
@@ -196,10 +191,11 @@ class IntersectionAnalyzer:
 
         # 組合親切易懂的路口專屬名稱 (例如「北新路與大忠街口」或「大忠街口」)
         junction_display_name = junction_type
+        sorted_intersecting_roads = sorted(intersecting_roads)
         if signal_name:
             junction_display_name = signal_name
-        elif intersecting_roads:
-            cross_first = list(intersecting_roads)[0]
+        elif sorted_intersecting_roads:
+            cross_first = sorted_intersecting_roads[0]
             junction_display_name = f"{cross_first}口" if not cross_first.endswith("口") else cross_first
 
         # Build accessibility & safety summary text for NVDA
@@ -224,8 +220,8 @@ class IntersectionAnalyzer:
         else:
             safety_notes.append("前方 50 公尺內暫無明顯斑馬線")
 
-        if intersecting_roads:
-            roads_str = "、".join(intersecting_roads)
+        if sorted_intersecting_roads:
+            roads_str = "、".join(sorted_intersecting_roads)
             safety_notes.insert(0, f"即將進入與 {roads_str} 交會之{junction_type}")
         else:
             if junction_type != "直行道路":

@@ -245,10 +245,6 @@ class PoiDetailFetcher:
         # 2. 建構地點與門牌鎖定的高精準搜尋語句 (House-Number Anchored Query)
         area_prefix = "02" if (lat and lat > 24.9) else ""
         clean_addr = (address or "").replace("台灣", "").replace("臺灣", "").strip()
-        if clean_addr and not any(c in clean_addr for c in ["市", "縣"]):
-            clean_addr = f"新北市淡水區 {clean_addr}"
-        elif not clean_addr:
-            clean_addr = "新北市淡水區"
 
         # 確保回傳結構帶有門牌地址
         details["address"] = clean_addr
@@ -377,7 +373,7 @@ class PoiDetailFetcher:
         if "號" not in details["address"]:
             street_core = re.sub(r'^[^\d市區鄉鎮]+?(?:市|縣|區)', '', clean_addr).strip()
             if street_core:
-                addr_match = re.search(r'((?:新北市|台北市)?淡水區[^\s,，。]+?' + re.escape(street_core) + r'[^\s,，。]*?\d+(?:[之\-]\d+)?號)', combined_html)
+                addr_match = re.search(r'((?:[^\s,，。]+?[市縣])?[^\s,，。]+?[區市鎮鄉]?[^\s,，。]*?' + re.escape(street_core) + r'[^\s,，。]*?\d+(?:[之\-]\d+)?號)', combined_html)
                 if addr_match:
                     details["address"] = addr_match.group(1).strip()
 

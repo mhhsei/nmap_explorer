@@ -2216,33 +2216,37 @@ class NmapWebApp {
     if (!this.announcedMrtCooldown) this.announcedMrtCooldown = new Map();
 
     // 0.1 【Scheme 3 人行道安全防撞雷達 (變電箱/消防栓/施工窄頸)】- 第一優先碰撞警戒！
+    // 【安全規範】：下限必須為 0.0 公尺！絕不可在即將撞上的最後 1.5 公尺內突然安靜。
     if (data.sidewalk_hazards && data.sidewalk_hazards.length > 0) {
       const h = data.sidewalk_hazards[0];
       const lastHzTime = this.announcedHazardCooldown.get(h.id) || 0;
-      if (h.distance_m <= 8.0 && h.distance_m >= 1.5 && (now - lastHzTime > 25000)) {
+      if (h.distance_m <= 8.0 && h.distance_m >= 0.0 && (now - lastHzTime > 25000)) {
         this.announcedHazardCooldown.set(h.id, now);
+        const urgentPrompt = h.distance_m < 1.5 ? `⚠️ 注意正前方 ${h.name}，請立即停步探測！` : h.speech_prompt;
         this.announceObject({
           name: h.name,
           category: "warning",
           distance_m: h.distance_m,
           relative_bearing_deg: (h.lateral_offset_m || 0) > 0 ? 15 : -15
-        }, h.speech_prompt, true);
+        }, urgentPrompt, true);
         return;
       }
     }
 
     // 0.2 【Scheme 1 交通部視障有聲號誌 (APS)】- 實體號誌優先導引
-    if (data.traffic_signal && data.traffic_signal.has_aps && data.traffic_signal.distance_m <= 22.0 && data.traffic_signal.distance_m >= 4.0) {
+    // 【安全規範】：下限延伸至 0.0 公尺，走到號誌桿旁時提示已抵達
+    if (data.traffic_signal && data.traffic_signal.has_aps && data.traffic_signal.distance_m <= 22.0 && data.traffic_signal.distance_m >= 0.0) {
       const sig = data.traffic_signal;
       const lastSigTime = this.announcedSignalCooldown.get(sig.id) || 0;
       if (now - lastSigTime > 30000) {
         this.announcedSignalCooldown.set(sig.id, now);
+        const prompt = sig.distance_m < 4.0 ? `📍 已在【${sig.intersection_name}】號誌桿旁，${sig.speech_prompt}` : `📍 ${sig.speech_prompt}`;
         this.announceObject({
           name: sig.intersection_name,
           category: "signal",
           distance_m: sig.distance_m,
           relative_bearing_deg: 0
-        }, `📍 ${sig.speech_prompt}`, false);
+        }, prompt, false);
         return;
       }
     }
@@ -2276,12 +2280,11 @@ class NmapWebApp {
 
       if (arrivalCandidate) {
         const cleanedName = this.cleanPoiName(arrivalCandidate.name);
-        const lastArrival = this.arrivedPoiCooldown.get(cleanedName) || this.arrivedPoiCooldown.get(arrivalCandidate.name) || 0;
+        const arrivalKey = arrivalCandidate.id || (arrivalCandidate.lat && arrivalCandidate.lon ? `${cleanedName}_${arrivalCandidate.lat.toFixed(4)}_${arrivalCandidate.lon.toFixed(4)}` : cleanedName);
+        const lastArrival = this.arrivedPoiCooldown.get(arrivalKey) || 0;
         if (now - lastArrival > 60000) { // 60秒冷卻，進店後不重覆疲勞轟炸
-          this.arrivedPoiCooldown.set(cleanedName, now);
-          this.arrivedPoiCooldown.set(arrivalCandidate.name, now);
-          this.announcedPoiCooldown.set(cleanedName, now); // 同步刷新走廊冷卻
-          this.announcedPoiCooldown.set(arrivalCandidate.name, now);
+          this.arrivedPoiCooldown.set(arrivalKey, now);
+          this.announcedPoiCooldown.set(arrivalKey, now); // 同步刷新走廊冷卻
 
           const arrivalMsg = `🎉 已抵達【${cleanedName}】門口`;
           if (this.audio) this.audio.playArrival();
@@ -2299,9 +2302,12 @@ class NmapWebApp {
         // 排除停車格等雜訊設施
         if (this.isIgnoredPoi(p.name, p.category)) return false;
 
-        // 嚴格前向/側向走廊：排除後方與夾角 > 90° 的店家（下限改為 0.0m，徹底消滅 1.5m 盲區）
-        const isForwardOrSide = !dir.includes("後方") && relBearing <= 90;
-        return d <= 25.0 && d >= 0.0 && isForwardOrSide;
+        // 嚴格前向/側向走廊幾何投影過濾：徹底排除隔壁平行巷弄幽靈 POI
+        if (dir.includes("後方") || relBearing > 90) return false;
+        const rad = (relBearing * Math.PI) / 180.0;
+        const latDist = Math.abs(d * Math.sin(rad));
+        const fwdDist = d * Math.cos(rad);
+        return fwdDist >= 0.0 && fwdDist <= 25.0 && latDist <= 14.0;
       });
 
       if (corridorPois.length > 0) {
@@ -2314,10 +2320,11 @@ class NmapWebApp {
 
         for (const poi of candidates) {
           const cleanedName = this.cleanPoiName(poi.name);
-          const lastTime = this.announcedPoiCooldown.get(cleanedName) || this.announcedPoiCooldown.get(poi.name) || 0;
+          // 冷卻鍵綁定座標或 ID，徹底解決相鄰同品牌連鎖店 (如 7-11/全家) 被錯誤靜音的問題
+          const poiKey = poi.id || (poi.lat && poi.lon ? `${cleanedName}_${poi.lat.toFixed(4)}_${poi.lon.toFixed(4)}` : cleanedName);
+          const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
           if (now - lastTime > 35000) { // 35秒冷卻，避免同店家重複疲勞轟炸
-            this.announcedPoiCooldown.set(cleanedName, now);
-            this.announcedPoiCooldown.set(poi.name, now);
+            this.announcedPoiCooldown.set(poiKey, now);
 
             // 省話模式格式：[店名] (樓層)，[方位 距離]m (例如：「全家便利商店，左前方 8公尺」或「祐安牙醫 (2樓)，右前方 12公尺」)
             const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
@@ -2343,6 +2350,12 @@ class NmapWebApp {
         const isSignalized = !!data.intersection.is_signalized;
         const hasAps = !!data.intersection.has_aps;
         const hasIsland = !!data.intersection.has_refuge_island;
+
+        // 若路口名稱改變，立刻重置狀態機為 IDLE，防止跨路口沿用舊狀態
+        if (this.lastJunctionName && this.lastJunctionName !== juncName && juncDist > 8.0) {
+          this.currentJunctionState = "IDLE";
+        }
+        this.lastJunctionName = juncName;
 
         // A. 提前接近路口 (6.0m ~ 28.0m)
         if (juncDist <= 28.0 && juncDist >= 6.0) {
@@ -2385,10 +2398,12 @@ class NmapWebApp {
           }
         }
         
-        // C. 通過後繼續前進 (> 30.0m)
-        else if (juncDist > 30.0 && this.currentJunctionState === "PASSING") {
+        // C. 通過後繼續前進 (> 28.0m) - 【防死鎖恢復核心】：
+        // 只要距離大於 28.0m 且非 IDLE，無條件重置為 IDLE，杜絕因 GPS 步進略過 < 6m 導致後續路口全部罷工！
+        else if (juncDist > 28.0 && this.currentJunctionState !== "IDLE") {
+          const wasPassing = (this.currentJunctionState === "PASSING");
           this.currentJunctionState = "IDLE";
-          if (now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
+          if (wasPassing && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
             const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
             const msg = `沿著【${currentRoad}】前進`;
             this.announceRoad(msg, false);
@@ -2697,6 +2712,12 @@ class NmapWebApp {
     this.lastSyncLat = null;
     this.lastSyncLon = null;
     this.lastSyncHeading = null;
+    this.currentJunctionState = "IDLE";
+    this.lastJunctionName = null;
+    this.currentStreetName = null;
+    this.lastIntersectionAlertTime = 0;
+    if (this.announcedPoiCooldown) this.announcedPoiCooldown.clear();
+    if (this.arrivedPoiCooldown) this.arrivedPoiCooldown.clear();
     this.updateLiveLog(`正在定位移至「${locationInput}」，請稍候...`);
     fetch("/api/teleport", {
       method: "POST",
@@ -2780,9 +2801,20 @@ class NmapWebApp {
 
           this.updateGameLogic(dt, time);
           
+          // 【Canvas 髒標記 (Dirty Flag) 省電優化】：
+          // 只有當朝向旋轉超過 0.5 度、座標改變或新資料到達時才執行 2D 重繪與 DOM 更新，
+          // 徹底消滅靜止時每秒 60~120 次無效重繪造成的發熱與電池消耗！
           if (this.lastData) {
-              this.lastData.heading_deg = this.localHeading;
-              this.renderRadarCanvas(this.lastData);
+              const headingDiff = Math.abs((this.localHeading || 0) - (this._lastRenderedHeading || 0));
+              const posChanged = (this._lastRenderedLat !== this.localLat) || (this._lastRenderedLon !== this.localLon);
+              if (this.isCanvasDirty || posChanged || headingDiff >= 0.5) {
+                  this.isCanvasDirty = false;
+                  this._lastRenderedHeading = this.localHeading;
+                  this._lastRenderedLat = this.localLat;
+                  this._lastRenderedLon = this.localLon;
+                  this.lastData.heading_deg = this.localHeading;
+                  this.renderRadarCanvas(this.lastData);
+              }
           }
       };
       this.rafId = requestAnimationFrame(loop);
