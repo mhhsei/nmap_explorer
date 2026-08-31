@@ -110,7 +110,7 @@ class GooglePlacesClient:
                     "place_id": place_id,
                     "fields": "name,rating,user_ratings_total,opening_hours,"
                               "price_level,reviews,business_status,"
-                              "formatted_phone_number,website,url",
+                              "formatted_phone_number,website,url,formatted_address",
                     "key": self.api_key,
                     "language": "zh-TW",
                     "reviews_sort": "newest"
@@ -139,6 +139,7 @@ class GooglePlacesClient:
 
                 result = {
                     "name": r.get("name", ""),
+                    "address": r.get("formatted_address", ""),
                     "rating": r.get("rating"),
                     "user_ratings_total": r.get("user_ratings_total", 0),
                     "price_level": r.get("price_level"),

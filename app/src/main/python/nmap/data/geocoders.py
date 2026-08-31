@@ -306,10 +306,11 @@ class NominatimClient:
                 poi_name = addr_data.get("PlaceName", "")
                 match_addr = addr_data.get("Match_addr", "")
 
+                # 若 ArcGIS 有抓出精確門牌號，直接採用
                 if add_num or ("號" in st):
                     clean_hn = add_num if add_num else ""
                     if not clean_hn:
-                        m = re.search(r'(\d+)號', st)
+                        m = re.search(r'(\d+(?:[之\-]\d+)?)號', st)
                         if m:
                             clean_hn = m.group(1)
 
@@ -322,6 +323,44 @@ class NominatimClient:
                     }
                     self.cache.set_geocode(cache_key, res)
                     return res
+        except Exception:
+            pass
+
+        # 2. ArcGIS 未抓出門牌號時，無縫呼叫 Nominatim (OSM 官方高精準門牌與行政區)
+        try:
+            nom_params = {
+                "lat": lat,
+                "lon": lon,
+                "format": "json",
+                "addressdetails": 1
+            }
+            resp = self.session.get(NOMINATIM_REVERSE_URL, params=nom_params, timeout=2.5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and "address" in data:
+                    addr_info = data["address"]
+                    hn = addr_info.get("house_number", "")
+                    road = addr_info.get("road", "")
+                    city = addr_info.get("city") or addr_info.get("county") or ""
+                    district = addr_info.get("suburb") or addr_info.get("town") or addr_info.get("district") or ""
+                    
+                    # 組合出標準中文地址：新北市板橋區縣民大道二段22號
+                    formatted_parts = [city, district, road]
+                    if hn:
+                        clean_hn = hn if "號" in hn else f"{hn}號"
+                        formatted_parts.append(clean_hn)
+                    full_addr = "".join(filter(None, formatted_parts))
+                    
+                    if full_addr:
+                        res = {
+                            "street": road,
+                            "housenumber": hn.replace("號", "").strip(),
+                            "name": data.get("name", ""),
+                            "full_address": full_addr,
+                            "source": "nominatim"
+                        }
+                        self.cache.set_geocode(cache_key, res)
+                        return res
         except Exception:
             pass
 

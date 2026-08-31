@@ -807,34 +807,47 @@ def get_poi_detail():
     lat = float(lat_str) if (lat_str and str(lat_str).strip() != "") else None
     lon = float(lon_str) if (lon_str and str(lon_str).strip() != "") else None
 
-    # 門牌地址雙重補強：若前端傳入空地址，自動從 world_model 查出該店或該座標的真實門牌
-    if (not address or address.strip() == "") and lat is not None and lon is not None:
+    # 【方案三：真實地址解析鏈 (Scheme 3 Authentic Address Chain)】
+    # 嚴禁憑空捏造門牌號碼！若無登記門牌，清楚回退至路段商圈，絕不使用數學估算拼湊假地址。
+    address_source = "unregistered"
+    if address and address.strip():
+        address_source = "registered"
+    elif lat is not None and lon is not None:
         try:
+            # 1. 第一優先：從本地 world_model 尋找具備真實商工/圖資登記地址的店家
             if hasattr(agent, "world_model") and agent.world_model:
                 from nmap.spatial.geometry import haversine_distance
                 for p in agent.world_model.pois:
-                    if (p.name == name or haversine_distance(lat, lon, p.lat, p.lon) < 8.0) and getattr(p, "address", None):
+                    if (p.name == name or haversine_distance(lat, lon, p.lat, p.lon) < 12.0) and getattr(p, "address", None):
                         address = p.address
+                        address_source = "registered"
                         break
-                if not address:
-                    nr, _ = agent.world_model.find_nearest_road(lat, lon)
-                    r_name = nr.get("name", "") if nr else ""
-                    if r_name and r_name not in ("未命名道路", "無名路"):
-                        d_est = agent.world_model.get_interpolated_door_numbers(lat, lon, 0.0)
-                        l_num = d_est.get("left_number") or ""
-                        r_num = d_est.get("right_number") or ""
-                        door_num = l_num or r_num or ""
-                        if door_num:
-                            clean_door = str(door_num).rstrip("號")
-                            address = f"{r_name} {clean_door}號"
-                        else:
-                            address = r_name
+
+            # 2. 第二優先：若離線無地址，查詢本機 SQLite 官方門牌持久快取與線上官方反查 (ArcGIS / Nominatim)
+            if not address:
+                from nmap.data.cache import CacheManager
+                from nmap.data.geocoders import NominatimClient
+                cache = CacheManager()
+                client = NominatimClient(cache_manager=cache)
+                online_dp = client.get_doorplate_online(lat, lon)
+                if online_dp and online_dp.get("full_address"):
+                    address = online_dp["full_address"]
+                    address_source = "official_geocoded"
+
+            # 3. 第三優先：若官方無登記精確門牌號，誠實取得最近真實路名，不隨意加門牌號
+            if not address and hasattr(agent, "world_model") and agent.world_model:
+                nr, _ = agent.world_model.find_nearest_road(lat, lon)
+                r_name = nr.get("name", "") if nr else ""
+                if r_name and r_name not in ("未命名道路", "無名路"):
+                    address = f"{r_name}週邊"
+                    address_source = "road_vicinity"
         except Exception as e:
             print(f"[POI DETAIL ADDR RESOLVE ERROR] {e}")
 
-    print(f"[POI DETAIL FETCH] Decoded params: Name='{name}', Addr='{address}', Lat={lat}, Lon={lon}")
+    print(f"[POI DETAIL FETCH] Decoded params: Name='{name}', Addr='{address}', Source='{address_source}', Lat={lat}, Lon={lon}")
     details = poi_detail_fetcher.fetch_poi_details(name, lat, lon, address, floor)
-    print(f"[POI DETAIL RESULT] '{name}' -> Phone='{details.get('phone')}', Hours='{details.get('opening_hours')}', Rating='{details.get('rating')}'")
+    details["address_source"] = address_source
+    print(f"[POI DETAIL RESULT] '{name}' -> Phone='{details.get('phone')}', Hours='{details.get('opening_hours')}', Addr='{details.get('address')}'")
 
     return json_response({
         "success": True,

@@ -1529,7 +1529,20 @@ class NmapWebApp {
     // 即時動態渲染函式
     const renderModalContent = (richData = {}, isLoading = false) => {
       const merged = Object.assign({}, poi, richData);
-      const displayAddress = merged.address || (merged.street ? `${merged.street} ${merged.housenumber ? merged.housenumber + '號' : ''}`.trim() : "") || "（周遭無登錄門牌號）";
+      
+      // 【方案三：真實地址無偽造展示 (Authentic Address Display)】
+      let displayAddress = "";
+      if (merged.address && merged.address.trim()) {
+        displayAddress = merged.address.trim();
+      } else if (merged.street && merged.housenumber) {
+        displayAddress = `${merged.street} ${merged.housenumber}號`.trim();
+      } else if (merged.street) {
+        displayAddress = `${merged.street}週邊（未登記詳細門牌）`;
+      } else if (isLoading) {
+        displayAddress = `⏳ 正在比對官方門牌資料庫...`;
+      } else {
+        displayAddress = `未登記正式門牌號（位於鄰近路段）`;
+      }
       const displayCategory = merged.category_desc || cat;
 
       let infoRows = [
@@ -1594,18 +1607,14 @@ class NmapWebApp {
       this.updateLiveLog(`開啟地標詳情：${poi.name}${spokenFloor}，距離 ${poi.distance_m} 公尺。背景播報已暫停。`, false, true);
     }, 180);
 
-    // 優先使用 POI 自身地址門牌；若無，自動結合當前所在路名與推估門牌
+    // 【方案三】：嚴禁將視障者自身的門牌推估值冒充為店家門牌！
+    // 只傳送店家自身登記之地址，若無則傳空字串讓後端進行官方反查與真實路名商圈解析
     let targetAddr = poi.address || "";
-    if (!targetAddr && poi.street) {
-      targetAddr = `${poi.street} ${poi.housenumber ? poi.housenumber + '號' : ''}`.trim();
-    }
-    if (!targetAddr) {
-      const road = this.currentRoadName || this.currentStreetName || "";
-      const door = this.lastSpokenDoor || "";
-      targetAddr = `${road} ${door}`.trim();
+    if (!targetAddr && poi.street && poi.housenumber) {
+      targetAddr = `${poi.street} ${poi.housenumber}號`.trim();
     }
 
-    // 非同步極速向後端獲取當日即時營業時間、電話、類型與無障礙資訊 (< 0.55s)
+    // 非同步極速向後端獲取當日即時營業時間、電話、官方真門牌與無障礙資訊 (< 0.55s)
     const encodedName = encodeURIComponent(poi.name || "");
     const encodedAddr = encodeURIComponent(targetAddr);
     const floorParam = encodeURIComponent(poi.floor || "1F");
@@ -1615,15 +1624,15 @@ class NmapWebApp {
         if (data.success && data.details) {
           renderModalContent(data.details, false);
           
-          // 搜尋完成播放清脆提示音，並即時報讀門牌地址、電話與營業時間
+          // 搜尋完成播放清脆提示音，並即時報讀真實門牌地址、電話與營業時間
           if (this.audio && this.audio.playSearchCompleteTone) {
             this.audio.playSearchCompleteTone();
           }
-          const finAddr = data.details.address || targetAddr || "";
+          const finAddr = data.details.address || "未登記正式門牌號";
           const finPhone = data.details.phone ? `，電話：${data.details.phone}` : "";
           const finHours = data.details.opening_hours ? `，營業時間：${data.details.opening_hours}` : "";
           const finCat = data.details.category_desc ? `，類型：${data.details.category_desc}` : "";
-          this.updateLiveLog(`【${poi.name}】地址：${finAddr}${finCat}${finPhone}${finHours}。`, false, true);
+          this.updateLiveLog(`【${poi.name}】門牌：${finAddr}${finCat}${finPhone}${finHours}。`, false, true);
         }
       })
       .catch(err => {
@@ -2669,9 +2678,18 @@ class NmapWebApp {
     const idx = this.poiIndex > 0 ? (this.poiIndex - 1) % this.lastPois.length : 0;
     const p = this.lastPois[idx];
 
-    // 本地 OSM 資料（即時播報）
+    // 本地資料（即時播報）
     const lines = [`【店家詳情】${p.name}`];
     lines.push(`• 位置：${p.clock_position}（${p.relative_direction}）${p.distance_m} 公尺`);
+
+    // 【方案三：真實門牌地址精確呈現】
+    const addr = (p.address && p.address.trim()) ? p.address.trim() : (p.street && p.housenumber ? `${p.street} ${p.housenumber}號` : "");
+    if (addr) {
+      lines.push(`• 門牌：${addr}`);
+    } else {
+      lines.push(`• 門牌：未登記正式門牌號`);
+    }
+
     lines.push(`• 類別：${this.translateCategory(p.category)}`);
     if (p.cuisine) lines.push(`• 料理類型：${p.cuisine}`);
     if (p.opening_hours) lines.push(`• 營業時間：${p.opening_hours}`);
@@ -2693,7 +2711,7 @@ class NmapWebApp {
     const isLeft = p.relative_direction.includes("左");
     this.audio.playSpatialTone(550, 'triangle', isLeft ? -1.5 : 1.5, 0, -1, 0.2);
 
-    // 非同步抓取 Google Places 資料
+    // 非同步抓取 Google Places 資料（若有 Google 官方格式化地址則更新）
     fetch("/api/poi/enrich", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2703,6 +2721,13 @@ class NmapWebApp {
       .then(g => {
         if (!g.available) return;
         const gLines = [...lines];
+        if (g.address) {
+          // 若原先無門牌或為未登記，以 Google 官方地址替換
+          const addrIdx = gLines.findIndex(l => l.startsWith("• 門牌："));
+          if (addrIdx !== -1) {
+            gLines[addrIdx] = `• 門牌：${g.address} (官方核定)`;
+          }
+        }
         gLines.push("─── Google 評價 ───");
         if (g.rating) gLines.push(`• Google 評分：${g.rating} 星（${g.user_ratings_total || 0} 則評價）`);
         if (g.open_now !== null && g.open_now !== undefined) {
