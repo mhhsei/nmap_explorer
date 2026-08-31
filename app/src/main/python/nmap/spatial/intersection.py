@@ -94,6 +94,8 @@ class IntersectionAnalyzer:
         # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3，延伸搜尋下一個路口，最遠 500 公尺)
         junction_type = "直行道路"
         closest_junction_dist = 999.0
+        closest_junction_t_brng = 0.0
+        closest_junction_rel_brng = 0.0
         intersecting_roads = set()
         branches_info = []
         if curr_road_info is None:
@@ -122,6 +124,8 @@ class IntersectionAnalyzer:
                     real_degree = len(physical_neighbors)
                     if real_degree >= 3:
                         closest_junction_dist = dist
+                        closest_junction_t_brng = t_brng
+                        closest_junction_rel_brng = rel_brng
                         closest_junction_meta = junction_meta
                         junction_type = "十字路口" if real_degree >= 4 else "T字/岔路口"
                         
@@ -179,6 +183,8 @@ class IntersectionAnalyzer:
         if junction_type == "直行道路" and nearby_crossings:
             junction_type = "行人穿越路口"
             closest_junction_dist = nearby_crossings[0]["distance_m"]
+            closest_junction_rel_brng = nearby_crossings[0].get("relative_bearing_deg", 0.0)
+            closest_junction_t_brng = (heading_deg + closest_junction_rel_brng) % 360.0
 
         # 提取融合號誌與無障礙安全情報
         is_signalized = closest_junction_meta.get("is_signalized", False)
@@ -188,6 +194,15 @@ class IntersectionAnalyzer:
         has_button = closest_junction_meta.get("has_button", False)
         button_guide = closest_junction_meta.get("button_guide", "")
         signal_name = closest_junction_meta.get("signal_name", "")
+
+        # 號誌與相機導引目標方位：優先使用最近的號誌實體，若無則使用路口幾何中心
+        target_signal_brng = closest_junction_t_brng
+        target_signal_clock = bearing_to_clock_position(closest_junction_rel_brng)
+        if nearby_signals:
+            # 優先以最近之前方號誌作為導引標的
+            target_signal_clock = nearby_signals[0].get("clock_position", target_signal_clock)
+            sig_rel_brng = nearby_signals[0].get("relative_bearing_deg", 0.0)
+            target_signal_brng = (heading_deg + sig_rel_brng) % 360.0
 
         # 組合親切易懂的路口專屬名稱 (例如「北新路與大忠街口」或「大忠街口」)
         junction_display_name = junction_type
@@ -233,43 +248,39 @@ class IntersectionAnalyzer:
             if closest_junction_dist <= 30.0:
                 report_lines.append(f"前方 {round(closest_junction_dist)} 公尺為【{junction_display_name}】。")
             else:
-                report_lines.append(f"前方下一個路口（約 {round(closest_junction_dist)} 公尺）為【{junction_display_name}】。")
+                report_lines.append(f"下一個路口約在前方 {round(closest_junction_dist)} 公尺處【{junction_display_name}】。")
 
-            if intersecting_roads:
-                report_lines.append(f"即將交會：{'、'.join(intersecting_roads)}。")
-
-            # 號誌與無障礙設施說明
             if is_signalized:
-                aps_info = f"，設有【{sound_desc}】有聲鳥鳴導引" if has_aps else "，無有聲號誌"
-                report_lines.append(f"號誌設施：設有行車紅綠燈管制{aps_info}。")
+                if has_aps:
+                    report_lines.append(f"號誌設施：設有行車紅綠燈與【{sound_desc or '視障有聲號誌'}】。")
+                else:
+                    report_lines.append("號誌設施：設有行車紅綠燈管制，無有聲號誌。")
+                if has_button:
+                    report_lines.append(f"按鈕指引：{button_guide or '路旁柱子設有行人觸控按鈕'}。")
             else:
-                report_lines.append("號誌設施：⚠️ 無交通號誌管制路口，過馬路請注意左右轉彎車聲。")
+                report_lines.append("號誌設施：此處為無號誌路口，過馬路請注意左右來車。")
 
             if has_refuge_island:
-                report_lines.append("無障礙設施：馬路中央設有實體行人庇護島（安全島）。")
+                report_lines.append("安全設施：馬路中央設有行人庇護島，可分段通過。")
 
-            if has_button:
-                report_lines.append(f"行人觸動按鈕：{button_guide}")
+            # 即將交會道路提示
+            if sorted_intersecting_roads:
+                report_lines.append(f"即將交會：{'、'.join(sorted_intersecting_roads)}。")
 
+            # 分支走向提示 (讓視障者知道各道路通往幾點鐘方向)
             if branches_info:
-                seen_branches = set()
-                branch_texts = []
+                branches_desc = []
                 for b in branches_info:
-                    rname = b["road_name"]
-                    key = (b["clock_position"], rname)
-                    if key not in seen_branches and rname:
-                        seen_branches.add(key)
-                        branch_texts.append(f"• {b['relative_direction']} ({b['clock_position']}) 往：{rname}")
-                if branch_texts:
-                    report_lines.append("各分支走向：\n" + "\n".join(branch_texts))
+                    branches_desc.append(f"• {b['relative_direction']} ({b['clock_position']}) 往：{b['road_name']}")
+                report_lines.append("各分支走向：\n" + "\n".join(branches_desc))
+
             if nearby_crossings:
                 c = nearby_crossings[0]
-                sig = "有行人專用號誌" if (is_signalized or c["crossing_signals"] in ["yes", "traffic_signals"]) else "無號誌管制"
-                report_lines.append(f"過馬路設施：前方 {c['distance_m']} 公尺設有斑馬線（{sig}）。")
+                sig_desc = "設有行人專用號誌" if (is_signalized or c["crossing_signals"] in ["yes", "traffic_signals"]) else "無行人號誌"
+                tac_desc = "鋪設導盲磚" if c["tactile_paving"] == "yes" else "無導盲磚"
+                report_lines.append(f"斑馬線：前方 {c['distance_m']} 公尺 ({c['clock_position']}) 有行人穿越道 ({sig_desc}，{tac_desc})。")
         else:
-            curr_road = world_model.get_road_info(lat, lon, heading_deg)
-            curr_name = curr_road.get("street_name", "道路")
-            report_lines.append(f"前方 500 公尺內均為直行道路，目前所在為【{curr_name}】。")
+            report_lines.append("前方為直行道路，暫無明顯十字或T字交會路口。")
             if nearby_crossings:
                 c = nearby_crossings[0]
                 report_lines.append(f"前方 {c['distance_m']} 公尺處設有斑馬線。")
@@ -280,6 +291,8 @@ class IntersectionAnalyzer:
             "junction_type": junction_type,
             "junction_name": junction_display_name,
             "junction_distance_m": round(closest_junction_dist, 1) if closest_junction_dist < 900 else None,
+            "bearing_deg": round(target_signal_brng, 1),
+            "clock_position": target_signal_clock,
             "is_signalized": is_signalized,
             "has_aps": has_aps,
             "sound_desc": sound_desc,

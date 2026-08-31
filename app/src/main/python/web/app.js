@@ -629,6 +629,7 @@ class NmapWebApp {
     this.lastSpeechTime = Date.now();
     this.currentStreetName = null;
     this.passedIntersectionTracking = false;
+    this.isSignalCameraActive = false;
 
     // Diagnostic & Trajectory Session Logs (AI-Optimized)
     this.sessionStartTime = Date.now();
@@ -2003,6 +2004,19 @@ class NmapWebApp {
           setTimeout(() => {
             this.updateLiveLog(data.report, false, true);
           }, isEarconOn ? 180 : 0);
+
+          // 【手動查詢連動紅綠燈相機】：手動查詢路口時若前方為號誌化路口且在 6~28m 範圍內，同步開鏡
+          if (data.intersection && data.intersection.is_signalized) {
+            const jDist = data.intersection.junction_distance_m;
+            if (jDist !== null && jDist >= 6.0 && jDist <= 28.0) {
+              this.isSignalCameraActive = true;
+              if (window.AndroidBridge && window.AndroidBridge.startTrafficSignalCamera) {
+                const bearing = data.intersection.bearing_deg || 0;
+                const clock = data.intersection.clock_position || "12點鐘方向";
+                window.AndroidBridge.startTrafficSignalCamera(bearing, clock);
+              }
+            }
+          }
         } else {
           this.updateLiveLog(data.message || "前方路口資料讀取失敗。", true);
         }
@@ -2207,6 +2221,41 @@ class NmapWebApp {
     if (!data || !data.is_loaded || this.isDetailModalOpen || window.isDetailModalOpen) return;
     const now = Date.now();
 
+    // =========================================================================
+    // 【紅綠燈相機硬體獨立生命週期管理 (方案 A - 完全解耦語音)】
+    // 設計意圖：相機開關屬於「無聲硬體光學感測」行為，絕不可受語音防剪音節流閥
+    // (now - lastSpeechTime < 1800ms) 或前進走廊 POI 店家播報攔截中斷。
+    // 只要進入前方 6.0m ~ 28.0m 號誌化路口範圍，無條件開鏡對準號誌；踏入 (<6m) 或遠離 (>28m) 則自動收鏡。
+    // =========================================================================
+    if (data.intersection && data.intersection.is_signalized) {
+      const jDist = data.intersection.junction_distance_m;
+      if (jDist !== null && jDist >= 6.0 && jDist <= 28.0) {
+        if (!this.isSignalCameraActive) {
+          this.isSignalCameraActive = true;
+          if (window.AndroidBridge && window.AndroidBridge.startTrafficSignalCamera) {
+            const bearing = data.intersection.bearing_deg || 0;
+            const clock = data.intersection.clock_position || "12點鐘方向";
+            window.AndroidBridge.startTrafficSignalCamera(bearing, clock);
+          }
+        }
+      } else if (jDist !== null && (jDist < 6.0 || jDist > 28.0)) {
+        if (this.isSignalCameraActive) {
+          this.isSignalCameraActive = false;
+          if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+            window.AndroidBridge.stopTrafficSignalCamera();
+          }
+        }
+      }
+    } else {
+      // 若當前沒有路口或非號誌化路口，且相機正在運作，則自動收鏡關閉
+      if (this.isSignalCameraActive) {
+        this.isSignalCameraActive = false;
+        if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+          window.AndroidBridge.stopTrafficSignalCamera();
+        }
+      }
+    }
+
     // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次自動掃描，杜絕腰斬吞字！
     if (now - (this.lastSpeechTime || 0) < 1800) return;
 
@@ -2375,15 +2424,6 @@ class NmapWebApp {
             let signalPart = "";
             if (isSignalized) {
               signalPart = hasAps ? "：有紅綠燈（設有聲號誌）" : "：有紅綠燈";
-              // 【自動啟動紅綠燈相機】：接近號誌化路口自動開鏡並以快門音效提示
-              if (!this.isSignalCameraActive) {
-                this.isSignalCameraActive = true;
-                if (window.AndroidBridge && window.AndroidBridge.startTrafficSignalCamera) {
-                  const bearing = data.intersection.bearing_deg || 0;
-                  const clock = data.intersection.clock_position || "12點鐘方向";
-                  window.AndroidBridge.startTrafficSignalCamera(bearing, clock);
-                }
-              }
             } else {
               signalPart = "：無號誌巷口，請側聽車聲";
             }
@@ -2396,14 +2436,6 @@ class NmapWebApp {
         
         // B. 踏入 / 正通過路口 (< 6.0m)
         else if (juncDist < 6.0) {
-          // 【自動關閉相機】：已踏入路口過馬路中，自動關鏡並以收鏡音效提示
-          if (this.isSignalCameraActive) {
-            this.isSignalCameraActive = false;
-            if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
-              window.AndroidBridge.stopTrafficSignalCamera();
-            }
-          }
-
           const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
           if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 4000) {
             this.currentJunctionState = "PASSING";
@@ -2418,14 +2450,6 @@ class NmapWebApp {
         // C. 通過後繼續前進 (> 28.0m) - 【防死鎖恢復核心】：
         // 只要距離大於 28.0m 且非 IDLE，無條件重置為 IDLE，杜絕因 GPS 步進略過 < 6m 導致後續路口全部罷工！
         else if (juncDist > 28.0 && this.currentJunctionState !== "IDLE") {
-          // 【自動關閉相機】：已遠離路口，自動關鏡
-          if (this.isSignalCameraActive) {
-            this.isSignalCameraActive = false;
-            if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
-              window.AndroidBridge.stopTrafficSignalCamera();
-            }
-          }
-
           const wasPassing = (this.currentJunctionState === "PASSING");
           this.currentJunctionState = "IDLE";
           if (wasPassing && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
@@ -2434,13 +2458,6 @@ class NmapWebApp {
             this.announceRoad(msg, false);
             return;
           }
-        }
-      }
-    } else {
-      if (this.isSignalCameraActive) {
-        this.isSignalCameraActive = false;
-        if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
-          window.AndroidBridge.stopTrafficSignalCamera();
         }
       }
     }
@@ -3916,7 +3933,15 @@ window.onHeadingUpdate = function(headingDegrees) {
                 lat: curLat,
                 lon: curLon
             })
-        }).catch(() => {});
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data && data.is_loaded && window.app && window.app.checkProximityAlerts) {
+                // 當使用者原地轉向或駐足觀察路口時，轉向也能即時啟動或更新相機導引
+                window.app.checkProximityAlerts(data);
+            }
+        })
+        .catch(() => {});
     }, 150);
 
     // 5. 16 方位極速語音回報（完全不走 TalkBack 系統無障礙事件隊列，可由偏好設定開關）
