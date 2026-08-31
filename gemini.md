@@ -48,6 +48,7 @@ C:/ai pro/nmap_apk/
 │   └── build-and-release.yml           # GitHub Actions Android APK 自動編譯發布工作流程
 ├── DEVELOPMENT_LOG.md                  # 開發履歷與 Changelog 追蹤檔
 ├── nmap_android_plan.md                # 轉換計畫書與頂層架構設計
+├── ARCHITECTURE.md                     # 專案知識地圖與詳細檔案導航 (AI Agent 大腦地圖)
 └── gemini.md                           # 本開發守則
 ```
 
@@ -148,3 +149,22 @@ C:/ai pro/nmap_apk/
 ### 7. 一定要寫開發紀錄
 DEVELOPMENT_LOG.md 若有修改一定要寫在盪按理
 且要好看得懂 容易了解
+
+### 8. 遇到 Bug 時，不得立即修改程式碼。
+
+第一階段：
+1. 找出相關檔案
+2. 找出相關函式
+3. 分析呼叫關係
+4. 分析資料流
+5. 確認問題真正來源
+6. 判斷修改影響範圍
+
+第二階段：
+提出修改方案。
+
+第三階段：
+只有確認問題來源後，才能修改。
+
+第四階段：
+修改後執行測試與驗證。

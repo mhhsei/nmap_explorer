@@ -44,8 +44,10 @@ class StreetSceneEngine:
         bench_count = 0
         arcade_found = False
 
-        radius_deg = 100.0 / 111139.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = 100.0 / (111139.0 * cos_lat)
+        radius_deg_lat = 100.0 / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
 
         for item in world_model.poi_rtree.intersection(bounds, objects=True):
             raw_p = item.object

@@ -925,8 +925,10 @@ class WorldModel:
                     else:
                         road_seg = (p1, p2)
 
-        radius_deg = radius_m / 111139.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = radius_m / (111139.0 * cos_lat)
+        radius_deg_lat = radius_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
         for item in self.house_number_rtree.intersection(bounds, objects=True):
             h = item.object
             dist = haversine_distance(lat, lon, h["lat"], h["lon"])
@@ -1050,8 +1052,10 @@ class WorldModel:
 
         # 3. 【方案 A】：從門牌空間索引中檢索周圍 45 公尺內的實體門牌
         radius_m = 45.0
-        radius_deg = radius_m / 111139.0
-        bounds = (lon - radius_deg, lat - radius_deg, lon + radius_deg, lat + radius_deg)
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = radius_m / (111139.0 * cos_lat)
+        radius_deg_lat = radius_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
 
         left_candidates = []
         right_candidates = []

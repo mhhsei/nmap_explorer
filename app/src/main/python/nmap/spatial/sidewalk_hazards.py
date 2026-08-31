@@ -21,7 +21,7 @@ from nmap.spatial.geometry import (
 )
 
 # 障礙物掃描走廊幾何常數 (消滅魔法數字)
-MIN_HAZARD_DISTANCE_METERS = 1.5   # 小於 1.5m 已在身邊或正要經過
+MIN_HAZARD_DISTANCE_METERS = 0.0   # 【安全鐵律】：下限必須為 0.0m！即將撞上的最後 1.5m 內絕不可停止偵測
 MAX_HAZARD_DISTANCE_METERS = 12.0  # 超過 12m 暫不打擾
 MAX_LATERAL_TOLERANCE_METERS = 2.2 # 側向 2.2 公尺內視為碰撞威脅走廊
 
