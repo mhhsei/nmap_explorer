@@ -866,7 +866,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     Looper.getMainLooper()
                 )
 
-                // 快速熱啟動：若有最後已知位置（10 分鐘內且精度 150m 內），立即用於初次定位暖機
+                // 快速熱啟動：僅允許 5 秒內且精度 <= 25m 的即時快取，避免跨區重啟時誤報舊地點（例如板橋出站誤報北投）
                 fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
                     location?.let {
                         val ageNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
@@ -874,12 +874,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                         } else {
                             (System.currentTimeMillis() - it.time) * 1_000_000L
                         }
-                        val isUsable = it.hasAccuracy() && it.accuracy <= 150f && ageNanos < 600_000_000_000L // 10 分鐘內
+                        val isUsable = it.hasAccuracy() && it.accuracy <= 25f && ageNanos < 5_000_000_000L // 嚴格限縮至 5 秒內即時快取
                         if (isUsable) {
-                            Log.i(tag, "[GPS_WARMUP] Using initial warm-up lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s, Provider: ${it.provider})")
+                            Log.i(tag, "[GPS_WARMUP] Using fresh warm-up lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s, Provider: ${it.provider})")
                             onLocationChanged(it)
                         } else {
-                            Log.i(tag, "[GPS_WARMUP] Waiting for fresh live GPS fix (lastLocation too old or inaccurate).")
+                            Log.i(tag, "[GPS_WARMUP] Stale lastLocation discarded (Age: ${ageNanos / 1_000_000_000L}s, Acc: ${it.accuracy}m). Waiting for fresh live GPS fix.")
                         }
                     }
                 }
@@ -1363,7 +1363,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         val effectiveAcc = min(acc, currentDiffTier.expectedAccuracyMeters)
         webView.post {
             webView.evaluateJavascript(
-                "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed});" +
+                "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed}, '${motionState.name}');" +
+                "if (window.onMotionStateUpdate) window.onMotionStateUpdate('${motionState.name}');" +
                 "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});" +
                 "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
                 null

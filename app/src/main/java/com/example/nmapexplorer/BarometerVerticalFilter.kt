@@ -133,9 +133,22 @@ class BarometerVerticalFilter(
             return Pair(currentLevel, 0.0f)
         }
 
-        // 當確認在地面且靜止時，極慢速追蹤大氣天氣變化（時間常數約 20 分鐘）
-        if (isStationaryOnGround && currentLevel == VerticalLevel.GROUND) {
-            baselinePressureHpa = 0.9995f * baselinePressureHpa + 0.0005f * pressureHpa
+        // 基準大氣壓力動態平滑更新：
+        // 1. 地面靜止時：中速追蹤（時間常數約 15 分鐘）
+        // 2. 地面行走時：極慢速追蹤（時間常數約 45 分鐘），消化戶外氣壓自然微漂移
+        // 3. 非地面（天橋或地下道）超時逃逸：若處於天橋/地下道超過 90 秒，逐步拉回基準壓以防氣壓微變永久卡死
+        val nowMs = SystemClock.uptimeMillis()
+        if (currentLevel == VerticalLevel.GROUND) {
+            if (isStationaryOnGround) {
+                baselinePressureHpa = 0.9992f * baselinePressureHpa + 0.0008f * pressureHpa
+            } else if (isWalking && !isPocketLikely) {
+                baselinePressureHpa = 0.9998f * baselinePressureHpa + 0.0002f * pressureHpa
+            }
+        } else {
+            // 非地面狀態防卡死逃逸：若停留超過 90 秒，啟動防滯留恢復阻尼
+            if (nowMs - lastLevelTransitionTimeMs > 90_000L) {
+                baselinePressureHpa = 0.9990f * baselinePressureHpa + 0.0010f * pressureHpa
+            }
         }
 
         // 2. 利用國際標準大氣公式計算相對高程 (Hypsometric Formula)

@@ -102,18 +102,28 @@ class NtripDiffClient(
         backoffDelaySec = 1L
 
         clientThread = thread(name = "NtripDiffThread", isDaemon = true) {
+            var continuousFailures = 0
             while (isRunning.get()) {
                 var isConnectedSuccessfully = false
                 try {
                     isConnectedSuccessfully = connectAndStream()
+                    if (isConnectedSuccessfully) continuousFailures = 0
                 } catch (e: Exception) {
-                    Log.w(tag, "NTRIP 串流例外中斷: ${e.message}")
+                    continuousFailures++
+                    Log.w(tag, "NTRIP 串流例外中斷: ${e.message} (連續失敗 $continuousFailures 次)")
                 }
 
                 if (!isRunning.get()) break
 
-                // 連線中斷時觸發降級並執行指數退避重試
+                // 連線中斷時觸發降級
                 updateDifferentialTier(DifferentialTier.OFFLINE_AUTONOMOUS, 999.0)
+
+                // 熔斷保護 (Circuit Breaker)：連續失敗達 3 次後主動休眠停止無限重試，保留電力
+                if (continuousFailures >= 3) {
+                    Log.i(tag, "NTRIP 連續連線失敗達 3 次，啟動熔斷保護休眠，維持單機離線導航以節省電池電力。")
+                    break
+                }
+
                 Log.w(tag, "NTRIP 連線中斷，將於 ${backoffDelaySec} 秒後重試連線 (指數退避保護手機電力)...")
                 SystemClock.sleep(backoffDelaySec * 1000L)
                 backoffDelaySec = min(backoffDelaySec * 2L, 60L)

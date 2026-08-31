@@ -668,8 +668,13 @@ class NmapWebApp {
       type: type,
       ...payload
     });
-    if (this.sessionCausalityTrace.length > 1500) {
-      this.sessionCausalityTrace.shift();
+    // 擴大因果鏈緩衝區至 5000 筆，並保留前 20 筆啟動根節點事件不被擠出，完整保存 1 小時以上旅程
+    if (this.sessionCausalityTrace.length > 5000) {
+      if (this.sessionCausalityTrace.length > 20) {
+        this.sessionCausalityTrace.splice(20, 1);
+      } else {
+        this.sessionCausalityTrace.shift();
+      }
     }
   }
 
@@ -2259,10 +2264,162 @@ class NmapWebApp {
     // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次自動掃描，杜絕腰斬吞字！
     if (now - (this.lastSpeechTime || 0) < 1800) return;
 
+    // 判斷當前是否處於乘車模式 (VEHICULAR_TRANSIT 或時速 > 13.7 km/h)
+    const isVehicular = !!(this.isVehicularTransit || window.isVehicularTransit || (window.lastWalkSpeed && window.lastWalkSpeed > 3.8));
+
     // 0. 初始化冷卻快取
     if (!this.announcedHazardCooldown) this.announcedHazardCooldown = new Map();
     if (!this.announcedSignalCooldown) this.announcedSignalCooldown = new Map();
     if (!this.announcedMrtCooldown) this.announcedMrtCooldown = new Map();
+    if (!this.announcedPoiCooldown) this.announcedPoiCooldown = new Map();
+    if (!this.arrivedPoiCooldown) this.arrivedPoiCooldown = new Map();
+
+    // =========================================================================
+    // 【模式 A：乘車模式 (Vehicular Mode) - 路口與交通設施最高優先，店家次序往後】
+    // 設計意圖：視障者在公車/計程車上以高速度移動 (8~20 m/s)，必須提前 80 公尺
+    // 預警下一個十字路口與交通號誌，徹底杜絕快速掠過路口時被次要店家或抵達狂唸蓋台！
+    // =========================================================================
+    if (isVehicular) {
+      // 1. 交通設施優先：路口有聲號誌 / 交通號誌時制 (延伸探測至 65 公尺)
+      if (data.traffic_signal && data.traffic_signal.distance_m <= 65.0 && data.traffic_signal.distance_m >= 0.0) {
+        const sig = data.traffic_signal;
+        const lastSigTime = this.announcedSignalCooldown.get(sig.id) || 0;
+        if (now - lastSigTime > 25000) {
+          this.announcedSignalCooldown.set(sig.id, now);
+          const prompt = sig.has_aps 
+            ? `📍 前方【${sig.intersection_name}】設有聲號誌，${sig.speech_prompt}`
+            : `📍 前方【${sig.intersection_name}】交通號誌，${sig.speech_prompt}`;
+          this.announceObject({
+            name: sig.intersection_name,
+            category: "signal",
+            distance_m: sig.distance_m,
+            relative_bearing_deg: 0
+          }, prompt, false);
+          return;
+        }
+      }
+
+      // 2. 核心路口狀態機 (乘車專屬延伸視距：12~80m 提前接近中 / <12m 正通過 / >80m 沿路前進)
+      if (data.intersection) {
+        const juncType = data.intersection.junction_type;
+        const juncDist = data.intersection.junction_distance_m;
+        const isRealJunction = juncType && juncType !== "直行道路";
+
+        if (isRealJunction && juncDist !== null) {
+          const juncName = data.intersection.junction_name || juncType;
+          const isSignalized = !!data.intersection.is_signalized;
+          const hasAps = !!data.intersection.has_aps;
+          const hasIsland = !!data.intersection.has_refuge_island;
+
+          if (this.lastJunctionName && this.lastJunctionName !== juncName && juncDist > 15.0) {
+            this.currentJunctionState = "IDLE";
+          }
+          this.lastJunctionName = juncName;
+
+          // A. 乘車提前接近路口 (12.0m ~ 80.0m)
+          if (juncDist <= 80.0 && juncDist >= 12.0) {
+            if (this.currentJunctionState !== "APPROACHING" && (now - (this.lastIntersectionAlertTime || 0) > 18000)) {
+              this.currentJunctionState = "APPROACHING";
+              this.lastIntersectionAlertTime = now;
+
+              let roads = "";
+              const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "";
+              const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路");
+              if (filteredRoads.length > 0 && !filteredRoads.some(r => juncName.includes(r))) {
+                roads = `（交會 ${filteredRoads.join("、")}）`;
+              }
+
+              let signalPart = isSignalized ? (hasAps ? "，有號誌與有聲設備" : "，設紅綠燈") : "，無號誌路口";
+              const islandPart = hasIsland ? "，設庇護島" : "";
+              const msg = `📍 前方 ${Math.round(juncDist)}公尺【${juncName}】${roads}${signalPart}${islandPart}。`;
+              this.announceJunction(msg, true);
+              return;
+            }
+          }
+          // B. 乘車正通過路口 (< 12.0m)
+          else if (juncDist < 12.0) {
+            const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
+            if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 3500) {
+              this.currentJunctionState = "PASSING";
+              this.lastIntersectionAlertTime = now;
+              const msg = `📍 正通過【${juncName}】。`;
+              this.announceJunction(msg, false);
+              return;
+            }
+          }
+          // C. 乘車通過後繼續前進 (> 80.0m)
+          else if (juncDist > 80.0 && this.currentJunctionState !== "IDLE") {
+            const wasPassing = (this.currentJunctionState === "PASSING");
+            this.currentJunctionState = "IDLE";
+            if (wasPassing && now - (this.lastRoadAnnouncementTime || 0) >= 15000) {
+              const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") ? data.road_info.street_name : "目前道路";
+              this.announceRoad(`沿著【${currentRoad}】前進`, false);
+              return;
+            }
+          }
+        }
+      }
+
+      // 3. 轉彎進入新路名 (乘車模式及時提醒)
+      if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
+        const st = data.road_info.street_name;
+        if (this.currentStreetName === null) {
+          this.currentStreetName = st;
+        } else if (st !== this.currentStreetName) {
+          if (this.consecutiveRoadCandidate === st) {
+            this.consecutiveRoadCount = (this.consecutiveRoadCount || 0) + 1;
+          } else {
+            this.consecutiveRoadCandidate = st;
+            this.consecutiveRoadCount = 1;
+          }
+          if (this.consecutiveRoadCount >= 2 && (now - (this.lastRoadAnnouncementTime || 0) >= 15000)) {
+            this.currentStreetName = st;
+            this.consecutiveRoadCandidate = null;
+            this.consecutiveRoadCount = 0;
+            this.announceRoad(`進入【${this.currentStreetName}】`, true);
+            return;
+          }
+        } else {
+          this.consecutiveRoadCandidate = null;
+          this.consecutiveRoadCount = 0;
+        }
+      }
+
+      // 4. 次要店家資訊（次序往後）：
+      // 乘車模式下徹底靜音「🎉 已抵達門口」；僅在前進走廊兩側無即將到來的路口時，低頻率提醒重要地標
+      const realtimePois = this.getRealtimePois();
+      if (realtimePois && realtimePois.length > 0) {
+        const corridorPois = realtimePois.filter((p) => {
+          if (this.isIgnoredPoi(p.name, p.category)) return false;
+          const d = p.distance_m;
+          const relBearing = Math.abs(p.relative_bearing_deg || 0);
+          const dir = p.relative_direction || "";
+          if (dir.includes("後方") || relBearing > 90) return false;
+          const rad = (relBearing * Math.PI) / 180.0;
+          const latDist = Math.abs(d * Math.sin(rad));
+          const fwdDist = d * Math.cos(rad);
+          return fwdDist >= 5.0 && fwdDist <= 40.0 && latDist <= 20.0;
+        });
+
+        if (corridorPois.length > 0) {
+          const topPoi = corridorPois.sort((a, b) => a.distance_m - b.distance_m)[0];
+          const cleanedName = this.cleanPoiName(topPoi.name);
+          const poiKey = topPoi.id || (topPoi.lat && topPoi.lon ? `${cleanedName}_${topPoi.lat.toFixed(4)}_${topPoi.lon.toFixed(4)}` : cleanedName);
+          const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
+          if (now - lastTime > 45000 && (now - (this.lastIntersectionAlertTime || 0) > 12000)) {
+            this.announcedPoiCooldown.set(poiKey, now);
+            const dirText = topPoi.relative_direction ? `，${topPoi.relative_direction} ${Math.round(topPoi.distance_m)}公尺` : "";
+            this.announceObject(topPoi, `${cleanedName}${dirText}`, false);
+            return;
+          }
+        }
+      }
+      return;
+    }
+
+    // =========================================================================
+    // 【模式 B：步行模式 (Pedestrian Mode) - 無障礙安全第一原則】
+    // =========================================================================
 
     // 0.1 【Scheme 3 人行道安全防撞雷達 (變電箱/消防栓/施工窄頸)】- 第一優先碰撞警戒！
     // 【安全規範】：下限必須為 0.0 公尺！絕不可在即將撞上的最後 1.5 公尺內突然安靜。
@@ -3989,22 +4146,43 @@ window.onHeadingUpdate = function(headingDegrees) {
     }
 };
 
-window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
+window.onMotionStateUpdate = function(motionState) {
+    window.currentMotionState = motionState;
+    if (window.app) {
+        window.app.currentMotionState = motionState;
+    }
+};
+
+window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionState) {
+    if (motionState) {
+        window.currentMotionState = motionState;
+        if (window.app) window.app.currentMotionState = motionState;
+    }
+
     if (!window.app || window.app.isReady === false) {
-        window.pendingGpsUpdate = { lat, lon, accuracy, bearing, speed };
+        window.pendingGpsUpdate = { lat, lon, accuracy, bearing, speed, motionState };
         return;
     }
 
-    // 記錄步行狀態 (供轉向防打斷演算法使用)
-    if ((speed !== undefined && speed > 0.35)) {
-        window.lastWalkSpeed = speed;
+    // 記錄步行與車行狀態
+    const currentSpeed = speed || 0;
+    if (currentSpeed > 0.35) {
+        window.lastWalkSpeed = currentSpeed;
         window.lastMoveTime = Date.now();
     }
+
+    // 乘車模式判定：運動狀態為 VEHICULAR_TRANSIT 或連續速度 > 3.8 m/s (時速 > 13.7 km/h)
+    const isVehicular = (window.currentMotionState === "VEHICULAR_TRANSIT") || (currentSpeed > 3.8);
+    window.isVehicularTransit = isVehicular;
+    if (window.app) window.app.isVehicularTransit = isVehicular;
 
     const pb = document.getElementById("permission-banner");
     if (pb && pb.style.display !== "none") pb.style.display = "none";
 
     let dist = 999999;
+    const nowTime = Date.now();
+    const dtSec = window.lastGpsTimestamp ? Math.max((nowTime - window.lastGpsTimestamp) / 1000.0, 0.1) : 1.0;
+    window.lastGpsTimestamp = nowTime;
 
     if (window.lastGpsLat !== null && window.lastGpsLon !== null) {
         const R = 6371e3;
@@ -4019,13 +4197,16 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed) {
         dist = R * c;
     }
 
-    // 異常位移監控：若非首度定位且單次跳躍超過 25 公尺，記錄異常
-    if (window.lastGpsLat !== null && dist > 25.0 && dist < 99999) {
+    // 異常位移監控（物理速度自適應過濾）：
+    // 乘車時每秒前進 10~15 公尺屬物理常態，只有位移明顯超過當前速度理論極限 (dist > speed * dt + 30m) 且超過 35m 才視為漂移
+    const jumpThresholdM = isVehicular ? Math.max(80.0, currentSpeed * dtSec * 1.8 + 25.0) : 25.0;
+    if (window.lastGpsLat !== null && dist > jumpThresholdM && dist < 99999) {
         if (window.app && window.app.recordAnomaly) {
-            window.app.recordAnomaly("GPS_JUMP", `GPS 座標跳躍 ${Math.round(dist)} 公尺 (精度: ${accuracy}m, 速度: ${speed}m/s)`, {
+            window.app.recordAnomaly("GPS_JUMP", `GPS 座標跳躍 ${Math.round(dist)} 公尺 (精度: ${accuracy}m, 速度: ${currentSpeed.toFixed(1)}m/s, 模式: ${isVehicular ? "乘車" : "步行"})`, {
                 jump_meters: dist,
                 accuracy: accuracy,
-                speed: speed
+                speed: currentSpeed,
+                is_vehicular: isVehicular
             });
         }
     }

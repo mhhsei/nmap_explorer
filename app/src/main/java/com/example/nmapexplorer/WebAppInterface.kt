@@ -501,7 +501,10 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     for (i in 0 until anomaliesArray.length()) {
                         val an = anomaliesArray.optJSONObject(i)
                         if (an != null) {
-                            appendLine("• [${an.optString("type")}] ${an.optString("desc")} (${an.optString("time")})")
+                            val type = an.optString("type", "ANOMALY")
+                            val desc = an.optString("message").ifEmpty { an.optString("desc", "未知異常") }
+                            val time = an.optString("timestamp").ifEmpty { an.optString("time", "") }
+                            appendLine("• [$type] $desc ($time)")
                         }
                     }
                 } else {
@@ -643,9 +646,9 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     for (i in 0 until traceArray.length()) {
                         val obj = traceArray.optJSONObject(i)
                         if (obj != null) {
-                            val timeStr = obj.optString("time", "")
+                            val timeStr = obj.optString("t").ifEmpty { obj.optString("time", "") }
                             val typeStr = obj.optString("type", "")
-                            val descStr = obj.optString("desc", obj.toString())
+                            val descStr = obj.optString("text").ifEmpty { obj.optString("desc", obj.toString()) }
                             appendLine("[$timeStr] [$typeStr] $descStr")
                         }
                     }
@@ -664,8 +667,15 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             // =========================================================================
             // 檔案 8：7_Android系統Logcat日誌_system_logcat.log (標準 .log 格式)
             // =========================================================================
-            val process = Runtime.getRuntime().exec("logcat -d -v time -t 5000")
-            val logText = process.inputStream.bufferedReader().readText()
+            val logText = try {
+                val process = Runtime.getRuntime().exec("logcat -d -v time -t 5000")
+                val txt = process.inputStream.bufferedReader().use { it.readText() }
+                process.waitFor()
+                process.destroy()
+                txt
+            } catch (e: Exception) {
+                "無法擷取 Logcat: ${e.message}"
+            }
 
             // 將全部診斷檔案壓縮進動態命名的 ZIP 檔中（維持標準 .zip 副檔名原樣不動）
             val zipFileName = "NMap_Logs_${cleanModel}_${timeStampForFile}.zip"
