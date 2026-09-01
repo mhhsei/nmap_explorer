@@ -926,14 +926,14 @@ class PoiDetailFetcher:
             url = f"https://www.google.com/search?tbm=map&q={q_enc}&hl=zh-TW"
             try:
                 import requests
-                resp = requests.get(url, headers=headers, timeout=(0.3, 0.45))
+                resp = requests.get(url, headers=headers, timeout=(0.8, 1.4))
                 if resp.status_code == 200:
                     return resp.text
             except Exception:
                 pass
             try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 0.45}
+                kwargs = {"timeout": 1.4}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
@@ -946,14 +946,14 @@ class PoiDetailFetcher:
             url = f"https://html.duckduckgo.com/html/?q={q_enc}+電話+營業時間"
             try:
                 import requests
-                resp = requests.get(url, headers=headers, timeout=(0.3, 0.45))
+                resp = requests.get(url, headers=headers, timeout=(0.6, 1.0))
                 if resp.status_code == 200:
                     return resp.text
             except Exception:
                 pass
             try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 0.45}
+                kwargs = {"timeout": 1.0}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
@@ -966,14 +966,14 @@ class PoiDetailFetcher:
             url = f"https://www.bing.com/search?q={q_enc}+電話+營業時間&setlang=zh-Hant-TW"
             try:
                 import requests
-                resp = requests.get(url, headers=headers, timeout=(0.3, 0.45))
+                resp = requests.get(url, headers=headers, timeout=(0.6, 1.0))
                 if resp.status_code == 200:
                     return resp.text
             except Exception:
                 pass
             try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 0.45}
+                kwargs = {"timeout": 1.0}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
@@ -986,14 +986,14 @@ class PoiDetailFetcher:
             url = f"https://www.google.com/search?q={q_enc}+電話+營業時間+google+maps&hl=zh-TW"
             try:
                 import requests
-                resp = requests.get(url, headers=headers, timeout=(0.3, 0.45))
+                resp = requests.get(url, headers=headers, timeout=(0.6, 1.0))
                 if resp.status_code == 200:
                     return resp.text
             except Exception:
                 pass
             try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 0.45}
+                kwargs = {"timeout": 1.0}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
@@ -1006,14 +1006,14 @@ class PoiDetailFetcher:
             url = f"https://tw.search.yahoo.com/search?p={q_enc}+電話+營業時間"
             try:
                 import requests
-                resp = requests.get(url, headers=headers, timeout=(0.3, 0.45))
+                resp = requests.get(url, headers=headers, timeout=(0.6, 1.0))
                 if resp.status_code == 200:
                     return resp.text
             except Exception:
                 pass
             try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 0.45}
+                kwargs = {"timeout": 1.0}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
@@ -1041,7 +1041,7 @@ class PoiDetailFetcher:
             # 1. 優先等待並解析 Google Maps 內部 RPC (最高優先)
             for f_rpc in [future_rpc_direct, future_rpc_anchored]:
                 try:
-                    res = f_rpc.result(timeout=0.35)
+                    res = f_rpc.result(timeout=1.4)
                     if res:
                         parsed = self._parse_gmaps_rpc(res)
                         if parsed and (parsed.get("address") or parsed.get("phone") or parsed.get("hours")):
@@ -1055,7 +1055,7 @@ class PoiDetailFetcher:
             if not (rpc_data.get("address") and rpc_data.get("phone")):
                 for f in futures_html:
                     try:
-                        res = f.result(timeout=0.25)
+                        res = f.result(timeout=0.6)
                         if res:
                             combined_html += "\n" + res
                     except Exception:

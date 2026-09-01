@@ -1790,18 +1790,22 @@ class NmapWebApp {
       }
       infoRows.push(`<div><strong>⏰ 營業時間：</strong><span style="color:#2dd4bf;font-weight:bold;">${hoursDisplay}</span></div>`);
 
-      const wheelchair = merged.wheelchair || (merged.floor === "1F" ? "♿ 具備 1 樓平整入口 (地面層)" : "無障礙狀態未知");
-      infoRows.push(`<div><strong>♿ 無障礙：</strong><span style="color:#38bdf8;">${wheelchair}</span></div>`);
-
-      if (merged.phone) {
-        infoRows.push(`<div><strong>📞 聯絡電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;" aria-label="撥打電話給 ${merged.name}：${merged.phone}">${merged.phone} (點擊撥打)</a></div>`);
-      } else if (!isLoading) {
-        infoRows.push(`<div><strong>📞 聯絡電話：</strong><span style="color:#94a3b8;">無登記公開市話（可直接依門牌前往）</span></div>`);
-      }
-
       if (merged.rating) {
         infoRows.push(`<div><strong>⭐ 大眾評價：</strong><span style="color:#facc15; font-weight:bold;">${merged.rating}</span></div>`);
       }
+
+      if (merged.popular_items) {
+        infoRows.push(`<div><strong>🍲 熱門推薦：</strong><span style="color:#fb923c; font-weight:bold;">${merged.popular_items}</span></div>`);
+      }
+
+      if (merged.phone && merged.phone !== "門市在地專線") {
+        infoRows.push(`<div><strong>📞 聯絡電話：</strong><a href="tel:${merged.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold; font-size:1.05rem;" aria-label="撥打電話：${merged.phone}">${merged.phone} (點擊直接撥打)</a></div>`);
+      } else if (!isLoading) {
+        infoRows.push(`<div><strong>📞 聯絡電話：</strong><span style="color:#94a3b8;">未登記公開市話（可直接依門牌前往）</span></div>`);
+      }
+
+      const wheelchair = merged.wheelchair || (merged.floor === "1F" ? "♿ 具備 1 樓平整入口 (地面層)" : "無障礙狀態未知");
+      infoRows.push(`<div><strong>♿ 無障礙：</strong><span style="color:#38bdf8;">${wheelchair}</span></div>`);
 
       body.innerHTML = infoRows.join("");
     };
@@ -1837,7 +1841,7 @@ class NmapWebApp {
       targetAddr = `${poi.street} ${poi.housenumber}號`.trim();
     }
 
-    // 非同步極速向後端獲取當日即時營業時間、電話、官方真門牌與無障礙資訊 (< 0.55s)
+    // 非同步極速向後端獲取當日即時營業時間、電話、官方真門牌與無障礙資訊 (< 0.8s)
     const encodedName = encodeURIComponent(poi.name || "");
     const encodedAddr = encodeURIComponent(targetAddr);
     const floorParam = encodeURIComponent(poi.floor || "1F");
@@ -1851,11 +1855,17 @@ class NmapWebApp {
           if (this.audio && this.audio.playSearchCompleteTone) {
             this.audio.playSearchCompleteTone();
           }
-          const finAddr = data.details.address || "未登記正式門牌號";
-          const finPhone = data.details.phone ? `，電話：${data.details.phone}` : "";
+          const finAddr = data.details.address ? `門牌：${data.details.address}` : "未登記正式門牌號";
+          const finPhone = (data.details.phone && data.details.phone !== "門市在地專線") ? `，電話：${data.details.phone}` : "";
           const finHours = data.details.opening_hours ? `，營業時間：${data.details.opening_hours}` : "";
-          const finCat = data.details.category_desc ? `，類型：${data.details.category_desc}` : "";
-          this.updateLiveLog(`【${poi.name}】門牌：${finAddr}${finCat}${finPhone}${finHours}。`, false, true);
+          const finRating = data.details.rating ? `，評分：${data.details.rating}` : "";
+          const finMenu = data.details.popular_items ? `，熱門推薦：${data.details.popular_items}` : "";
+          const fullAnnouncement = `【${poi.name}】${finAddr}${finHours}${finRating}${finPhone}${finMenu}。`;
+          
+          this.updateLiveLog(fullAnnouncement, false, true);
+          if (window.AndroidBridge && window.AndroidBridge.speak) {
+            window.AndroidBridge.speak(fullAnnouncement, true);
+          }
         }
       })
       .catch(err => {
