@@ -802,9 +802,11 @@ class NmapWebApp {
     }
 
     const uiBtnAround = document.getElementById("ui-btn-around");
-    if (uiBtnAround) {
-        // 1. TalkBack 上下撥動切換值 / 下拉選單選項變更事件 (change)
-        uiBtnAround.addEventListener("change", (e) => {
+    const uiSelectAroundFilter = document.getElementById("ui-select-around-filter");
+
+    if (uiSelectAroundFilter) {
+        // 1. TalkBack 上下撥動切換值 / 下拉選單選項變更事件 (change) -> 只切換分類並提示，不自動掃描！
+        uiSelectAroundFilter.addEventListener("change", (e) => {
             const selectedKey = e.target.value;
             const idx = this.poiCategories.findIndex(c => c.key === selectedKey);
             if (idx !== -1) {
@@ -813,16 +815,22 @@ class NmapWebApp {
             const current = this.poiCategories[this.currentCategoryIndex] || { key: selectedKey, label: selectedKey };
             this.recordInteraction("切換分類", `周遭探索分類：${current.label}`);
             
-            if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
-                this.audio.playRadarExploreTone();
+            // 更新掃描按鈕的文字與朗讀標籤
+            if (uiBtnAround) {
+                uiBtnAround.textContent = `${current.icon} ${current.label}掃描 (P)`;
+                uiBtnAround.setAttribute("aria-label", `掃描周遭${current.label}。點擊或按 P 鍵掃描`);
+            }
+
+            if (this.audio && this.audio.playTick) {
+                this.audio.playTick();
             }
             
-            // 立即執行該分類之周遭掃描與語音回報
-            setTimeout(() => this.announceAllPOIs(selectedKey), 180);
+            // 單純簡短語音提示已切換的分類，不自動掃描
+            this.updateLiveLog(`已選擇：${current.label}。點兩下周遭掃描按鈕或按 P 鍵執行掃描。`, false, true);
         });
 
         // 2. 鍵盤方向鍵導航 (ArrowUp / ArrowDown)
-        uiBtnAround.addEventListener("keydown", (e) => {
+        uiSelectAroundFilter.addEventListener("keydown", (e) => {
             if (e.key === "ArrowUp" || e.key === "PageUp") {
                 e.preventDefault();
                 this.cyclePoiCategory(-1, true);
@@ -830,6 +838,18 @@ class NmapWebApp {
                 e.preventDefault();
                 this.cyclePoiCategory(1, true);
             }
+        });
+    }
+
+    if (uiBtnAround) {
+        // 3. 點擊 / 點兩下 (Double Tap / Click) / Enter / Space / P 鍵：正式執行該分類之掃描！
+        uiBtnAround.addEventListener("click", () => {
+            const current = this.poiCategories[this.currentCategoryIndex];
+            this.recordInteraction("點擊按鈕", `掃描周遭【${current.label}】(P)`);
+            if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+                this.audio.playRadarExploreTone();
+            }
+            setTimeout(() => this.announceAllPOIs(current.key), 180);
         });
     }
 
@@ -1531,9 +1551,15 @@ class NmapWebApp {
     this.currentCategoryIndex = (this.currentCategoryIndex + delta + len) % len;
     const current = this.poiCategories[this.currentCategoryIndex];
 
-    const selectEl = document.getElementById("ui-btn-around");
+    const selectEl = document.getElementById("ui-select-around-filter");
     if (selectEl) {
       selectEl.value = current.key;
+    }
+
+    const btn = document.getElementById("ui-btn-around");
+    if (btn) {
+      btn.textContent = `${current.icon} ${current.label}掃描 (P)`;
+      btn.setAttribute("aria-label", `掃描周遭${current.label}。點擊或按 P 鍵掃描`);
     }
 
     if (this.audio && this.audio.playTick) {

@@ -247,34 +247,45 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) 
                 // 解決 Python Bottle 伺服器啟動耗時 (300~1000ms) 與 WebView 立即載入造成的 ERR_CONNECTION_REFUSED 白屏卡死
                 val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
                 var isPageSuccessfullyLoaded = false
+                var hasPageError = false
                 var retryAttempt = 0
-                val maxRetryAttempts = 30
+                val maxRetryAttempts = 40
 
                 webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(view: WebView?, startedUrl: String?, favicon: android.graphics.Bitmap?) {
+                        super.onPageStarted(view, startedUrl, favicon)
+                        hasPageError = false
+                    }
+
                     override fun onReceivedError(
                         view: WebView?,
                         request: android.webkit.WebResourceRequest?,
                         error: android.webkit.WebResourceError?
                     ) {
-                        if (request?.isForMainFrame == true && !isPageSuccessfullyLoaded && retryAttempt < maxRetryAttempts) {
-                            retryAttempt++
-                            android.util.Log.w("MainActivity", "[WebView Warmup] Server warming up ($retryAttempt/$maxRetryAttempts), retrying load in 250ms...")
-                            retryHandler.removeCallbacksAndMessages(null)
-                            retryHandler.postDelayed({
-                                if (!isPageSuccessfullyLoaded) {
-                                    view?.loadUrl(url)
-                                }
-                            }, 250L)
-                        } else {
-                            super.onReceivedError(view, request, error)
+                        if (request?.isForMainFrame == true) {
+                            hasPageError = true
+                            isPageSuccessfullyLoaded = false
+                            android.util.Log.w("MainActivity", "[WebView Warmup] Main frame connection error (${error?.errorCode}: ${error?.description})")
                         }
                     }
 
                     override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                         super.onPageFinished(view, finishedUrl)
-                        if (finishedUrl != null && !finishedUrl.contains("chromewebdata") && finishedUrl.startsWith("http://127.0.0.1:8000/")) {
+                        if (hasPageError) {
+                            // 載入過程發生錯誤（伺服器尚未就緒），排程自動重試
+                            if (retryAttempt < maxRetryAttempts) {
+                                retryAttempt++
+                                android.util.Log.w("MainActivity", "[WebView Warmup] Server warming up ($retryAttempt/$maxRetryAttempts), retrying load in 300ms...")
+                                retryHandler.removeCallbacksAndMessages(null)
+                                retryHandler.postDelayed({
+                                    view?.loadUrl(url)
+                                }, 300L)
+                            }
+                        } else if (!isPageSuccessfullyLoaded && finishedUrl != null && finishedUrl.startsWith("http://127.0.0.1:8000/")) {
+                            // 完全無錯誤，首頁成功載入！
                             isPageSuccessfullyLoaded = true
-                            android.util.Log.i("MainActivity", "[WebView Loaded] Successfully loaded $finishedUrl")
+                            retryHandler.removeCallbacksAndMessages(null)
+                            android.util.Log.i("MainActivity", "[WebView Loaded] Successfully loaded $finishedUrl without errors")
                         }
                     }
                 }
