@@ -46,6 +46,15 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.15.8 - 2026-09-01] - TalkBack 原生無障礙選單原生適配：採用標準 HTML <select> 支援單指上下滑動調節與雙擊彈窗
+
+- **♿ TalkBack 原生無障礙控制項適配 (`index.html`, `app.js`)**:
+  - **白話生活痛點**：TalkBack 在 Android 上開啟觸控探索 (Touch Exploration) 時，會全面攔截所有單指觸控事件，導致自訂的 `touchstart`/`touchmove` JavaScript 手勢無法被網頁 DOM 接收，造成單指上下撥動時沒有任何反應。
+  - **修復**：
+    1. **全面改用標準 HTML `<select>` 原生下拉選單控制項**：TalkBack 核心天然支援 Android 原生 Spinner / Dropdown，單指上下撥動時 TalkBack 會原生觸發值調整並報讀選項；
+    2. **雙擊彈出原生對話框支援**：使用者亦可隨時單指雙擊展開全螢幕原生清單進行快速點選；
+    3. **即時聯動與語音反饋**：綁定 `change` 事件，無論透過單指上下滑動切換或是點選，即時播放探索音效並播報該分類地標！
+
 ### [v1.0.15.7 - 2026-09-01] - 徹底根治「網頁無法開啟」：修正 WebView 錯誤頁面誤判、兩階段極速 Port 探測與不中斷重試循環
 
 - **🛡️ 消除 Chromium 錯誤頁面與重試熔斷 Bug (`MainActivity.kt`)**:

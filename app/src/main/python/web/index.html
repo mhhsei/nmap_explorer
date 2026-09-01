@@ -60,7 +60,14 @@
 
     <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
       <button id="ui-btn-scan" class="btn" aria-label="掃描前方店家">掃描前方 (L)</button>
-      <button id="ui-btn-around" class="btn" role="spinbutton" aria-roledescription="可切換分類的探索按鈕" aria-valuenow="0" aria-valuetext="全部設施" aria-label="周遭探索：全部設施。單指上下撥動切換分類，點兩下執行掃描。" style="background: #0284c7; color: #f8fafc; font-weight: bold; border: 2px solid #38bdf8;">🌐 全部設施 (P)</button>
+      <select id="ui-btn-around" class="btn" aria-label="周遭探索分類選單。單指上下撥動切換分類，雙擊可開啟清單，P鍵可立即掃描" style="background: #0284c7; color: #f8fafc; font-weight: bold; border: 2px solid #38bdf8; text-align: center; text-align-last: center; font-size: 1.05em; padding: 10px 4px; border-radius: 8px;">
+        <option value="all" selected>🌐 全部設施 (P)</option>
+        <option value="food">🍽️ 餐飲美食</option>
+        <option value="shopping">🏪 生活購物</option>
+        <option value="transit">🚦 交通號誌</option>
+        <option value="public_access">♿ 公共無障礙</option>
+        <option value="landmarks">🏢 地標古蹟</option>
+      </select>
       <button id="ui-btn-intersection" class="btn" aria-label="查詢前方路口走向與分支">前方路口 (I)</button>
       <button id="ui-btn-loc" class="btn" aria-label="播報當前定位">目前位置 (R)</button>
       <button id="ui-btn-settings" class="btn" style="grid-column: span 2; background: #6366f1; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold;" aria-label="開啟偏好設定，可設定轉動播報方位、音效與觸覺回饋">⚙️ 偏好設定</button>
