@@ -1085,8 +1085,8 @@ class PoiDetailFetcher:
             live_phone = self._extract_real_phone(combined_html, area_prefix)
             if live_phone:
                 details["phone"] = live_phone
-            elif not details["phone"]:
-                details["phone"] = "門市在地專線"
+            # 找不到真實電話 → 保持空字串，讓前端顯示「未登記公開電話」
+            # 嚴禁塞入「門市在地專線」等假資料欺騙視障用戶
 
         if not details["opening_hours"] or details["opening_hours"].startswith("今日營業："):
             live_hours = self._extract_hours(combined_html)
@@ -1099,8 +1099,8 @@ class PoiDetailFetcher:
             live_rating = self._extract_rating(combined_html)
             if live_rating:
                 details["rating"] = live_rating
-            else:
-                details["rating"] = "4.2 ★ (在地 Google 評分)"
+            # 找不到真實評分 → 保持空字串，不塞假評分
+
 
         if "無障礙" not in details["wheelchair"] and any(w in combined_html for w in ["無障礙", "輪椅友善", "有無障礙"]):
             details["wheelchair"] = "♿ 具備無障礙友善出入口/通道"
