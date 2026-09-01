@@ -802,48 +802,29 @@ class NmapWebApp {
     }
 
     const uiBtnAround = document.getElementById("ui-btn-around");
-    const uiSelectAroundFilter = document.getElementById("ui-select-around-filter");
-
-    if (uiSelectAroundFilter) {
-        // 1. TalkBack 上下撥動切換值 / 下拉選單選項變更事件 (change) -> 只切換分類並提示，不自動掃描！
-        uiSelectAroundFilter.addEventListener("change", (e) => {
-            const selectedKey = e.target.value;
-            const idx = this.poiCategories.findIndex(c => c.key === selectedKey);
-            if (idx !== -1) {
-                this.currentCategoryIndex = idx;
-            }
-            const current = this.poiCategories[this.currentCategoryIndex] || { key: selectedKey, label: selectedKey };
-            this.recordInteraction("切換分類", `周遭探索分類：${current.label}`);
-            
-            // 更新掃描按鈕的文字與朗讀標籤
-            if (uiBtnAround) {
-                uiBtnAround.textContent = `${current.icon} ${current.label}掃描 (P)`;
-                uiBtnAround.setAttribute("aria-label", `掃描周遭${current.label}。點擊或按 P 鍵掃描`);
-            }
-
-            if (this.audio && this.audio.playTick) {
-                this.audio.playTick();
-            }
-            
-            // 單純簡短語音提示已切換的分類，不自動掃描
-            this.updateLiveLog(`已選擇：${current.label}。點兩下周遭掃描按鈕或按 P 鍵執行掃描。`, false, true);
-        });
-
-        // 2. 鍵盤方向鍵導航 (ArrowUp / ArrowDown)
-        uiSelectAroundFilter.addEventListener("keydown", (e) => {
+    if (uiBtnAround) {
+        // 1. 鍵盤與 TalkBack 調整值手勢 (ArrowUp / ArrowDown / PageUp / PageDown)
+        uiBtnAround.addEventListener("keydown", (e) => {
             if (e.key === "ArrowUp" || e.key === "PageUp") {
                 e.preventDefault();
                 this.cyclePoiCategory(-1, true);
             } else if (e.key === "ArrowDown" || e.key === "PageDown") {
                 e.preventDefault();
                 this.cyclePoiCategory(1, true);
+            } else if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                const current = this.poiCategories[this.currentCategoryIndex];
+                this.recordInteraction("鍵盤按下", `掃描周遭【${current.label}】(P)`);
+                if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+                    this.audio.playRadarExploreTone();
+                }
+                setTimeout(() => this.announceAllPOIs(current.key), 180);
             }
         });
-    }
 
-    if (uiBtnAround) {
-        // 3. 點擊 / 點兩下 (Double Tap / Click) / Enter / Space / P 鍵：正式執行該分類之掃描！
-        uiBtnAround.addEventListener("click", () => {
+        // 2. 單指點兩下 (Double Tap / Click) / 按 P 鍵：直接執行該分類之掃描（無需彈窗，無多餘步驟）！
+        uiBtnAround.addEventListener("click", (e) => {
+            e.preventDefault();
             const current = this.poiCategories[this.currentCategoryIndex];
             this.recordInteraction("點擊按鈕", `掃描周遭【${current.label}】(P)`);
             if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
@@ -1551,15 +1532,12 @@ class NmapWebApp {
     this.currentCategoryIndex = (this.currentCategoryIndex + delta + len) % len;
     const current = this.poiCategories[this.currentCategoryIndex];
 
-    const selectEl = document.getElementById("ui-select-around-filter");
-    if (selectEl) {
-      selectEl.value = current.key;
-    }
-
     const btn = document.getElementById("ui-btn-around");
     if (btn) {
-      btn.textContent = `${current.icon} ${current.label}掃描 (P)`;
-      btn.setAttribute("aria-label", `掃描周遭${current.label}。點擊或按 P 鍵掃描`);
+      btn.textContent = `${current.icon} ${current.label} (P)`;
+      btn.setAttribute("aria-label", `周遭探索：${current.label}。單指上下撥動切換分類，點兩下立即執行掃描。`);
+      btn.setAttribute("aria-valuenow", this.currentCategoryIndex.toString());
+      btn.setAttribute("aria-valuetext", current.label);
     }
 
     if (this.audio && this.audio.playTick) {
