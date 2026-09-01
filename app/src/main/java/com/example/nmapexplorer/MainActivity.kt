@@ -246,8 +246,9 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) 
                 // 【開機自動重試機制 (Auto-Retry on Server Warmup)】
                 // 解決 Python Bottle 伺服器啟動耗時 (300~1000ms) 與 WebView 立即載入造成的 ERR_CONNECTION_REFUSED 白屏卡死
                 val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
-                var retryCount = 0
-                val maxRetries = 25 // 25 次 * 200ms = 5.0 秒寬裕緩衝時間
+                var isPageSuccessfullyLoaded = false
+                var retryAttempt = 0
+                val maxRetryAttempts = 30
 
                 webViewClient = object : WebViewClient() {
                     override fun onReceivedError(
@@ -255,20 +256,26 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) 
                         request: android.webkit.WebResourceRequest?,
                         error: android.webkit.WebResourceError?
                     ) {
-                        super.onReceivedError(view, request, error)
-                        if (request?.isForMainFrame == true && retryCount < maxRetries) {
-                            retryCount++
-                            android.util.Log.w("MainActivity", "[WebView Warmup] Local server warming up, retrying connection ($retryCount/$maxRetries)...")
+                        if (request?.isForMainFrame == true && !isPageSuccessfullyLoaded && retryAttempt < maxRetryAttempts) {
+                            retryAttempt++
+                            android.util.Log.w("MainActivity", "[WebView Warmup] Server warming up ($retryAttempt/$maxRetryAttempts), retrying load in 250ms...")
+                            retryHandler.removeCallbacksAndMessages(null)
                             retryHandler.postDelayed({
-                                view?.loadUrl(url)
-                            }, 200L)
+                                if (!isPageSuccessfullyLoaded) {
+                                    view?.loadUrl(url)
+                                }
+                            }, 250L)
+                        } else {
+                            super.onReceivedError(view, request, error)
                         }
                     }
 
                     override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                         super.onPageFinished(view, finishedUrl)
-                        retryCount = maxRetries // 標記已順利載入成功
-                        android.util.Log.i("MainActivity", "[WebView Loaded] Successfully loaded $finishedUrl")
+                        if (finishedUrl != null && !finishedUrl.contains("chromewebdata") && finishedUrl.startsWith("http://127.0.0.1:8000/")) {
+                            isPageSuccessfullyLoaded = true
+                            android.util.Log.i("MainActivity", "[WebView Loaded] Successfully loaded $finishedUrl")
+                        }
                     }
                 }
 

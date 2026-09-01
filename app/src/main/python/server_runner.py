@@ -13,13 +13,21 @@ def is_server_alive(host="127.0.0.1", port=8000):
     """
     確認 Bottle HTTP 伺服器是否真正處於存活且能回應請求之狀態
     
-    作用：避免單純 socket connect 抓到處於 TIME_WAIT 或殭屍狀態之通訊埠而誤判跳過啟動。
+    採兩階段快速驗證：
+    1. 先以 40ms 超時進行純 TCP 連線，若未開埠 1ms 內立即回傳 False，不阻礙冷啟動。
+    2. 若 TCP 通暢，再以輕量 HTTP 請求驗證 /api/status 回應，確認非殭屍通訊埠。
     """
+    try:
+        sock = socket.create_connection((host, port), timeout=0.04)
+        sock.close()
+    except Exception:
+        return False
+
     import urllib.request
     try:
         url = f"http://{host}:{port}/api/status"
         req = urllib.request.Request(url, headers={'User-Agent': 'NMapWarmup/1.0'})
-        with urllib.request.urlopen(req, timeout=0.35) as response:
+        with urllib.request.urlopen(req, timeout=0.15) as response:
             return response.status in (200, 404)
     except Exception:
         return False

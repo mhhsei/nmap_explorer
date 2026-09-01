@@ -46,6 +46,17 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.15.7 - 2026-09-01] - 徹底根治「網頁無法開啟」：修正 WebView 錯誤頁面誤判、兩階段極速 Port 探測與不中斷重試循環
+
+- **🛡️ 消除 Chromium 錯誤頁面與重試熔斷 Bug (`MainActivity.kt`)**:
+  - **白話生活痛點**：冷啟動時 Python 伺服器啟動約需 300~500ms。舊版在第一次連線失敗時，WebView 會載入 Chromium 內建錯誤頁面 (`chromewebdata`)，而此錯誤頁面載入完成時觸發了 `onPageFinished`，舊版程式碼誤以為「首頁已成功載入」而將重試次數直接設為最大值中斷重試，導致手機畫面永遠卡死在「網頁無法開啟 (net::ERR_CONNECTION_REFUSED)」。
+  - **修復**：
+    1. **錯誤頁面排除過濾**：在 `onPageFinished` 中明確過濾 `chromewebdata`，唯有成功收到 `http://127.0.0.1:8000/` 回應時才標記成功；
+    2. **不中斷連續自動重試**：連線失敗期間每隔 250ms 自動重新載入，直到伺服器完全就緒；
+    3. **攔截預設錯誤畫面**：在連線預熱階段不觸發 `super.onReceivedError`，避免閃爍出現白底黑字之瀏覽器報錯頁面。
+- **⚡ 兩階段 1ms 極速通訊埠探測 (`server_runner.py`)**:
+  - **修復**：將 `is_server_alive` 升級為兩階段驗證。冷啟動時先以 40ms 超時進行純 TCP 測試，若尚未開埠在 1ms 內立即回傳 False，徹底消滅主執行緒在開機時的任何延遲。
+
 ### [v1.0.15.6 - 2026-09-01] - 單鍵無障礙滾輪探索 (Accessible Wheel Button)：TalkBack 上下撥動換分類、點兩下秒掃描與 6 大真實 POI 領域分流
 
 - **🎡 單鍵手勢滾輪按鈕 (Accessible Wheel Button) (`index.html`, `app.js`)**:
