@@ -71,15 +71,15 @@ class BarometerVerticalFilter(
     private var sustainedStartTimeMs = 0L
 
     companion object {
-        /** 判定為人行天橋的進入高度門檻 (公尺)：爬上天橋通常高於地面 3.5 公尺以上 */
-        const val OVERPASS_ENTER_ALTITUDE_M = 3.5f
+        /** 判定為人行天橋的進入高度門檻 (公尺)：台灣實體天橋主樑淨空通常高於路面 4.5~5.5 公尺，設 4.2 公尺消滅平地風壓突波 */
+        const val OVERPASS_ENTER_ALTITUDE_M = 4.2f
         /** 離開人行天橋回歸地面的退出門檻 (公尺)：防止在階梯邊緣猶豫徘徊時頻繁跳針 */
-        const val OVERPASS_EXIT_ALTITUDE_M = 2.2f
+        const val OVERPASS_EXIT_ALTITUDE_M = 2.5f
 
-        /** 進入地下道/B1的下潛門檻 (公尺)：走下地下道通常低於地面 2.5 公尺 */
-        const val UNDERGROUND_B1_ENTER_ALTITUDE_M = -2.6f
+        /** 進入地下道/B1的下潛門檻 (公尺)：走下地下道通常低於地面 3.0 公尺以上 */
+        const val UNDERGROUND_B1_ENTER_ALTITUDE_M = -3.0f
         /** 離開地下道回歸地面的退出門檻 (公尺) */
-        const val UNDERGROUND_B1_EXIT_ALTITUDE_M = -1.6f
+        const val UNDERGROUND_B1_EXIT_ALTITUDE_M = -1.8f
 
         /** 進入地下二樓 B2 的下潛門檻 (公尺)：捷運轉乘月台通常在地下 6 公尺以上 */
         const val UNDERGROUND_B2_ENTER_ALTITUDE_M = -6.2f
@@ -95,11 +95,11 @@ class BarometerVerticalFilter(
         /** 人類垂直步行生理極限速度 (m/s)：上下樓梯正常為 0.2~0.4 m/s，奔跑極限不超過 0.75 m/s */
         const val MAX_PHYSICAL_VERTICAL_VELOCITY_MPS = 0.75f
 
-        /** 樓層切換防抖冷卻鎖定 (毫秒)：切換後至少維持 8 秒，禁止瘋狂跳針切換 */
-        const val LEVEL_TRANSITION_COOLDOWN_MS = 8000L
+        /** 樓層切換防抖冷卻鎖定 (毫秒)：切換後至少維持 10 秒，禁止瘋狂跳針切換 */
+        const val LEVEL_TRANSITION_COOLDOWN_MS = 10000L
 
-        /** 進入新樓層所需的持續穩定時間 (毫秒)：高度超標必須連續維持 2.0 秒，徹底消滅褲管活塞脈衝 */
-        const val SUSTAINED_DURATION_MS = 2000L
+        /** 進入新樓層所需的持續穩定時間 (毫秒)：高度超標必須連續維持超過 4.5 秒，徹底消滅戶外側風與空調氣壓突波 */
+        const val SUSTAINED_DURATION_MS = 4500L
     }
 
     /**

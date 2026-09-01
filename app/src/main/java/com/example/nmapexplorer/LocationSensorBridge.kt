@@ -1241,7 +1241,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             while (diff < -180f) diff += 360f
             while (diff > 180f) diff -= 360f
 
-            val alpha = if (Math.abs(diff) > 2.0f) 0.85f else 0.35f
+            val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut()
+            val absDiff = Math.abs(diff)
+            // 步態低通濾波：步行手持擺臂時 (diff <= 35°)，採用 alpha=0.22 消化 ±15° 晃動；
+            // 明顯轉向或原地轉向時 (diff > 35°)，提升至 alpha=0.75 靈敏跟隨！
+            val alpha = if (isWalking) {
+                if (absDiff > 35.0f) 0.75f else 0.22f
+            } else {
+                if (absDiff > 2.0f) 0.65f else 0.25f
+            }
             smoothedHeading = (smoothedHeading + alpha * diff + 360f) % 360f
         }
 

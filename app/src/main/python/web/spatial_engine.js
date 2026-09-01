@@ -50,14 +50,14 @@ const NMapGeometry = {
 
   bearingToRelativeDirection(relBearing) {
     const absDiff = Math.abs(relBearing);
-    if (absDiff <= 15.0) return "正前方";
-    if (absDiff >= 165.0) return "正後方";
-    if (relBearing > 15.0 && relBearing < 75.0) return "右前方";
-    if (relBearing >= 75.0 && relBearing <= 105.0) return "右側";
-    if (relBearing > 105.0 && relBearing < 165.0) return "右後方";
-    if (relBearing < -15.0 && relBearing > -75.0) return "左前方";
-    if (relBearing <= -75.0 && relBearing >= -105.0) return "左側";
-    if (relBearing < -105.0 && relBearing > -165.0) return "左後方";
+    if (absDiff <= 22.5) return "正前方";
+    if (absDiff >= 157.5) return "正後方";
+    if (relBearing > 22.5 && relBearing < 67.5) return "右前方";
+    if (relBearing >= 67.5 && relBearing <= 112.5) return "右側";
+    if (relBearing > 112.5 && relBearing < 157.5) return "右後方";
+    if (relBearing < -22.5 && relBearing > -67.5) return "左前方";
+    if (relBearing <= -67.5 && relBearing >= -112.5) return "左側";
+    if (relBearing < -112.5 && relBearing > -157.5) return "左後方";
     return "周遭";
   },
 

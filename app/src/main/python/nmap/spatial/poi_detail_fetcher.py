@@ -885,9 +885,26 @@ class PoiDetailFetcher:
                 details["category_desc"] = "寺廟宮廟/信仰中心"
                 details["popular_items"] = "祈福參拜、平安香火符、光明燈安奉"
 
-        # 2. 建構地點與門牌鎖定的高精準搜尋語句 (House-Number Anchored Query)
+        # 2. 建構地點與門牌鎖定的高精準搜尋語句 (Coordinate & House-Number Anchored Query)
         area_prefix = "02" if (lat and lat > 24.9) else ""
         clean_addr = (address or "").replace("台灣", "").replace("臺灣", "").strip()
+
+        # 若未提供精確路名/巷弄/門牌，自動透過精準座標預先反查真實街道與門牌 (例如北新路169巷/141巷)
+        if (not clean_addr or not any(k in clean_addr for k in ["路", "街", "巷", "弄", "大道", "號"])) and lat and lon:
+            try:
+                from nmap.data.geocoders import NominatimClient
+                geo_client = NominatimClient(cache_manager=self.cache)
+                dp_info = geo_client.get_doorplate_online(lat, lon)
+                if dp_info and dp_info.get("full_address"):
+                    clean_addr = dp_info["full_address"].replace("台灣", "").replace("臺灣", "").strip()
+                elif dp_info and dp_info.get("street"):
+                    clean_addr = f"{dp_info['street']}{dp_info.get('housenumber', '')}號".strip()
+                else:
+                    rev_info = geo_client.reverse_geocode(lat, lon)
+                    if rev_info and rev_info.get("display_name"):
+                        clean_addr = rev_info["display_name"].replace("台灣", "").replace("臺灣", "").strip()
+            except Exception as e:
+                pass
 
         # 確保回傳結構帶有門牌地址
         details["address"] = clean_addr
@@ -897,15 +914,23 @@ class PoiDetailFetcher:
         name_tokens = [t for t in sanitized_name.split() if t]
         main_token = name_tokens[0] if name_tokens else sanitized_name
 
+        # 提取核心街道與巷弄 (例如從 "新北市淡水區北新路141巷15號" 萃取 "北新路141巷" 或 "北新路")
+        street_lane_match = re.search(r'([^\d\s,，]+?(?:路|街|大道|段)(?:\d+巷)?(?:\d+弄)?)', clean_addr)
+        street_lane = street_lane_match.group(1) if street_lane_match else ""
+
         # 語句 1：門牌地址 + 完整招牌名稱 (最精確)
         query_anchored = f"{clean_addr} {sanitized_name}".strip()
         encoded_anchored = urllib.parse.quote(query_anchored)
         
-        # 語句 2：招牌全名 (連鎖店名分店名精確)
+        # 語句 2：核心路名巷弄 + 核心招牌名 (如 "北新路141巷 美而美")
+        query_lane_anchored = f"{street_lane} {main_token}".strip() if street_lane else query_anchored
+        encoded_lane_anchored = urllib.parse.quote(query_lane_anchored)
+
+        # 語句 3：招牌全名 (連鎖店名分店名精確)
         query_name_direct = f"{sanitized_name}".strip()
         encoded_direct = urllib.parse.quote(query_name_direct)
 
-        # 語句 3：門牌地址 + 核心主店名 (備援)
+        # 語句 4：門牌地址 + 核心主店名 (備援)
         query_alt = f"{clean_addr} {main_token}".strip()
         encoded_alt = urllib.parse.quote(query_alt)
 
@@ -1031,15 +1056,17 @@ class PoiDetailFetcher:
         try:
             future_rpc_direct = pool.submit(fetch_gmaps_rpc, encoded_direct)
             future_rpc_anchored = pool.submit(fetch_gmaps_rpc, encoded_anchored)
+            future_rpc_lane = pool.submit(fetch_gmaps_rpc, encoded_lane_anchored) if encoded_lane_anchored != encoded_anchored else None
             futures_html = [
-                pool.submit(fetch_ddg, encoded_anchored),
+                pool.submit(fetch_ddg, encoded_lane_anchored),
                 pool.submit(fetch_bing, encoded_anchored),
-                pool.submit(fetch_google, encoded_anchored),
+                pool.submit(fetch_google, encoded_lane_anchored),
                 pool.submit(fetch_yahoo, encoded_alt)
             ]
 
             # 1. 優先等待並解析 Google Maps 內部 RPC (最高優先)
-            for f_rpc in [future_rpc_direct, future_rpc_anchored]:
+            rpc_futures = [f for f in [future_rpc_direct, future_rpc_lane, future_rpc_anchored] if f is not None]
+            for f_rpc in rpc_futures:
                 try:
                     res = f_rpc.result(timeout=1.4)
                     if res:
