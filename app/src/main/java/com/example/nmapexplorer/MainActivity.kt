@@ -242,22 +242,49 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) 
                 settings.mediaPlaybackRequiresUserGesture = false
                 // 本地開發除錯不快取，確保前端隨時載入最新檔案
                 settings.cacheMode = WebSettings.LOAD_NO_CACHE
-                webViewClient = WebViewClient()
+                
+                // 【開機自動重試機制 (Auto-Retry on Server Warmup)】
+                // 解決 Python Bottle 伺服器啟動耗時 (300~1000ms) 與 WebView 立即載入造成的 ERR_CONNECTION_REFUSED 白屏卡死
+                val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                var retryCount = 0
+                val maxRetries = 25 // 25 次 * 200ms = 5.0 秒寬裕緩衝時間
+
+                webViewClient = object : WebViewClient() {
+                    override fun onReceivedError(
+                        view: WebView?,
+                        request: android.webkit.WebResourceRequest?,
+                        error: android.webkit.WebResourceError?
+                    ) {
+                        super.onReceivedError(view, request, error)
+                        if (request?.isForMainFrame == true && retryCount < maxRetries) {
+                            retryCount++
+                            android.util.Log.w("MainActivity", "[WebView Warmup] Local server warming up, retrying connection ($retryCount/$maxRetries)...")
+                            retryHandler.postDelayed({
+                                view?.loadUrl(url)
+                            }, 200L)
+                        }
+                    }
+
+                    override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                        super.onPageFinished(view, finishedUrl)
+                        retryCount = maxRetries // 標記已順利載入成功
+                        android.util.Log.i("MainActivity", "[WebView Loaded] Successfully loaded $finishedUrl")
+                    }
+                }
+
                 webChromeClient = android.webkit.WebChromeClient()
                 WebView.setWebContentsDebuggingEnabled(true)
                 val appInterface = WebAppInterface(context, this)
                 val signalCamera = TrafficSignalCameraManager(context, appInterface)
                 appInterface.trafficSignalCameraManager = signalCamera
-                // 將 WebAppInterface 綁定為 window.AndroidBridge
                 addJavascriptInterface(appInterface, "AndroidBridge")
-                loadUrl(url)
 
+                val bridge = LocationSensorBridge(context, this)
+                appInterface.locationSensorBridge = bridge
+                onBridgeCreated(bridge, this)
+
+                loadUrl(url)
             }
-            
-            // 建立感測器橋接器並透過回調傳回
-            val bridge = LocationSensorBridge(context, webView)
-            onBridgeCreated(bridge, webView)
-            
             webView
         },
 

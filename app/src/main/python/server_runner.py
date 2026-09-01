@@ -9,14 +9,20 @@ import threading
 import socket
 from bottle import run
 
-def is_port_in_use(port):
+def is_server_alive(host="127.0.0.1", port=8000):
     """
-    檢查指定的通訊埠 (Port) 是否已經被佔用
+    確認 Bottle HTTP 伺服器是否真正處於存活且能回應請求之狀態
     
-    作用：嘗試與本機通訊埠建立連線，若連線成功表示伺服器已經在跑，避免重複啟動報錯。
+    作用：避免單純 socket connect 抓到處於 TIME_WAIT 或殭屍狀態之通訊埠而誤判跳過啟動。
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('127.0.0.1', port)) == 0
+    import urllib.request
+    try:
+        url = f"http://{host}:{port}/api/status"
+        req = urllib.request.Request(url, headers={'User-Agent': 'NMapWarmup/1.0'})
+        with urllib.request.urlopen(req, timeout=0.35) as response:
+            return response.status in (200, 404)
+    except Exception:
+        return False
 
 def start_server_in_background(host="127.0.0.1", port=8000, data_dir=None):
     """
@@ -33,23 +39,28 @@ def start_server_in_background(host="127.0.0.1", port=8000, data_dir=None):
         except Exception:
             pass
 
-    # 若該 Port 已經有服務在運作，直接跳過啟動
-    if is_port_in_use(port):
+    # 若該 Port 已經有正常服務回應 HTTP，直接返回既有服務
+    if is_server_alive(host, port):
         import logging
-        logging.warning(f"Port {port} is already in use, skipping server start.")
+        logging.info(f"Bottle HTTP server is already responding on port {port}, reusing existing instance.")
         return None
         
-    from server import app
     def _run():
         try:
+            from server import app
             # 靜默啟動 Bottle 伺服器
             run(app, host=host, port=port, quiet=True)
         except OSError as e:
-            # 若發生通訊埠佔用衝突則忽略，其餘錯誤照常拋出
-            if "Address already in use" in str(e):
-                pass
+            # 若發生通訊埠佔用衝突且服務已活則忽略，其餘錯誤照常記錄
+            if "Address already in use" in str(e) or "10048" in str(e) or "98" in str(e):
+                import logging
+                logging.warning(f"Port {port} address already in use: {e}")
             else:
-                raise e
+                import logging
+                logging.error(f"Bottle server startup error: {e}")
+        except Exception as e:
+            import logging
+            logging.error(f"Unexpected server startup exception: {e}")
     
     # 建立背景守護執行緒，當主 App 關閉時此執行緒會自動退出
     t = threading.Thread(target=_run, daemon=True)

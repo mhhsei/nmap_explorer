@@ -3902,11 +3902,37 @@ window.onPermissionGranted = () => {
   }
 };
 
-
+/**
+ * 衛星訊號搜尋中即時提示 (由 Android LocationSensorBridge 注入)
+ */
+window.onGpsSearching = () => {
+  if (window.app && !window.app.serverLat) {
+    window.app.updateLiveLog("📍 正在搜尋衛星訊號與建立離線圖資，請稍候...", false, false);
+  }
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new NmapWebApp();
   window.touchCtrl = new TouchGestureController(window.app);
+
+  // 【無障礙即時語音開機心跳 (Screen Reader Startup Chime & Speech)】
+  // 開機瞬間立即透過 TalkBack / NVDA 朗讀就緒狀態，消滅死機恐懼
+  setTimeout(() => {
+    if (window.app && !window.app.serverLat) {
+      window.app.updateLiveLog("歡迎使用 nmap！系統啟動中，正在載入離線圖資與衛星定位...", false, true);
+    }
+  }, 120);
+
+  // 【消除網頁載入時差 (Zero-Latency Replay Request)】
+  // 主動向 Android 原生層請求回放最新定位與感測器狀態
+  if (window.AndroidBridge && window.AndroidBridge.requestLatestLocation) {
+    try {
+      window.AndroidBridge.requestLatestLocation();
+    } catch (e) {
+      console.warn("Error calling requestLatestLocation", e);
+    }
+  }
+
   // 開啟 App 2 秒後在背景靜默檢查更新
   setTimeout(() => {
     if (window.app) window.app.checkForAppUpdates(true);

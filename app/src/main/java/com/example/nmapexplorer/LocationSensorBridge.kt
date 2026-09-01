@@ -705,6 +705,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var isRunning = false
     private var lastEmittedLocation: Location? = null
 
+    // 最近成功分發之定位狀態暫存（供前端網頁載入完成時主動回放）
+    private var lastDispatchedLat: Double = 0.0
+    private var lastDispatchedLon: Double = 0.0
+    private var lastDispatchedAcc: Float = 10.0f
+    private var lastDispatchedBearing: Float = 0.0f
+    private var lastDispatchedSpeed: Float = 0.0f
+    private var lastDispatchedMotionState: MotionState = MotionState.STATIONARY_LOCKED
+
     // Google Play 融合定位 (Fused Location) 回調
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(locationResult: LocationResult) {
@@ -866,7 +874,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     Looper.getMainLooper()
                 )
 
-                // 快速熱啟動：僅允許 5 秒內且精度 <= 25m 的即時快取，避免跨區重啟時誤報舊地點（例如板橋出站誤報北投）
+                // 兩階段優雅預熱啟動：
+                // 1. 若有 120 秒內且精度 <= 45m 的即時快取，做為優先熱啟動立即載入世界模型
+                // 2. 若超過 120 秒或無快取，主動通知前端「正在搜尋衛星訊號」，等待最新即時 GPS Fix 到達
                 fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
                     location?.let {
                         val ageNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
@@ -874,12 +884,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                         } else {
                             (System.currentTimeMillis() - it.time) * 1_000_000L
                         }
-                        val isUsable = it.hasAccuracy() && it.accuracy <= 25f && ageNanos < 5_000_000_000L // 嚴格限縮至 5 秒內即時快取
+                        val isUsable = it.hasAccuracy() && it.accuracy <= 45f && ageNanos < 120_000_000_000L // 寬裕 120 秒熱啟動快取
                         if (isUsable) {
                             Log.i(tag, "[GPS_WARMUP] Using fresh warm-up lastLocation: ${it.latitude}, ${it.longitude} (Acc: ${it.accuracy}m, Age: ${ageNanos / 1_000_000_000L}s, Provider: ${it.provider})")
                             onLocationChanged(it)
                         } else {
                             Log.i(tag, "[GPS_WARMUP] Stale lastLocation discarded (Age: ${ageNanos / 1_000_000_000L}s, Acc: ${it.accuracy}m). Waiting for fresh live GPS fix.")
+                            webView.post {
+                                webView.evaluateJavascript("if (window.onGpsSearching) window.onGpsSearching();", null)
+                            }
                         }
                     }
                 }
@@ -1361,6 +1374,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         // 呼叫前端 JavaScript onLocationUpdate 與 onDifferentialTierUpdate 函式
         val effectiveSpeed = if (motionState == MotionState.STATIONARY_LOCKED) 0f else speed
         val effectiveAcc = min(acc, currentDiffTier.expectedAccuracyMeters)
+
+        // 存檔供前端 WebView 載入完成時主動回放 (Replay)
+        lastDispatchedLat = filteredLat
+        lastDispatchedLon = filteredLon
+        lastDispatchedAcc = effectiveAcc
+        lastDispatchedBearing = bearing
+        lastDispatchedSpeed = effectiveSpeed
+        lastDispatchedMotionState = motionState
+
         webView.post {
             webView.evaluateJavascript(
                 "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed}, '${motionState.name}');" +
@@ -1369,6 +1391,31 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
                 null
             )
+        }
+    }
+
+    /**
+     * 【主動回放最新定位與感測器狀態給 WebView】
+     * 當前端 DOM 載入完畢呼叫 AndroidBridge.requestLatestLocation() 時觸發
+     * 作用：徹底消除網頁載入時差造成的首筆 GPS 遺失
+     */
+    fun replayLastLocation() {
+        if (lastDispatchedLat != 0.0 && lastDispatchedLon != 0.0) {
+            Log.i(tag, "[GPS_REPLAY] Replaying location to WebView: ($lastDispatchedLat, $lastDispatchedLon)")
+            webView.post {
+                webView.evaluateJavascript(
+                    "if (window.onLocationUpdate) window.onLocationUpdate(${lastDispatchedLat}, ${lastDispatchedLon}, ${lastDispatchedAcc}, ${lastDispatchedBearing}, ${lastDispatchedSpeed}, '${lastDispatchedMotionState.name}');" +
+                    "if (window.onMotionStateUpdate) window.onMotionStateUpdate('${lastDispatchedMotionState.name}');" +
+                    "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});" +
+                    "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
+                    null
+                )
+            }
+        } else {
+            Log.i(tag, "[GPS_REPLAY] No dispatched location yet. Notifying frontend searching...")
+            webView.post {
+                webView.evaluateJavascript("if (window.onGpsSearching) window.onGpsSearching();", null)
+            }
         }
     }
 

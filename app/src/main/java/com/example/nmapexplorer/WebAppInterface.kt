@@ -107,6 +107,18 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     }
 
     var trafficSignalCameraManager: TrafficSignalCameraManager? = null
+    var locationSensorBridge: LocationSensorBridge? = null
+
+    /**
+     * 【主動請求原生層補發最新已知座標與感測器狀態】
+     * 由前端 WebView 在 DOMContentLoaded 完成時主動調用
+     * 作用：徹底消除網頁載入延遲導致的第一筆 GPS 遺失，確保世界模型 100% 立即啟動
+     */
+    @JavascriptInterface
+    fun requestLatestLocation() {
+        Log.i(tag, "[GPS_REPLAY] Frontend requested latest location replay.")
+        locationSensorBridge?.replayLastLocation()
+    }
 
     /**
      * 【啟動路口紅綠燈相機即時辨識】
