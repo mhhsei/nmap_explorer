@@ -803,14 +803,14 @@ class NmapWebApp {
 
     const uiBtnAround = document.getElementById("ui-btn-around");
     if (uiBtnAround) {
-        // 1. 鍵盤與 TalkBack 調整值手勢 (ArrowUp / ArrowDown / PageUp / PageDown)
+        // 1. 鍵盤與 TalkBack 調整值手勢 (ArrowUp / ArrowDown / PageUp / PageDown / ArrowLeft / ArrowRight)
         uiBtnAround.addEventListener("keydown", (e) => {
-            if (e.key === "ArrowUp" || e.key === "PageUp") {
-                e.preventDefault();
-                this.cyclePoiCategory(-1, true);
-            } else if (e.key === "ArrowDown" || e.key === "PageDown") {
+            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "ArrowRight") {
                 e.preventDefault();
                 this.cyclePoiCategory(1, true);
+            } else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "ArrowLeft") {
+                e.preventDefault();
+                this.cyclePoiCategory(-1, true);
             } else if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 const current = this.poiCategories[this.currentCategoryIndex];
@@ -1525,7 +1525,7 @@ class NmapWebApp {
     return "shopping";
   }
 
-  // ========== TalkBack 單指上下撥動切換分類輪播器 (Accessible Wheel Navigator) ==========
+  // ========== TalkBack 自動滑桿上下撥動切換分類輪播器 (Accessible Category Slider) ==========
   cyclePoiCategory(delta, announce = true) {
     if (!this.poiCategories || this.poiCategories.length === 0) return;
     const len = this.poiCategories.length;
@@ -1535,7 +1535,6 @@ class NmapWebApp {
     const btn = document.getElementById("ui-btn-around");
     if (btn) {
       btn.textContent = `${current.icon} ${current.label} (P)`;
-      btn.setAttribute("aria-label", `周遭探索：${current.label}。單指上下撥動切換分類，點兩下立即執行掃描。`);
       btn.setAttribute("aria-valuenow", this.currentCategoryIndex.toString());
       btn.setAttribute("aria-valuetext", current.label);
     }
@@ -1545,7 +1544,8 @@ class NmapWebApp {
     }
 
     if (announce) {
-      this.updateLiveLog(`已選擇：${current.label}。`, false, true);
+      // 依使用者無障礙省話規範：切換時只極簡唸出分類名稱（如「餐飲美食」），不加任何贅字
+      this.speakNative(current.label, true);
     }
   }
 
