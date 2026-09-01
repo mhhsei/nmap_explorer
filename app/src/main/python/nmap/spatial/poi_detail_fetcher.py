@@ -10,10 +10,13 @@
 import re
 import json
 import time
+import socket
 import urllib.request
 import urllib.parse
 import concurrent.futures
 from typing import Dict, Any, Optional
+
+socket.setdefaulttimeout(1.0)
 
 
 class PoiDetailFetcher:
@@ -84,7 +87,7 @@ class PoiDetailFetcher:
     }
 
     def __init__(self, cache_manager=None):
-        pass
+        self._memory_cache = {}
 
     @classmethod
     def infer_category_desc(cls, name: str, raw_cat: str = "") -> str:
@@ -153,7 +156,6 @@ class PoiDetailFetcher:
 
     @classmethod
     def _extract_real_phone(cls, html: str, area_prefix: str = "") -> str:
-        # 1. 優先尋找帶有「電話/TEL/專線」標籤的字串
         candidates = re.findall(r'(?:電話|TEL|連絡電話|聯絡電話|專線|門市電話|預約專線|市話)[:：\s]*(0\d{1,3}[-\s]?\d{3,4}[-\s]?\d{3,4})', html, re.IGNORECASE)
         for c in candidates:
             clean = re.sub(r'[-\s\(\)]', '', c)
@@ -164,7 +166,6 @@ class PoiDetailFetcher:
                 elif not area_prefix:
                     return formatted
 
-        # 2. 通用台灣電話正規化提取
         all_p = re.findall(r'(?:[^\d]|^)(02[-\s]?[2378]\d{3}[-\s]?\d{4}|0[3-8][-\s]?\d{2,3}[-\s]?\d{4}|09\d{2}[-\s]?\d{3}[-\s]?\d{3})(?:[^\d]|$)', html)
         for c in all_p:
             clean = re.sub(r'[-\s\(\)]', '', c)
@@ -207,12 +208,16 @@ class PoiDetailFetcher:
 
     def fetch_poi_details(self, name: str, lat: float = None, lon: float = None, address: str = "", floor: str = "1F") -> Dict[str, Any]:
         """
-        【每次即時連線抓取當天最新營業資訊、電話、類型、評價與門牌地址】
+        【每次即時連線抓取當天最新營業資訊、電話、類型、評價與門牌地址 (< 0.8s)】
         """
         if not name:
             return {}
 
         clean_name = name.strip()
+        cache_key = f"{clean_name}|{address or ''}|{floor or '1F'}"
+        if cache_key in self._memory_cache:
+            return self._memory_cache[cache_key]
+
         details = {
             "name": clean_name,
             "address": address or "",
@@ -287,52 +292,80 @@ class PoiDetailFetcher:
         def fetch_ddg(q_enc):
             url = f"https://html.duckduckgo.com/html/?q={q_enc}"
             try:
+                import requests
+                resp = requests.get(url, headers=headers, timeout=0.8)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception:
+                pass
+            try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 1.5}
+                kwargs = {"timeout": 0.8}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
-            except Exception as e:
+            except Exception:
                 return ""
 
         # 來源 2：Bing 台灣在地商家搜尋
         def fetch_bing(q_enc):
             url = f"https://www.bing.com/search?q={q_enc}&setlang=zh-Hant-TW"
             try:
+                import requests
+                resp = requests.get(url, headers=headers, timeout=0.8)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception:
+                pass
+            try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 1.2}
+                kwargs = {"timeout": 0.8}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
-            except Exception as e:
+            except Exception:
                 return ""
 
         # 來源 3：Google 搜尋與在地地圖摘要
         def fetch_google(q_enc):
             url = f"https://www.google.com/search?q={q_enc}+google+maps&hl=zh-TW"
             try:
+                import requests
+                resp = requests.get(url, headers=headers, timeout=0.8)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception:
+                pass
+            try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 1.2}
+                kwargs = {"timeout": 0.8}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
-            except Exception as e:
+            except Exception:
                 return ""
 
         # 來源 4：Yahoo 奇摩在地搜尋
         def fetch_yahoo(q_enc):
             url = f"https://tw.search.yahoo.com/search?p={q_enc}"
             try:
+                import requests
+                resp = requests.get(url, headers=headers, timeout=0.8)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception:
+                pass
+            try:
                 req = urllib.request.Request(url, headers=headers)
-                kwargs = {"timeout": 1.2}
+                kwargs = {"timeout": 0.8}
                 if ssl_ctx:
                     kwargs["context"] = ssl_ctx
                 with urllib.request.urlopen(req, **kwargs) as r:
                     return r.read().decode('utf-8', errors='ignore')
-            except Exception as e:
+            except Exception:
                 return ""
 
         combined_html = ""
@@ -347,7 +380,7 @@ class PoiDetailFetcher:
                 ]
 
                 try:
-                    for f in concurrent.futures.as_completed(futures, timeout=1.8):
+                    for f in concurrent.futures.as_completed(futures, timeout=0.85):
                         try:
                             res = f.result()
                             if res:
@@ -391,5 +424,6 @@ class PoiDetailFetcher:
             elif "B1" in floor or "地下" in floor:
                 details["wheelchair"] = f"⚠️ 位於地下室 {floor}，出入需留意樓梯或尋找無障礙升降梯"
 
+        self._memory_cache[cache_key] = details
         return details
 

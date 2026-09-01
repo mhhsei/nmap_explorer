@@ -60,10 +60,22 @@
 
     <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
       <button id="ui-btn-scan" class="btn" aria-label="掃描前方店家">掃描前方 (L)</button>
-      <div id="ui-btn-around" class="btn" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0" aria-valuetext="全部設施" aria-label="周遭探索" style="background: #0284c7; color: #f8fafc; font-weight: bold; border: 2px solid #38bdf8; display: flex; align-items: center; justify-content: center; user-select: none; cursor: pointer;">🌐 全部設施 (P)</div>
       <button id="ui-btn-intersection" class="btn" aria-label="查詢前方路口走向與分支">前方路口 (I)</button>
       <button id="ui-btn-loc" class="btn" aria-label="播報當前定位">目前位置 (R)</button>
-      <button id="ui-btn-settings" class="btn" style="grid-column: span 2; background: #6366f1; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold;" aria-label="開啟偏好設定，可設定轉動播報方位、音效與觸覺回饋">⚙️ 偏好設定</button>
+      <button id="ui-btn-settings" class="btn" style="background: #6366f1; color: #f8fafc; font-weight: bold;" aria-label="開啟偏好設定，可設定轉動播報方位、音效與觸覺回饋">⚙️ 偏好設定</button>
+    </div>
+
+    <!-- 6 大周遭分類極速掃描列 (TalkBack 單指左右滑動選項目，點兩下直接掃描) -->
+    <div class="category-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px;" role="group" aria-label="周遭分類雷達掃描">
+      <button id="cat-btn-all" class="btn cat-btn" data-cat="all" aria-label="全部設施。點兩下立即掃描周遭全部設施" style="background: #0284c7; color: #f8fafc; font-weight: bold; padding: 12px 4px; font-size: 1.05em; border-radius: 8px;">🌐 全部 (P)</button>
+      <button id="cat-btn-food" class="btn cat-btn" data-cat="food" aria-label="餐飲美食。點兩下立即掃描周遭餐廳小吃飲料" style="background: #0d9488; color: #f8fafc; font-weight: bold; padding: 12px 4px; font-size: 1.05em; border-radius: 8px;">🍽️ 美食</button>
+      <button id="cat-btn-shopping" class="btn cat-btn" data-cat="shopping" aria-label="生活購物。點兩下立即掃描超商與量販超市" style="background: #0891b2; color: #f8fafc; font-weight: bold; padding: 12px 4px; font-size: 1.05em; border-radius: 8px;">🏪 購物</button>
+      <button id="cat-btn-transit" class="btn cat-btn" data-cat="transit" aria-label="交通號誌。點兩下立即掃描有聲號誌公車捷運" style="background: #ca8a04; color: #f8fafc; font-weight: bold; padding: 12px 4px; font-size: 1.05em; border-radius: 8px;">🚦 交通</button>
+      <button id="cat-btn-public" class="btn cat-btn" data-cat="public_access" aria-label="公共無障礙。點兩下立即掃描無障礙設施與醫院郵局" style="background: #4f46e5; color: #f8fafc; font-weight: bold; padding: 12px 4px; font-size: 1.05em; border-radius: 8px;">♿ 無障礙</button>
+      <button id="cat-btn-landmarks" class="btn cat-btn" data-cat="landmarks" aria-label="地標古蹟。點兩下立即掃描地標學校公園寺廟" style="background: #9333ea; color: #f8fafc; font-weight: bold; padding: 12px 4px; font-size: 1.05em; border-radius: 8px;">🏢 地標</button>
+    </div>
+
+    <div class="sub-controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
       <button id="ui-btn-map-db" class="btn" style="background: #0d9488; color: #f8fafc; font-size: 1em; padding: 10px; font-weight: bold;" aria-label="管理離線地圖資料庫，涵蓋全台灣193萬店家與171萬營業稅籍資料">📥 離線圖資管理</button>
       <button id="ui-btn-check-update" class="btn" style="background: #0369a1; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="檢查 GitHub 最新發布版本">檢查更新</button>
       <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌</button>
