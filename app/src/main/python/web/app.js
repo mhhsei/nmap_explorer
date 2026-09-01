@@ -614,6 +614,16 @@ class NmapWebApp {
     this.simulationMode = false;
     this.simDifficulty = 'normal';
 
+    // 6 大周遭地標探索分類 (Accessible Wheel Categories)
+    this.poiCategories = [
+      { key: "all", label: "全部設施", icon: "🌐", desc: "全部設施與店家" },
+      { key: "food", label: "餐飲美食", icon: "🍽️", desc: "餐廳、小吃、早午餐、咖啡與飲料" },
+      { key: "shopping", label: "生活購物", icon: "🏪", desc: "超商、超市、量販與生活百貨" },
+      { key: "transit", label: "交通號誌", icon: "🚦", desc: "有聲號誌、公車站、斑馬線與捷運" },
+      { key: "public_access", label: "公共無障礙", icon: "♿", desc: "無障礙電梯、公廁、郵局、銀行與醫院" },
+      { key: "landmarks", label: "地標古蹟", icon: "🏢", desc: "學校、寺廟、公園、古蹟與政府機關" }
+    ];
+    this.currentCategoryIndex = 0;
     
     // RPG Game Loop State
     this.keysDown = {};
@@ -793,12 +803,52 @@ class NmapWebApp {
 
     const uiBtnAround = document.getElementById("ui-btn-around");
     if (uiBtnAround) {
+        // 1. 觸控手勢監聽（單指向上滑動或向下滑動切換分類，無需展開對話框）
+        let touchStartY = 0;
+        let isSwipeHandled = false;
+
+        uiBtnAround.addEventListener("touchstart", (e) => {
+            if (e.touches && e.touches.length === 1) {
+                touchStartY = e.touches[0].clientY;
+                isSwipeHandled = false;
+            }
+        }, { passive: true });
+
+        uiBtnAround.addEventListener("touchmove", (e) => {
+            if (e.touches && e.touches.length === 1 && !isSwipeHandled) {
+                const currentY = e.touches[0].clientY;
+                const diffY = currentY - touchStartY;
+                if (diffY < -24) {
+                    // 向上撥動 -> 切換至下一個分類
+                    this.cyclePoiCategory(1, true);
+                    isSwipeHandled = true;
+                } else if (diffY > 24) {
+                    // 向下撥動 -> 切換至上一個分類
+                    this.cyclePoiCategory(-1, true);
+                    isSwipeHandled = true;
+                }
+            }
+        }, { passive: true });
+
+        // 2. 鍵盤與 TalkBack 值調整 (ArrowUp / ArrowDown / PageUp / PageDown)
+        uiBtnAround.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowUp" || e.key === "PageUp") {
+                e.preventDefault();
+                this.cyclePoiCategory(-1, true);
+            } else if (e.key === "ArrowDown" || e.key === "PageDown") {
+                e.preventDefault();
+                this.cyclePoiCategory(1, true);
+            }
+        });
+
+        // 3. 單指點兩下 (Double Tap / Click) / Enter / Space：直接執行該分類的掃描！
         uiBtnAround.addEventListener("click", () => {
-            this.recordInteraction("點擊按鈕", "掃描周遭所有店家 (P)");
+            const current = this.poiCategories[this.currentCategoryIndex];
+            this.recordInteraction("點擊按鈕", `掃描周遭【${current.label}】(P)`);
             if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
                 this.audio.playRadarExploreTone();
             }
-            setTimeout(() => this.announceAllPOIs(), 200);
+            setTimeout(() => this.announceAllPOIs(current.key), 180);
         });
     }
 
@@ -1400,14 +1450,138 @@ class NmapWebApp {
     }
   }
 
-  // 隨時根據「當前即時朝向」與「即時座標」重新動態推算所有店家的相對左右/鐘點方位
-  getRealtimePois() {
+  // ========== 6 大周遭地標領域分類器 (POI Domain Classifier) ==========
+  classifyPoiDomain(poi) {
+    if (!poi) return "all";
+    const cat = ((poi.category || "") + " " + (poi.category_desc || "")).toLowerCase();
+    const name = (poi.name || "").toLowerCase();
+
+    // 1. 交通號誌、公車、捷運、路口 (transit)
+    if (
+      cat.includes("traffic_signal") || cat.includes("aps_signal") || cat.includes("crossing") ||
+      cat.includes("bus_stop") || cat.includes("bus_station") || cat.includes("subway") ||
+      cat.includes("mrt") || cat.includes("train_station") || cat.includes("platform") ||
+      cat.includes("parking") || name.includes("公車站") || name.includes("捷運") ||
+      name.includes("號誌") || name.includes("斑馬線") || name.includes("火車站") ||
+      name.includes("停車場") || name.includes("站牌")
+    ) {
+      return "transit";
+    }
+
+    // 2. 醫療、公共設施與無障礙 (public_access)
+    if (
+      cat.includes("mrt_elevator") || cat.includes("elevator") || cat.includes("toilets") ||
+      cat.includes("toilet") || cat.includes("pharmacy") || cat.includes("hospital") ||
+      cat.includes("clinic") || cat.includes("dentist") || cat.includes("doctor") ||
+      cat.includes("post_office") || cat.includes("bank") || cat.includes("atm") ||
+      cat.includes("police") || cat.includes("fire_station") || cat.includes("government") ||
+      cat.includes("townhall") || name.includes("無障礙") || name.includes("電梯") ||
+      name.includes("公廁") || name.includes("廁所") || name.includes("藥局") ||
+      name.includes("診所") || name.includes("醫院") || name.includes("郵局") ||
+      name.includes("銀行") || name.includes("提款機") || name.includes("派出所") ||
+      name.includes("警察局") || name.includes("戶政") || name.includes("公所")
+    ) {
+      return "public_access";
+    }
+
+    // 3. 餐飲與美食小吃 (food)
+    if (
+      cat.includes("restaurant") || cat.includes("food") || cat.includes("cafe") ||
+      cat.includes("coffee") || cat.includes("bubble_tea") || cat.includes("tea") ||
+      cat.includes("bakery") || cat.includes("diner") || cat.includes("breakfast") ||
+      cat.includes("fast_food") || cat.includes("barbecue") || cat.includes("hotpot") ||
+      cat.includes("seafood") || cat.includes("ice_cream") || cat.includes("buffet") ||
+      cat.includes("deli") || cat.includes("dessert") || cat.includes("confectionery") ||
+      cat.includes("bar") || cat.includes("pub") || name.includes("餐廳") ||
+      name.includes("咖啡") || name.includes("小吃") || name.includes("便當") ||
+      name.includes("麵店") || name.includes("麵館") || name.includes("紅茶") ||
+      name.includes("手搖") || name.includes("早餐") || name.includes("烘焙") ||
+      name.includes("甜點") || name.includes("火鍋") || name.includes("牛排") ||
+      name.includes("早午餐")
+    ) {
+      return "food";
+    }
+
+    // 4. 生活購物與超商 (shopping)
+    if (
+      cat.includes("convenience") || cat.includes("supermarket") || cat.includes("grocery") ||
+      cat.includes("shop") || cat.includes("shopping") || cat.includes("clothing") ||
+      cat.includes("clothes") || cat.includes("mobile_phone") || cat.includes("hardware") ||
+      cat.includes("book") || cat.includes("stationery") || cat.includes("beauty") ||
+      cat.includes("hair") || cat.includes("salon") || cat.includes("mall") ||
+      cat.includes("department_store") || cat.includes("market") || cat.includes("variety") ||
+      cat.includes("florist") || cat.includes("optician") || cat.includes("shoes") ||
+      name.includes("7-eleven") || name.includes("7-11") || name.includes("全家") ||
+      name.includes("萊爾富") || name.includes("ok超商") || name.includes("全聯") ||
+      name.includes("家樂福") || name.includes("美廉社") || name.includes("屈臣氏") ||
+      name.includes("康是美") || name.includes("寶雅") || name.includes("大創") ||
+      name.includes("五金") || name.includes("服飾") || name.includes("鞋") ||
+      name.includes("眼鏡") || name.includes("通訊") || name.includes("書店") ||
+      name.includes("文具") || name.includes("美髮") || name.includes("理髮")
+    ) {
+      return "shopping";
+    }
+
+    // 5. 建築地標、學校與休閒景點 (landmarks)
+    if (
+      cat.includes("school") || cat.includes("university") || cat.includes("kindergarten") ||
+      cat.includes("college") || cat.includes("library") || cat.includes("temple") ||
+      cat.includes("church") || cat.includes("worship") || cat.includes("park") ||
+      cat.includes("garden") || cat.includes("museum") || cat.includes("attraction") ||
+      cat.includes("viewpoint") || cat.includes("historic") || cat.includes("landmark") ||
+      cat.includes("monument") || cat.includes("hotel") || cat.includes("motel") ||
+      cat.includes("hostel") || cat.includes("gym") || cat.includes("fitness") ||
+      cat.includes("theatre") || cat.includes("cinema") || name.includes("國小") ||
+      name.includes("國中") || name.includes("高中") || name.includes("大學") ||
+      name.includes("幼兒園") || name.includes("寺") || name.includes("廟") ||
+      name.includes("宮") || name.includes("教堂") || name.includes("公園") ||
+      name.includes("館") || name.includes("飯店") || name.includes("旅館")
+    ) {
+      return "landmarks";
+    }
+
+    return "shopping";
+  }
+
+  // ========== TalkBack 單指上下撥動切換分類輪播器 (Accessible Wheel Navigator) ==========
+  cyclePoiCategory(delta, announce = true) {
+    if (!this.poiCategories || this.poiCategories.length === 0) return;
+    const len = this.poiCategories.length;
+    this.currentCategoryIndex = (this.currentCategoryIndex + delta + len) % len;
+    const current = this.poiCategories[this.currentCategoryIndex];
+
+    const btn = document.getElementById("ui-btn-around");
+    if (btn) {
+      btn.textContent = `${current.icon} ${current.label} (P)`;
+      btn.setAttribute("aria-label", `周遭探索：${current.label}。單指上下撥動切換分類，點兩下執行掃描。`);
+      btn.setAttribute("aria-valuenow", this.currentCategoryIndex.toString());
+      btn.setAttribute("aria-valuetext", current.label);
+    }
+
+    if (this.audio && this.audio.playTick) {
+      this.audio.playTick(delta < 0);
+    }
+
+    if (announce) {
+      this.updateLiveLog(`已選擇：${current.label}。點兩下執行掃描。`, false, true);
+    }
+  }
+
+  // 隨時根據「當前即時朝向」、「即時座標」與「選定分類」重新動態推算所有店家的相對左右/鐘點方位
+  getRealtimePois(filterCategory = null) {
     if (!this.lastPois || this.lastPois.length === 0) return [];
     const curLat = this.localLat !== null ? this.localLat : (this.serverLat || 0);
     const curLon = this.localLon !== null ? this.localLon : (this.serverLon || 0);
     const curHead = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
 
-    return this.lastPois.map((p) => {
+    const targetCategory = filterCategory || (this.poiCategories ? this.poiCategories[this.currentCategoryIndex].key : "all");
+
+    let sourceList = this.lastPois;
+    if (targetCategory && targetCategory !== "all") {
+      sourceList = this.lastPois.filter(p => this.classifyPoiDomain(p) === targetCategory);
+    }
+
+    return sourceList.map((p) => {
       const dist = Math.round(this.haversineDistance(curLat, curLon, p.lat, p.lon) * 10) / 10;
       const targetBrng = this.calculateBearing(curLat, curLon, p.lat, p.lon);
       
@@ -1873,11 +2047,14 @@ class NmapWebApp {
     return clean.replace(/[～~]+/g, ' ').trim();
   }
 
-  announceAllPOIs() {
+  announceAllPOIs(categoryKey = null) {
+    const targetCatKey = categoryKey || (this.poiCategories ? this.poiCategories[this.currentCategoryIndex].key : "all");
+    const catMeta = (this.poiCategories ? this.poiCategories.find(c => c.key === targetCatKey) : null) || { icon: "🌐", label: "全部設施" };
+
     const doAnnounce = () => {
-      const realtimePois = this.getRealtimePois();
+      const realtimePois = this.getRealtimePois(targetCatKey);
       if (!realtimePois || realtimePois.length === 0) {
-        this.updateLiveLog("【周遭掃描】150 公尺內無特別設施標籤。", false, true);
+        this.updateLiveLog(`【${catMeta.icon} ${catMeta.label}】150 公尺內無特別登錄的設施。`, false, true);
         return;
       }
       
@@ -1891,16 +2068,13 @@ class NmapWebApp {
       }
       
       const closeCount = realtimePois.filter(p => p.distance_m <= 35).length;
-      const foodCount = realtimePois.filter(p => ['restaurant', 'fast_food', 'food', 'bakery', 'cafe', 'breakfast', 'tea', 'diner'].some(k => (p.category || '').toLowerCase().includes(k))).length;
-      const shopCount = realtimePois.filter(p => ['convenience', 'supermarket', 'shop', 'market', 'store', 'mall'].some(k => (p.category || '').toLowerCase().includes(k))).length;
+      let summaryStr = `【${catMeta.icon} ${catMeta.label}掃描】周遭共發現 ${realtimePois.length} 處${closeCount > 0 ? `（35米內近處 ${closeCount} 處）` : ''}：\n`;
       
-      let summaryStr = `【周遭 150 公尺共發現 ${realtimePois.length} 處店家與地標】（35米內近處 ${closeCount} 家，美食 ${foodCount} 家，超商 ${shopCount} 家）\n`;
-      
-      const lines = realtimePois.map(p => {
+      const lines = realtimePois.map((p, idx) => {
           const cat = this.translateCategory(p.category);
           const cleanName = this.cleanPoiDisplayName(p.name);
           const clock = p.clock_position || p.clock_direction || "前方";
-          return `${cleanName}（${clock} ${p.distance_m}m，${cat}）`;
+          return `${idx + 1}. ${cleanName}（${clock} ${p.distance_m}m，${cat}）`;
       });
       
       setTimeout(() => {
