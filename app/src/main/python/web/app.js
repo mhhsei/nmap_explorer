@@ -2717,6 +2717,9 @@ class NmapWebApp {
           relative_bearing_deg: 0
         }, `${topExit.speech_prompt}`, false);
         return;
+      }
+    }
+
     // 0. 初始化專屬冷卻快取
     if (!this.announcedHazardCooldown) this.announcedHazardCooldown = new Map();
     if (!this.announcedSignalCooldown) this.announcedSignalCooldown = new Map();
