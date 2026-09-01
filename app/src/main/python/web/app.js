@@ -801,31 +801,105 @@ class NmapWebApp {
         });
     }
 
-    // 6 大周遭分類直達按鈕綁定 (TalkBack 左右滑動選項目，點兩下直接執行該分類掃描)
-    const categoryButtons = [
-        { id: "cat-btn-all", key: "all", label: "全部設施" },
-        { id: "cat-btn-food", key: "food", label: "餐飲美食" },
-        { id: "cat-btn-shopping", key: "shopping", label: "生活購物" },
-        { id: "cat-btn-transit", key: "transit", label: "交通號誌" },
-        { id: "cat-btn-public", key: "public_access", label: "公共無障礙" },
-        { id: "cat-btn-landmarks", key: "landmarks", label: "地標古蹟" }
-    ];
+    // 周遭探索滑輪按鈕 (Unified Wheel Slider)：單指上下滑動切換分類、原地雙擊秒掃描
+    const uiBtnAround = document.getElementById("ui-btn-around");
+    if (uiBtnAround) {
+        let touchStartY = 0;
+        let isTouching = false;
+        let hasMoved = false;
 
-    categoryButtons.forEach(c => {
-        const btn = document.getElementById(c.id);
-        if (btn) {
-            btn.addEventListener("click", (e) => {
-                e.preventDefault();
-                const idx = this.poiCategories.findIndex(item => item.key === c.key);
-                if (idx !== -1) this.currentCategoryIndex = idx;
-                this.recordInteraction("點擊按鈕", `掃描周遭【${c.label}】`);
-                if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
-                    this.audio.playRadarExploreTone();
+        const updateCategoryDisplay = (index, announceSpeech = true) => {
+            if (index < 0) index = this.poiCategories.length - 1;
+            if (index >= this.poiCategories.length) index = 0;
+            this.currentCategoryIndex = index;
+            const currentCat = this.poiCategories[index];
+            
+            uiBtnAround.innerText = `${currentCat.icon} ${currentCat.label} (P)`;
+            uiBtnAround.setAttribute("aria-valuenow", index);
+            uiBtnAround.setAttribute("aria-valuetext", currentCat.label);
+            uiBtnAround.setAttribute("aria-label", `周遭探索：${currentCat.label}。單指上下滑動切換分類，點兩下立即掃描`);
+
+            if (announceSpeech) {
+                if (window.AndroidBridge && window.AndroidBridge.vibrateClick) {
+                    window.AndroidBridge.vibrateClick();
                 }
-                setTimeout(() => this.announceAllPOIs(c.key), 150);
-            });
-        }
-    });
+                // 【極簡省話原則】：純粹乾淨播報分類名（如「餐飲美食」），不加任何多餘前綴
+                if (window.AndroidBridge && window.AndroidBridge.speak) {
+                    window.AndroidBridge.speak(currentCat.label, true);
+                } else if (window.speechSynthesis) {
+                    try {
+                        window.speechSynthesis.cancel();
+                        const u = new SpeechSynthesisUtterance(currentCat.label);
+                        u.lang = 'zh-TW';
+                        window.speechSynthesis.speak(u);
+                    } catch(e) {}
+                }
+            }
+        };
+
+        // 1. 原生 Touch 觸控滑動支援（單指上下撥動切換分類）
+        uiBtnAround.addEventListener("touchstart", (e) => {
+            if (e.touches && e.touches.length > 0) {
+                touchStartY = e.touches[0].clientY;
+                isTouching = true;
+                hasMoved = false;
+            }
+        }, { passive: true });
+
+        uiBtnAround.addEventListener("touchmove", (e) => {
+            if (!isTouching || !e.touches || e.touches.length === 0) return;
+            const currentY = e.touches[0].clientY;
+            const deltaY = currentY - touchStartY;
+            if (Math.abs(deltaY) > 28) {
+                hasMoved = true;
+                if (deltaY < 0) {
+                    // 向上滑動：切換至下一個分類
+                    updateCategoryDisplay(this.currentCategoryIndex + 1, true);
+                } else {
+                    // 向下滑動：切換至上一個分類
+                    updateCategoryDisplay(this.currentCategoryIndex - 1, true);
+                }
+                touchStartY = currentY; // 重置起點，允許連續滑動切換
+            }
+        }, { passive: true });
+
+        uiBtnAround.addEventListener("touchend", () => {
+            isTouching = false;
+        });
+
+        // 2. TalkBack Slider 原生無障礙動作映射 (ArrowUp / ArrowDown / PageUp / PageDown)
+        uiBtnAround.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "ArrowRight") {
+                e.preventDefault();
+                updateCategoryDisplay(this.currentCategoryIndex + 1, true);
+            } else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "ArrowLeft") {
+                e.preventDefault();
+                updateCategoryDisplay(this.currentCategoryIndex - 1, true);
+            } else if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                executeCurrentScan();
+            }
+        });
+
+        // 3. 點擊 / 點兩下 (Double Tap) 立即執行該分類之周遭掃描
+        const executeCurrentScan = () => {
+            const currentCat = this.poiCategories[this.currentCategoryIndex] || this.poiCategories[0];
+            this.recordInteraction("點擊按鈕", `周遭探索【${currentCat.label}】(P)`);
+            if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
+                this.audio.playRadarExploreTone();
+            }
+            setTimeout(() => this.announceAllPOIs(currentCat.key), 150);
+        };
+
+        uiBtnAround.addEventListener("click", (e) => {
+            e.preventDefault();
+            if (hasMoved) {
+                hasMoved = false;
+                return;
+            }
+            executeCurrentScan();
+        });
+    }
 
     const uiBtnIntersection = document.getElementById("ui-btn-intersection");
     if (uiBtnIntersection) {
@@ -4025,15 +4099,21 @@ class NmapWebApp {
         liveHtml += `<p style="margin:4px 0; color:#34d399; font-weight:bold;">🕒 ${hours}</p>`;
         speechParts.push(hours);
 
-        // 評分
+        // 評分與 Google 評價
         if (d.rating) {
-          liveHtml += `<p style="margin:4px 0; color:#fbbf24;">⭐ Google 評分：<strong>${d.rating}</strong></p>`;
+          liveHtml += `<p style="margin:4px 0; color:#fbbf24;">⭐ <strong>${d.rating}</strong></p>`;
           speechParts.push(`評分 ${d.rating}`);
         }
 
+        // 熱門推薦與人氣招牌菜單
+        if (d.popular_items) {
+          liveHtml += `<p style="margin:4px 0; color:#f472b6; line-height:1.4;">🍲 <strong>熱門推薦：</strong>${d.popular_items}</p>`;
+          speechParts.push(`熱門推薦：${d.popular_items}`);
+        }
+
         // 電話 (可點擊撥打)
-        if (d.phone) {
-          liveHtml += `<p style="margin:4px 0;">📞 連絡電話：<a href="tel:${d.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${d.phone}</a></p>`;
+        if (d.phone && d.phone !== "門市在地專線") {
+          liveHtml += `<p style="margin:4px 0;">📞 <strong>連絡電話：</strong><a href="tel:${d.phone}" style="color:#38bdf8; text-decoration:underline; font-weight:bold;">${d.phone}</a></p>`;
           speechParts.push(`電話：${d.phone}`);
         }
 
@@ -4043,7 +4123,7 @@ class NmapWebApp {
           speechParts.push(d.wheelchair);
         }
 
-        speechParts.push(`地址：${verifiedAddr}`);
+        speechParts.push(`門牌地址：${verifiedAddr}`);
 
         if (liveContainer) {
           liveContainer.innerHTML = liveHtml || "<p style=\"margin:0;\">已完成在地圖資驗證。</p>";

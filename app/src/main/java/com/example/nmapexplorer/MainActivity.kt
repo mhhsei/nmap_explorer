@@ -290,7 +290,12 @@ fun WebViewScreen(url: String, onBridgeCreated: (LocationSensorBridge, WebView) 
                     }
                 }
 
-                webChromeClient = android.webkit.WebChromeClient()
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                        android.util.Log.d("NMapConsole", "[JS ${consoleMessage?.messageLevel()}] ${consoleMessage?.message()} (${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()})")
+                        return true
+                    }
+                }
                 WebView.setWebContentsDebuggingEnabled(true)
                 val appInterface = WebAppInterface(context, this)
                 val signalCamera = TrafficSignalCameraManager(context, appInterface)
