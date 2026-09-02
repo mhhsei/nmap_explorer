@@ -2755,7 +2755,7 @@ class NmapWebApp {
         const passedLockTime = this.passedJunctionCooldown.get(juncName) || 0;
         const isJunctionLocked = (now - passedLockTime < 45000); // 通過後 45 秒內嚴格防抖鎖定
 
-        // A. 踏入 / 正通過路口 (< 6.0m)
+        // A. 踏入 / 正通過路口 (< 6.0m) - 【對向直行接續路名確認】
         if (juncDist < 6.0 && !isJunctionLocked) {
           const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
           if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 3500) {
@@ -2763,7 +2763,14 @@ class NmapWebApp {
             this.activeJunctionTargetName = juncName;
             this.lastIntersectionAlertTime = now;
             const islandGuide = hasIsland ? "，設庇護島" : "";
-            const msg = `📍 正通過路口${islandGuide}，請直線前進。`;
+            
+            let passMsg = "📍 正通過路口";
+            if (data.intersection.straight_continuation_road && data.intersection.straight_continuation_road !== currentRoad && !data.intersection.straight_continuation_road.startsWith("無名") && data.intersection.straight_continuation_road !== "人行通道") {
+              passMsg = `📍 正通過路口，直行接【${data.intersection.straight_continuation_road}】`;
+            } else if (data.intersection.concise_passing_prompt) {
+              passMsg = `📍 ${data.intersection.concise_passing_prompt}`;
+            }
+            const msg = `${passMsg}${islandGuide}。`;
             this.announceJunction(msg, false);
             return;
           }
@@ -2855,8 +2862,9 @@ class NmapWebApp {
 
     // =========================================================================
     // 【3. 前進路徑走廊 POI 店家自適應節奏廣播 (Speed-Adaptive POI Throttle)】
-    // 核心哲學：在直行平穩前進時，提供「鐘點方位 + 公尺」極簡立體探索
-    // 格式範例：單店「7-11，2點鐘 8米」；雙店打包「左 鮮香豆腐 5米、右 50嵐 7米」
+    // 核心哲學：
+    // 1. 緊鄰店家同側合併打包 (Cluster Grouping)：如「2點鐘 8米：全家 (205號)、康是美」
+    // 2. 門牌號碼自然錨定 (Door Number Anchoring)：若店家自帶門牌號碼，順暢附帶，協助建立遞增規律
     // =========================================================================
     const realtimePois = this.getRealtimePois();
     const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
@@ -2864,6 +2872,20 @@ class NmapWebApp {
     // 依據步行速度動態調節 POI 最小全域間隔 (Global Speech Interval)
     // 速度 < 0.4 m/s (停步/等紅燈)：12秒防吵；速度 0.4~1.0 m/s：6.5秒；速度 > 1.0 m/s：5.0秒
     const minPoiInterval = curSpeed < 0.4 ? 12000 : (curSpeed <= 1.0 ? 6500 : 5000);
+
+    // 輔助函式：提取 POI 清洗名稱與自然門牌錨定標籤 (Natural Door Number Tag)
+    const formatPoiWithDoor = (p) => {
+      const cleanedName = this.cleanPoiName(p.name);
+      const floorTag = (p.floor && p.floor !== "1F") ? ` (${p.floor})` : "";
+      let doorTag = "";
+      if (p.housenumber) {
+        const hn = String(p.housenumber).trim();
+        if (hn) {
+          doorTag = hn.endsWith("號") ? ` (${hn})` : ` (${hn}號)`;
+        }
+      }
+      return `${cleanedName}${floorTag}${doorTag}`;
+    };
 
     if (realtimePois && realtimePois.length > 0 && !isJunctionHandled) {
       // A. 近身抵達感知 (距離 <= 3.8 公尺，宣告抵達店家)
@@ -2873,15 +2895,15 @@ class NmapWebApp {
       });
 
       if (arrivalCandidate) {
-        const cleanedName = this.cleanPoiName(arrivalCandidate.name);
-        const arrivalKey = arrivalCandidate.id || (arrivalCandidate.lat && arrivalCandidate.lon ? `${cleanedName}_${arrivalCandidate.lat.toFixed(4)}_${arrivalCandidate.lon.toFixed(4)}` : cleanedName);
+        const arrivalStr = formatPoiWithDoor(arrivalCandidate);
+        const arrivalKey = arrivalCandidate.id || (arrivalCandidate.lat && arrivalCandidate.lon ? `${this.cleanPoiName(arrivalCandidate.name)}_${arrivalCandidate.lat.toFixed(4)}_${arrivalCandidate.lon.toFixed(4)}` : this.cleanPoiName(arrivalCandidate.name));
         const lastArrival = this.arrivedPoiCooldown.get(arrivalKey) || 0;
         if (now - lastArrival > 60000) { // 60秒冷卻
           this.arrivedPoiCooldown.set(arrivalKey, now);
           this.announcedPoiCooldown.set(arrivalKey, now);
           this.lastPoiBroadcastTime = now;
 
-          const arrivalMsg = `🎉 抵達【${cleanedName}】`;
+          const arrivalMsg = `🎉 抵達【${arrivalStr}】`;
           if (this.audio) this.audio.playArrival();
           this.announceObject(arrivalCandidate, arrivalMsg, true);
           return;
@@ -2908,7 +2930,7 @@ class NmapWebApp {
           const rightCandidate = corridorPois.find(p => (p.relative_direction || "").includes("右"));
           const frontCandidate = corridorPois.find(p => !(p.relative_direction || "").includes("左") && !(p.relative_direction || "").includes("右"));
 
-          // 雙側走廊合併打包：若左右兩側近身 (<= 12m) 均有未播報之優選店家，一次報完超省話！
+          // 1. 雙側走廊合併打包：若左右兩側近身 (<= 12m) 均有未播報之優選店家，一次報完超省話！
           let didBroadcast = false;
           if (leftCandidate && rightCandidate && leftCandidate.distance_m <= 12.0 && rightCandidate.distance_m <= 12.0) {
             const leftKey = leftCandidate.id || `${this.cleanPoiName(leftCandidate.name)}_${leftCandidate.lat.toFixed(4)}_${leftCandidate.lon.toFixed(4)}`;
@@ -2921,28 +2943,63 @@ class NmapWebApp {
               this.announcedPoiCooldown.set(rightKey, now);
               this.lastPoiBroadcastTime = now;
 
-              const leftName = this.cleanPoiName(leftCandidate.name);
-              const rightName = this.cleanPoiName(rightCandidate.name);
-              const dualMsg = `左 ${leftName} ${Math.round(leftCandidate.distance_m)}米、右 ${rightName} ${Math.round(rightCandidate.distance_m)}米`;
+              const leftStr = formatPoiWithDoor(leftCandidate);
+              const rightStr = formatPoiWithDoor(rightCandidate);
+              const dualMsg = `左 ${leftStr} ${Math.round(leftCandidate.distance_m)}米、右 ${rightStr} ${Math.round(rightCandidate.distance_m)}米`;
               this.announceObject(leftCandidate, dualMsg, false);
               didBroadcast = true;
               return;
             }
           }
 
+          // 2. 同側/緊鄰相鄰店家合併打包 (Cluster Grouping):
+          // 若同一側有 2~3 家店位於相近方向 (角度差 <= 28° 或相同鐘點) 且距離差 <= 6.0m
+          if (!didBroadcast) {
+            const unannouncedPois = corridorPois.filter(p => {
+              const k = p.id || (p.lat && p.lon ? `${this.cleanPoiName(p.name)}_${p.lat.toFixed(4)}_${p.lon.toFixed(4)}` : this.cleanPoiName(p.name));
+              return (now - (this.announcedPoiCooldown.get(k) || 0) > 35000);
+            });
+
+            if (unannouncedPois.length >= 2) {
+              const p1 = unannouncedPois[0];
+              const cluster = unannouncedPois.filter(p => {
+                const angleDiff = Math.abs((p.relative_bearing_deg || 0) - (p1.relative_bearing_deg || 0));
+                const distDiff = Math.abs(p.distance_m - p1.distance_m);
+                return (angleDiff <= 28 || (p.clock_position && p.clock_position === p1.clock_position)) && distDiff <= 6.0;
+              });
+
+              if (cluster.length >= 2) {
+                const topCluster = cluster.slice(0, 3); // 上限 3 家打包
+                const avgDist = Math.round(topCluster.reduce((sum, p) => sum + p.distance_m, 0) / topCluster.length);
+                const clusterClock = p1.clock_position || p1.relative_direction || "前方";
+                const clusterNames = topCluster.map(p => formatPoiWithDoor(p)).join("、");
+                const clusterMsg = `${clusterClock} ${avgDist}米：${clusterNames}`;
+
+                for (const p of topCluster) {
+                  const k = p.id || (p.lat && p.lon ? `${this.cleanPoiName(p.name)}_${p.lat.toFixed(4)}_${p.lon.toFixed(4)}` : this.cleanPoiName(p.name));
+                  this.announcedPoiCooldown.set(k, now);
+                }
+                this.lastPoiBroadcastTime = now;
+                this.announceObject(p1, clusterMsg, false);
+                didBroadcast = true;
+                return;
+              }
+            }
+          }
+
+          // 3. 單店標準播報 (Single POI)
           if (!didBroadcast) {
             const candidates = [leftCandidate, rightCandidate, frontCandidate].filter(Boolean).sort((a, b) => a.distance_m - b.distance_m);
             for (const poi of candidates) {
-              const cleanedName = this.cleanPoiName(poi.name);
-              const poiKey = poi.id || (poi.lat && poi.lon ? `${cleanedName}_${poi.lat.toFixed(4)}_${poi.lon.toFixed(4)}` : cleanedName);
+              const poiKey = poi.id || (poi.lat && poi.lon ? `${this.cleanPoiName(poi.name)}_${poi.lat.toFixed(4)}_${poi.lon.toFixed(4)}` : this.cleanPoiName(poi.name));
               const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
               if (now - lastTime > 35000) {
                 this.announcedPoiCooldown.set(poiKey, now);
                 this.lastPoiBroadcastTime = now;
 
-                const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
+                const poiStr = formatPoiWithDoor(poi);
                 const clockOrDir = poi.clock_position || poi.relative_direction || "前方";
-                const msg = `${cleanedName}${floorTag}，${clockOrDir} ${Math.round(poi.distance_m)}米`;
+                const msg = `${poiStr}，${clockOrDir} ${Math.round(poi.distance_m)}米`;
 
                 this.announceObject(poi, msg, false);
                 return;

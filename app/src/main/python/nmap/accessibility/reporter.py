@@ -90,13 +90,14 @@ class NVDAReporter:
             parts.append(f"{m['speech_prompt']}")
             has_mrt_alert = True
 
-        # 4. 路口接近與過馬路走向導引 (安全第一，動態鐘點分支走向)
+        # 4. 路口接近與過馬路走向導引 (安全第一，動態鐘點分支走向與對向接續路名)
         is_intersection = intersection.get('junction_type') not in ["直行道路", None]
         has_junc_alert = False
         if is_intersection:
             dist = intersection.get('junction_distance_m', 0)
             if dist is not None and dist < 6.0:
-                parts.append("📍 正通過路口，請直線前進。")
+                passing_prompt = intersection.get("concise_passing_prompt", "正通過路口，請直線前進")
+                parts.append(f"📍 {passing_prompt}。")
                 has_junc_alert = True
             elif dist is not None and dist <= 28.0:
                 approaching_prompt = intersection.get("concise_approaching_prompt")
@@ -107,20 +108,38 @@ class NVDAReporter:
                     parts.append(f"📍 接近路口，{j_name}。")
                 has_junc_alert = True
 
-        # 5. 前方前進走廊左右店家提醒（經垂直樓層過濾，排除後方店家）
+        # 5. 前方前進走廊左右店家提醒（緊鄰店家合併打包與門牌自然錨定）
         filtered_pois = VerticalLevelManager.filter_and_prioritize_pois(pois or [], vertical_level)
         corridor_pois = [p for p in filtered_pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
         if corridor_pois and not has_junc_alert:
             corridor_pois.sort(key=lambda x: x["distance_m"])
-            poi_texts = []
-            for p in corridor_pois[:2]:
-                tag = f"[{p['level_tag']}] " if "level_tag" in p else ""
-                clock_or_dir = p.get("clock_position") or p.get("relative_direction", "")
-                poi_texts.append(f"{tag}{p['name']} ({clock_or_dir} {round(p['distance_m'])}米)")
-            parts.append(f"前進路上：{'、'.join(poi_texts)}。")
-            has_poi_alert = True
+            
+            # 檢查緊鄰店家群組 (同側/同鐘點 且距離差 <= 6m)
+            if len(corridor_pois) >= 2:
+                p1, p2 = corridor_pois[0], corridor_pois[1]
+                dir1 = p1.get("clock_position") or p1.get("relative_direction", "")
+                dir2 = p2.get("clock_position") or p2.get("relative_direction", "")
+                dist_diff = abs(p1.get("distance_m", 0) - p2.get("distance_m", 0))
+                
+                # 同方位近鄰群組打包
+                if dir1 == dir2 and dist_diff <= 6.0:
+                    hn1 = f" ({p1['housenumber']}號)" if p1.get("housenumber") else ""
+                    hn2 = f" ({p2['housenumber']}號)" if p2.get("housenumber") else ""
+                    avg_d = round((p1.get("distance_m", 0) + p2.get("distance_m", 0)) / 2.0)
+                    parts.append(f"前進路上：{dir1} {avg_d}米：{p1['name']}{hn1}、{p2['name']}{hn2}。")
+                    has_poi_alert = True
+            
+            if not has_poi_alert:
+                poi_texts = []
+                for p in corridor_pois[:2]:
+                    tag = f"[{p['level_tag']}] " if "level_tag" in p else ""
+                    clock_or_dir = p.get("clock_position") or p.get("relative_direction", "")
+                    hn = f" ({p['housenumber']}號)" if p.get("housenumber") else ""
+                    poi_texts.append(f"{tag}{p['name']}{hn} ({clock_or_dir} {round(p['distance_m'])}米)")
+                parts.append(f"前進路上：{'、'.join(poi_texts)}。")
+                has_poi_alert = True
 
         if not has_hazard_alert and not has_mrt_alert and not has_junc_alert and not has_poi_alert and street_name == self.last_street:
             pass # 靜默保持安靜，留給使用者聽環境音的空間

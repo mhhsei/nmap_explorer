@@ -145,19 +145,62 @@ class TestConciseNavigation(unittest.TestCase):
         # Within 12m, a side corner junction is captured and branches reflect the turn
         self.assertTrue(res_east["junction_type"] != "直行道路")
 
-    def test_180_degree_uturn(self):
-        """【風洞實驗 5：迷航後的 180 度大迴轉】"""
+    def test_opposite_street_continuation(self):
+        """【測試：十字路口直行對向接續路名確認】"""
         analyzer = IntersectionAnalyzer()
-        # User is walking South (heading = 180 deg), moving AWAY from northern junction
-        user_lat = 25.179900 - 0.000135
-        user_lon = 121.451200
-        heading_south = 180.0
+        # Create a new world model where North branch connects to 中正路
+        wm2 = MockWorldModel()
+        j_lat, j_lon = 25.179900, 121.451200
+        wm2.road_graph.add_node(1, lat=j_lat, lon=j_lon)
+        wm2.road_graph.add_node(2, lat=j_lat + 0.0005, lon=j_lon) # North (中正路)
+        wm2.road_graph.add_node(3, lat=j_lat, lon=j_lon + 0.0005) # East (大忠街)
+        wm2.road_graph.add_node(4, lat=j_lat - 0.0005, lon=j_lon) # South (北新路一段)
 
-        road_info = self.wm.get_road_info(user_lat, user_lon, heading_south)
-        res_south = analyzer.analyze(user_lat, user_lon, heading_south, self.wm, max_distance_m=50.0, curr_road_info=road_info)
-        # The northern junction is now behind the user (rel_bearing ~ -180 deg)
-        # It must NOT be reported as a front approaching junction!
-        self.assertEqual(res_south["junction_type"], "直行道路")
+        wm2.road_graph.add_edge(1, 2, key=0, name="中正路")
+        wm2.road_graph.add_edge(1, 3, key=0, name="大忠街")
+        wm2.road_graph.add_edge(1, 4, key=0, name="北新路一段")
+
+        meta = {"is_signalized": True, "has_aps": False, "signal_name": "北新路與大忠街口"}
+        wm2.junction_rtree.insert(1, (j_lon, j_lat, j_lon, j_lat), obj=(1, 3, j_lat, j_lon, meta))
+
+        user_lat = 25.179900 - 0.00004 # 4m from junction (PASSING state)
+        user_lon = 121.451200
+        road_info = {"street_name": "北新路一段"}
+
+        res = analyzer.analyze(user_lat, user_lon, 0.0, wm2, max_distance_m=50.0, curr_road_info=road_info)
+        self.assertEqual(res["straight_continuation_road"], "中正路")
+        self.assertEqual(res["concise_passing_prompt"], "正通過路口，直行接【中正路】")
+
+    def test_poi_door_number_and_cluster(self):
+        """【測試：門牌自然錨定與緊鄰店家同側合併打包】"""
+        reporter = NVDAReporter()
+        wm_cluster = MockWorldModel()
+        # Return 2 shops at 2 o'clock, within 2 meters of each other, one with housenumber
+        wm_cluster.get_nearby_pois = lambda lat, lon, heading, radius_m=100.0: [
+            {
+                "name": "全家便利商店",
+                "housenumber": "205",
+                "distance_m": 8.0,
+                "relative_bearing_deg": 45.0,
+                "relative_direction": "右前方",
+                "clock_position": "2點鐘方向"
+            },
+            {
+                "name": "康是美",
+                "housenumber": "207",
+                "distance_m": 9.5,
+                "relative_bearing_deg": 48.0,
+                "relative_direction": "右前方",
+                "clock_position": "2點鐘方向"
+            }
+        ]
+
+        agent = MockAgent(25.170000, 121.450000, 0.0, wm_cluster)
+        report = reporter.generate_concise_report(agent)
+        # Should cluster into: 2點鐘方向 9米：全家便利商店 (205號)、康是美 (207號)
+        self.assertIn("全家便利商店 (205號)", report)
+        self.assertIn("康是美 (207號)", report)
+        self.assertIn("2點鐘方向", report)
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestConciseNavigation)

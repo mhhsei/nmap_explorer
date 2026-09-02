@@ -249,7 +249,20 @@ class IntersectionAnalyzer:
 
         aps_tag = "（有聲號誌）" if has_aps else ("（紅綠燈）" if is_signalized else "")
         concise_approaching_prompt = f"接近路口{aps_tag}，{concise_branches_str}"
-        concise_passing_prompt = "正通過路口，請直線前進"
+
+        # 尋找對向直行接續路段 (Opposite straight forward branch: abs(relative_angle) <= 35)
+        straight_continuation_road = None
+        for b in branches_info:
+            if abs(b.get("relative_angle", 180)) <= 35 and "來時路" not in b.get("relative_direction", ""):
+                r_name = b.get("road_name", "")
+                if r_name and not r_name.startswith("無名") and r_name != "人行通道":
+                    straight_continuation_road = r_name
+                    break
+
+        if straight_continuation_road and straight_continuation_road != curr_street:
+            concise_passing_prompt = f"正通過路口，直行接【{straight_continuation_road}】"
+        else:
+            concise_passing_prompt = "正通過路口，請直線前進"
 
         # Build accessibility & safety summary text for NVDA
         safety_notes = []
@@ -339,6 +352,7 @@ class IntersectionAnalyzer:
             "button_guide": button_guide,
             "intersecting_roads": list(intersecting_roads),
             "branches_info": branches_info,
+            "straight_continuation_road": straight_continuation_road,
             "concise_branches": concise_branches_str,
             "concise_approaching_prompt": concise_approaching_prompt,
             "concise_passing_prompt": concise_passing_prompt,
