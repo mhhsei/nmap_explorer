@@ -120,6 +120,17 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         locationSensorBridge?.replayLastLocation()
     }
 
+    @JavascriptInterface
+    fun forceResetBarometerToGround() {
+        Log.i(tag, "[SENSOR_FUSION] Frontend triggered GPS Road-Snap override. Resetting barometer to GROUND.")
+        LocationSensorBridge.forceResetBarometerToGround()
+    }
+    
+    @JavascriptInterface
+    fun setGroundElevation(elevationM: Float) {
+        LocationSensorBridge.setGroundElevation(elevationM)
+    }
+
     /**
      * 【啟動路口紅綠燈相機即時辨識】
      * 由前端 WebView 在接近號誌路口時自動調用
@@ -788,7 +799,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                             speak("目前已是最新版本 ${info.currentVersion}。", interrupt = true)
                         }
                         webView?.evaluateJavascript(
-                            "if (window.onUpdateCheckResult) window.onUpdateCheckResult('latest', '${info.currentVersion}');",
+                            "if (window.onUpdateCheckResult) window.onUpdateCheckResult('latest', '${info.currentVersion}', ${!silent});",
                             null
                         )
                     }
@@ -798,7 +809,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                         speak("檢查更新失敗：${err.message ?: "請確認網路連線"}", interrupt = true)
                     }
                     webView?.evaluateJavascript(
-                        "if (window.onUpdateCheckResult) window.onUpdateCheckResult('error', '${err.message ?: ""}');",
+                        "if (window.onUpdateCheckResult) window.onUpdateCheckResult('error', '${err.message ?: ""}', ${!silent});",
                         null
                     )
                 }

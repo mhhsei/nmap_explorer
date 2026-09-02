@@ -22,7 +22,16 @@ enum class VerticalLevel(val displayName: String, val spokenPrefix: String) {
     UNDERGROUND("地下連通道/B1", "已進入地下連通道"),
 
     /** 4. 捷運地下二樓月台大廳 (Underground B2) */
-    UNDERGROUND_B2("捷運大廳/B2", "已進入地下二樓大廳")
+    UNDERGROUND_B2("捷運大廳/B2", "已進入地下二樓大廳"),
+    
+    // 新增室內商場絕對樓層
+    INDOOR_B3("室內 B3", "已進入 B3"),
+    INDOOR_B2("室內 B2", "已進入 B2"),
+    INDOOR_B1("室內 B1", "已進入 B1"),
+    INDOOR_2F("室內 2樓", "已進入 2樓"),
+    INDOOR_3F("室內 3樓", "已進入 3樓"),
+    INDOOR_4F("室內 4樓", "已進入 4樓"),
+    INDOOR_5F("室內 5樓", "已進入 5樓")
 }
 
 /**
@@ -81,11 +90,6 @@ class BarometerVerticalFilter(
         /** 離開地下道回歸地面的退出門檻 (公尺) */
         const val UNDERGROUND_B1_EXIT_ALTITUDE_M = -1.8f
 
-        /** 進入地下二樓 B2 的下潛門檻 (公尺)：捷運轉乘月台通常在地下 6 公尺以上 */
-        const val UNDERGROUND_B2_ENTER_ALTITUDE_M = -6.2f
-        /** 離開地下二樓回到 B1 的退出門檻 (公尺) */
-        const val UNDERGROUND_B2_EXIT_ALTITUDE_M = -4.8f
-
         /** 靜止手持時氣壓感測器量測雜訊變異數 R (m^2)：約 0.12 m^2 (標準差 0.35m) */
         const val MEASUREMENT_NOISE_R = 0.12f
 
@@ -103,20 +107,45 @@ class BarometerVerticalFilter(
     }
 
     /**
+     * 強制重置回地面層 (GPS 霸體覆寫)
+     * 當由外部 (如 JS 路網吸附) 判定使用者確實沿著戶外實體道路前進時，無條件瞬間拉回地面，消滅卡死！
+     */
+    fun forceResetToGround() {
+        if (currentLevel != VerticalLevel.GROUND) {
+            Log.w(tag, "[FORCE_RESET] Outdoor road snapped, forcibly resetting level from ${currentLevel.name} to GROUND.")
+            currentLevel = VerticalLevel.GROUND
+            lastLevelTransitionTimeMs = SystemClock.uptimeMillis()
+            onLevelChanged(VerticalLevel.GROUND, 0.0f, "📍 已回到戶外平面道路，強制重置為地面層圖資。")
+        }
+        // 瞬間追蹤當前氣壓，抹平坡度
+        baselinePressureHpa = lastRawPressureHpa
+        stateAltitudeM = 0.0f
+        stateVelocityMps = 0.0f
+    }
+    
+    private var lastKnownDemGroundElevation: Float? = null
+
+    fun setDemGroundElevation(elevationM: Float) {
+        lastKnownDemGroundElevation = elevationM
+    }
+
+    /**
      * 輸入即時氣壓讀數 (hPa)，執行垂直卡爾曼濾波
      * 
      * @param pressureHpa 氣壓計數值 (hPa)
      * @param timestampNs 納秒時間戳記
-     * @param isStationaryOnGround 使用者是否正處於地面靜止狀態（用於平滑微調基準氣壓）
-     * @param isWalking 使用者是否正在行走步行（用於動態放大阻尼，過濾步態晃動）
-     * @param isPocketLikely 手機是否被判定處於口袋或包包中（開啟強力阻尼，抵抗微壓活塞擠壓）
+     * @param isStationaryOnGround 使用者是否正處於地面靜止狀態
+     * @param isWalking 使用者是否正在行走步行
+     * @param isPocketLikely 手機是否被判定處於口袋或包包中
+     * @param isGpsWeak GPS 訊號是否微弱 (代表進入室內商場)
      */
     fun updatePressure(
         pressureHpa: Float, 
         timestampNs: Long, 
         isStationaryOnGround: Boolean = false,
         isWalking: Boolean = false,
-        isPocketLikely: Boolean = false
+        isPocketLikely: Boolean = false,
+        isGpsWeak: Boolean = false
     ): Pair<VerticalLevel, Float> {
         if (pressureHpa <= 300f || pressureHpa >= 1100f) {
             return Pair(currentLevel, stateAltitudeM)
@@ -133,29 +162,6 @@ class BarometerVerticalFilter(
             return Pair(currentLevel, 0.0f)
         }
 
-        // 基準大氣壓力動態平滑更新：
-        // 1. 地面靜止時：中速追蹤（時間常數約 15 分鐘）
-        // 2. 地面行走時：極慢速追蹤（時間常數約 45 分鐘），消化戶外氣壓自然微漂移
-        // 3. 非地面（天橋或地下道）超時逃逸：若處於天橋/地下道超過 90 秒，逐步拉回基準壓以防氣壓微變永久卡死
-        val nowMs = SystemClock.uptimeMillis()
-        if (currentLevel == VerticalLevel.GROUND) {
-            if (isStationaryOnGround) {
-                baselinePressureHpa = 0.9992f * baselinePressureHpa + 0.0008f * pressureHpa
-            } else if (isWalking && !isPocketLikely) {
-                baselinePressureHpa = 0.9998f * baselinePressureHpa + 0.0002f * pressureHpa
-            }
-        } else {
-            // 非地面狀態防卡死逃逸：若停留超過 90 秒，啟動防滯留恢復阻尼
-            if (nowMs - lastLevelTransitionTimeMs > 90_000L) {
-                baselinePressureHpa = 0.9990f * baselinePressureHpa + 0.0010f * pressureHpa
-            }
-        }
-
-        // 2. 利用國際標準大氣公式計算相對高程 (Hypsometric Formula)
-        // h = 44330 * (1 - (P / P0)^(1/5.255))
-        val rawRelativeAltitudeM = 44330.0f * (1.0f - (pressureHpa / baselinePressureHpa).pow(1.0f / 5.255f))
-
-        // 3. 卡爾曼時間更新 (Predict Step)
         val dtSec = if (lastTimestampNs > 0L) {
             ((timestampNs - lastTimestampNs).coerceIn(10_000_000L, 500_000_000L)) / 1_000_000_000.0f
         } else {
@@ -163,11 +169,25 @@ class BarometerVerticalFilter(
         }
         lastTimestampNs = timestampNs
 
-        // 狀態預測：h = h + vz * dt
+        // 基準大氣壓力動態平滑更新：
+        // 只有在「戶外 (GPS 強)」時才緩慢追蹤氣壓漂移。
+        // 若判定進入室內商場 (isGpsWeak)，則「凍結」 baselinePressureHpa，作為該建築的 1F 絕對基準。
+        if (!isGpsWeak && currentLevel == VerticalLevel.GROUND) {
+            val alpha = if (isStationaryOnGround) 0.0008f else if (isWalking && !isPocketLikely) 0.0002f else 0.0f
+            if (alpha > 0f) {
+                // Time-based EMA approximation to prevent sample-rate dependency
+                val timeScaledAlpha = 1.0f - kotlin.math.exp(-alpha * dtSec * 50f) 
+                baselinePressureHpa = (1.0f - timeScaledAlpha) * baselinePressureHpa + timeScaledAlpha * pressureHpa
+            }
+        }
+
+        // 2. 利用國際標準大氣公式計算相對高程 (Hypsometric Formula)
+        val rawRelativeAltitudeM = 44330.0f * (1.0f - (pressureHpa / baselinePressureHpa).pow(1.0f / 5.255f))
+
+        // 3. 卡爾曼時間更新 (Predict Step)
         val predAltitude = stateAltitudeM + stateVelocityMps * dtSec
         val predVelocity = stateVelocityMps
 
-        // 協方差預測：P = F * P * F^T + Q
         val dt2 = dtSec * dtSec
         val dt3 = dt2 * dtSec
         val q00 = 0.333f * dt3 * PROCESS_NOISE_Q_ACC
@@ -180,100 +200,102 @@ class BarometerVerticalFilter(
         val newP11 = p11 + q11
 
         // 4. 卡爾曼測量更新 (Measurement Update Step)
-        // 自適應動態量測雜訊 R：
-        // • 手機在口袋活塞擠壓中：R 放大至 5.50 (強力阻尼低通濾波，吃掉 8hPa 震盪)
-        // • 正常行走晃動：R 放大至 1.60 (中度阻尼)
-        // • 靜止手持：R 維持 0.12 (高靈敏度)
         val dynamicR = when {
             isPocketLikely -> 5.50f
             isWalking -> 1.60f
             else -> MEASUREMENT_NOISE_R
         }
 
-        // 新息 (Innovation): y = z - h_pred
         val innovation = rawRelativeAltitudeM - predAltitude
         val s = newP00 + dynamicR
-
-        // 卡爾曼增益 K = P * H^T / S
         val k0 = newP00 / s
         val k1 = newP10 / s
 
         stateAltitudeM = predAltitude + k0 * innovation
-        // 限制垂直升降速度至人體生理極限 (防範單一脈衝引發速度暴走)
         stateVelocityMps = (predVelocity + k1 * innovation).coerceIn(-MAX_PHYSICAL_VERTICAL_VELOCITY_MPS, MAX_PHYSICAL_VERTICAL_VELOCITY_MPS)
 
-        // 更新協方差矩陣 P = (I - K * H) * P
         p00 = (1.0f - k0) * newP00
         p01 = (1.0f - k0) * newP01
         p10 = -k1 * newP00 + newP10
         p11 = -k1 * newP01 + newP11
 
-        // 5. 雙向防抖遲滯與持續時間檢驗狀態機 (Sustained Hysteresis Level State Machine)
-        evaluateLevelTransition(stateAltitudeM)
+        // 5. 雙向防抖遲滯與持續時間檢驗狀態機
+        evaluateLevelTransition(stateAltitudeM, isGpsWeak)
 
         return Pair(currentLevel, stateAltitudeM)
     }
 
-    /**
-     * 遲滯狀態機判斷：杜絕在樓梯邊緣上下徘徊時頻繁跳針切換
-     * 結合「持續時間門檻 (2.0s)」與「轉態防抖鎖定 (8.0s)」，徹底消滅口袋活塞誤判
-     */
-    private fun evaluateLevelTransition(altM: Float) {
+    private fun evaluateLevelTransition(altM: Float, isGpsWeak: Boolean) {
         val nowMs = SystemClock.uptimeMillis()
         val oldLevel = currentLevel
         var rawTargetLevel = oldLevel
 
-        when (oldLevel) {
-            VerticalLevel.GROUND -> {
-                if (altM >= OVERPASS_ENTER_ALTITUDE_M) {
-                    rawTargetLevel = VerticalLevel.OVERPASS
-                } else if (altM <= UNDERGROUND_B1_ENTER_ALTITUDE_M) {
-                    rawTargetLevel = VerticalLevel.UNDERGROUND
-                }
+        if (isGpsWeak) {
+            // 室內商場絕對樓層模式 (每層樓假設 4.2 公尺)
+            rawTargetLevel = when {
+                altM >= 14.7f -> VerticalLevel.INDOOR_5F
+                altM >= 10.5f -> VerticalLevel.INDOOR_4F
+                altM >= 6.3f -> VerticalLevel.INDOOR_3F
+                altM >= 2.1f -> VerticalLevel.INDOOR_2F
+                altM <= -10.5f -> VerticalLevel.INDOOR_B3
+                altM <= -6.3f -> VerticalLevel.INDOOR_B2
+                altM <= -2.1f -> VerticalLevel.INDOOR_B1
+                else -> VerticalLevel.GROUND
             }
-            VerticalLevel.OVERPASS -> {
-                if (altM < OVERPASS_EXIT_ALTITUDE_M) {
-                    rawTargetLevel = VerticalLevel.GROUND
+        } else {
+            // 戶外天橋/地下道模式
+            when (oldLevel) {
+                VerticalLevel.GROUND -> {
+                    if (altM >= OVERPASS_ENTER_ALTITUDE_M) {
+                        rawTargetLevel = VerticalLevel.OVERPASS
+                    } else if (altM <= UNDERGROUND_B1_ENTER_ALTITUDE_M) {
+                        rawTargetLevel = VerticalLevel.UNDERGROUND
+                    }
                 }
-            }
-            VerticalLevel.UNDERGROUND -> {
-                if (altM > UNDERGROUND_B1_EXIT_ALTITUDE_M) {
-                    rawTargetLevel = VerticalLevel.GROUND
-                } else if (altM <= UNDERGROUND_B2_ENTER_ALTITUDE_M) {
-                    rawTargetLevel = VerticalLevel.UNDERGROUND_B2
+                VerticalLevel.OVERPASS -> {
+                    if (altM < OVERPASS_EXIT_ALTITUDE_M) {
+                        rawTargetLevel = VerticalLevel.GROUND
+                    }
                 }
-            }
-            VerticalLevel.UNDERGROUND_B2 -> {
-                if (altM > UNDERGROUND_B2_EXIT_ALTITUDE_M) {
-                    rawTargetLevel = VerticalLevel.UNDERGROUND
+                VerticalLevel.UNDERGROUND, VerticalLevel.UNDERGROUND_B2 -> {
+                    if (altM > UNDERGROUND_B1_EXIT_ALTITUDE_M) {
+                        rawTargetLevel = VerticalLevel.GROUND
+                    }
+                }
+                else -> {
+                    // 若在戶外但狀態是室內樓層，自動回歸地面層
+                    if (altM > -1.5f && altM < 1.5f) {
+                        rawTargetLevel = VerticalLevel.GROUND
+                    }
                 }
             }
         }
 
-        // 1. 若目標樓層回到目前所在樓層，立即重置持續計時器
         if (rawTargetLevel == oldLevel) {
             sustainedCandidateLevel = null
             sustainedStartTimeMs = 0L
             return
         }
 
-        // 2. 轉態防抖鎖定：若距離上次樓層切換未滿 8 秒，直接抑制跳轉
+        // 轉態防抖鎖定
         if (nowMs - lastLevelTransitionTimeMs < LEVEL_TRANSITION_COOLDOWN_MS) {
             return
         }
 
-        // 3. 持續時間檢驗：高度超標必須連續維持超過 2.0 秒，絕不容許褲管活塞瞬態脈衝誤觸
+        // 持續時間檢驗 (室內樓層切換較快 2 秒，戶外天橋需 4.5 秒)
+        val requiredDuration = if (isGpsWeak) 2000L else SUSTAINED_DURATION_MS
+
         if (sustainedCandidateLevel != rawTargetLevel) {
             sustainedCandidateLevel = rawTargetLevel
             sustainedStartTimeMs = nowMs
             return
         }
 
-        if (nowMs - sustainedStartTimeMs < SUSTAINED_DURATION_MS) {
+        if (nowMs - sustainedStartTimeMs < requiredDuration) {
             return
         }
 
-        // 4. 正式批准樓層切換
+        // 正式批准樓層切換
         currentLevel = rawTargetLevel
         lastLevelTransitionTimeMs = nowMs
         sustainedCandidateLevel = null
@@ -281,18 +303,14 @@ class BarometerVerticalFilter(
 
         val altSign = if (altM >= 0) "+" else ""
         val desc = "📍 偵測${rawTargetLevel.spokenPrefix}（高度 ${altSign}${String.format(Locale.US, "%.1f", altM)} 公尺），已切換為${rawTargetLevel.displayName}圖資。"
-        Log.i(tag, "[LEVEL_TRANSITION] ${oldLevel.name} -> ${rawTargetLevel.name} (alt: ${altM}m, vz: ${String.format(Locale.US, "%.2f", stateVelocityMps)}m/s)")
+        Log.i(tag, "[LEVEL_TRANSITION] ${oldLevel.name} -> ${rawTargetLevel.name} (alt: ${altM}m, vz: ${String.format(Locale.US, "%.2f", stateVelocityMps)}m/s, indoor: $isGpsWeak)")
         onLevelChanged(rawTargetLevel, altM, desc)
     }
 
-    /**
-     * 外部手動校準基準高度（例如透過已知捷運站出口或已知公眾 Beacon 定錨）
-     */
     fun calibrateBaseline(knownAltitudeM: Float) {
-        // 反推基準氣壓以吻合已知高度
         if (stateAltitudeM != 0f) {
             stateAltitudeM = knownAltitudeM
-            evaluateLevelTransition(stateAltitudeM)
+            evaluateLevelTransition(stateAltitudeM, false)
             Log.i(tag, "[CALIBRATE] Vertical altitude manually anchored to ${knownAltitudeM}m (Level: ${currentLevel.name})")
         }
     }

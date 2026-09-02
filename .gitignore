@@ -22,4 +22,8 @@ ios_build_output/
 *.db
 *.db-shm
 *.db-wal
+.kotlin/
+phone_logs_extracted/
+*.hgt*
+
 

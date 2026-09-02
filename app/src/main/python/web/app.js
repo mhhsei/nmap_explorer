@@ -2730,107 +2730,12 @@ class NmapWebApp {
     if (!this.approachedJunctionCooldown) this.approachedJunctionCooldown = new Map();
 
     // =========================================================================
-    // 【前進路徑走廊 POI 店家自適應節奏廣播 (Speed-Adaptive POI Throttle)】
+    // 【1. 路口生命週期三態狀態機 (Junction Life-Cycle Machine) - 導航生命線第一優先】
+    // 設計意圖：路口過馬路與分支走向是視障導航最核心的安全生命線！
+    // 必須擁有高於周遭一般店家的絕對發話優先權，徹底杜絕被次要店家「搶播蓋台」。
+    // 嚴格三階段：APPROACHING (8~25m 提前預告鐘點走向) -> PASSING (< 6m 正通過) -> LEAVING (6~18m 繼續前進)
     // =========================================================================
-    const realtimePois = this.getRealtimePois();
-    const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
-    
-    // 依據步行速度動態調節 POI 最小全域間隔 (Global Speech Interval)
-    // 速度 < 0.4 m/s (停步/等紅燈)：12秒防吵；速度 0.4~1.0 m/s：6.5秒；速度 > 1.0 m/s：5.0秒
-    const minPoiInterval = curSpeed < 0.4 ? 12000 : (curSpeed <= 1.0 ? 6500 : 5000);
-
-    if (realtimePois && realtimePois.length > 0) {
-      // 0. 近身抵達感知 (距離 <= 3.8 公尺，宣告已抵達店家)
-      const arrivalCandidate = realtimePois.find((p) => {
-        if (this.isIgnoredPoi(p.name, p.category)) return false;
-        return p.distance_m <= 3.8;
-      });
-
-      if (arrivalCandidate) {
-        const cleanedName = this.cleanPoiName(arrivalCandidate.name);
-        const arrivalKey = arrivalCandidate.id || (arrivalCandidate.lat && arrivalCandidate.lon ? `${cleanedName}_${arrivalCandidate.lat.toFixed(4)}_${arrivalCandidate.lon.toFixed(4)}` : cleanedName);
-        const lastArrival = this.arrivedPoiCooldown.get(arrivalKey) || 0;
-        if (now - lastArrival > 60000) { // 60秒冷卻
-          this.arrivedPoiCooldown.set(arrivalKey, now);
-          this.announcedPoiCooldown.set(arrivalKey, now);
-          this.lastPoiBroadcastTime = now;
-
-          const arrivalMsg = `🎉 已抵達【${cleanedName}】門口`;
-          if (this.audio) this.audio.playArrival();
-          this.announceObject(arrivalCandidate, arrivalMsg, true);
-          return;
-        }
-      }
-
-      // 1. 前進路徑走廊店家掃描 (前方 0.0 ~ 25.0 公尺，側向 <= 14.0 公尺)
-      if (now - (this.lastPoiBroadcastTime || 0) >= minPoiInterval) {
-        const corridorPois = realtimePois.filter((p) => {
-          const d = p.distance_m;
-          const relBearing = Math.abs(p.relative_bearing_deg || 0);
-          const dir = p.relative_direction || "";
-          
-          if (this.isIgnoredPoi(p.name, p.category)) return false;
-          if (dir.includes("後方") || relBearing > 90) return false;
-          const rad = (relBearing * Math.PI) / 180.0;
-          const latDist = Math.abs(d * Math.sin(rad));
-          const fwdDist = d * Math.cos(rad);
-          return fwdDist >= 0.0 && fwdDist <= 25.0 && latDist <= 14.0;
-        });
-
-        if (corridorPois.length > 0) {
-          const leftCandidate = corridorPois.find(p => (p.relative_direction || "").includes("左"));
-          const rightCandidate = corridorPois.find(p => (p.relative_direction || "").includes("右"));
-          const frontCandidate = corridorPois.find(p => !(p.relative_direction || "").includes("左") && !(p.relative_direction || "").includes("右"));
-
-          // 雙側走廊合併播報：若左右兩側近身 (<= 12m) 均有未播報之優選店家，且距離相近，一次完整播報！
-          let didBroadcast = false;
-          if (leftCandidate && rightCandidate && leftCandidate.distance_m <= 12.0 && rightCandidate.distance_m <= 12.0) {
-            const leftKey = leftCandidate.id || `${this.cleanPoiName(leftCandidate.name)}_${leftCandidate.lat.toFixed(4)}_${leftCandidate.lon.toFixed(4)}`;
-            const rightKey = rightCandidate.id || `${this.cleanPoiName(rightCandidate.name)}_${rightCandidate.lat.toFixed(4)}_${rightCandidate.lon.toFixed(4)}`;
-            const lastLeft = this.announcedPoiCooldown.get(leftKey) || 0;
-            const lastRight = this.announcedPoiCooldown.get(rightKey) || 0;
-
-            if (now - lastLeft > 35000 && now - lastRight > 35000) {
-              this.announcedPoiCooldown.set(leftKey, now);
-              this.announcedPoiCooldown.set(rightKey, now);
-              this.lastPoiBroadcastTime = now;
-
-              const leftName = this.cleanPoiName(leftCandidate.name);
-              const rightName = this.cleanPoiName(rightCandidate.name);
-              const dualMsg = `左側【${leftName} ${Math.round(leftCandidate.distance_m)}m】、右側【${rightName} ${Math.round(rightCandidate.distance_m)}m】`;
-              this.announceObject(leftCandidate, dualMsg, false);
-              didBroadcast = true;
-              return;
-            }
-          }
-
-          if (!didBroadcast) {
-            const candidates = [leftCandidate, rightCandidate, frontCandidate].filter(Boolean).sort((a, b) => a.distance_m - b.distance_m);
-            for (const poi of candidates) {
-              const cleanedName = this.cleanPoiName(poi.name);
-              const poiKey = poi.id || (poi.lat && poi.lon ? `${cleanedName}_${poi.lat.toFixed(4)}_${poi.lon.toFixed(4)}` : cleanedName);
-              const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
-              if (now - lastTime > 35000) {
-                this.announcedPoiCooldown.set(poiKey, now);
-                this.lastPoiBroadcastTime = now;
-
-                const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
-                const dirText = poi.relative_direction ? `，${poi.relative_direction} ${Math.round(poi.distance_m)}公尺` : "";
-                const msg = `${cleanedName}${floorTag}${dirText}`;
-
-                this.announceObject(poi, msg, false);
-                return;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // =========================================================================
-    // 【2. 路口生命週期三態狀態機 (Junction Life-Cycle Machine)】
-    // 嚴格三階段：APPROACHING (8~25m 提前預告) -> PASSING (< 6m 正通過) -> LEAVING (6~18m 通過確認) -> IDLE
-    // =========================================================================
+    let isJunctionHandled = false;
     if (data.intersection) {
       const juncType = data.intersection.junction_type;
       const juncDist = data.intersection.junction_distance_m;
@@ -2838,9 +2743,8 @@ class NmapWebApp {
 
       if (isRealJunction && juncDist !== null) {
         let juncName = data.intersection.junction_name || juncType;
-        // 清理異常室內代號與無名路標記
         if (juncName === "1F" || juncName === "無名路" || juncName.startsWith("未命名")) {
-          juncName = juncType || "岔路口";
+          juncName = "路口";
         }
 
         const isSignalized = !!data.intersection.is_signalized;
@@ -2858,11 +2762,12 @@ class NmapWebApp {
             this.currentJunctionState = "PASSING";
             this.activeJunctionTargetName = juncName;
             this.lastIntersectionAlertTime = now;
-            const islandGuide = hasIsland ? "，中央設庇護島" : "";
-            const msg = `📍 正通過【${juncName}】${islandGuide}，請直線前進。`;
+            const islandGuide = hasIsland ? "，設庇護島" : "";
+            const msg = `📍 正通過路口${islandGuide}，請直線前進。`;
             this.announceJunction(msg, false);
             return;
           }
+          isJunctionHandled = true;
         }
         
         // B. 通過完成確認 (LEAVING: 6.0m ~ 18.0m 且前一狀態為 PASSING) - 【優先於 APPROACHING 判定】
@@ -2871,12 +2776,12 @@ class NmapWebApp {
           this.passedJunctionCooldown.set(juncName, now); // 鎖定該路口 45 秒，消滅倒退重唸
           this.lastIntersectionAlertTime = now;
 
-          const msg = `📍 已通過【${juncName}】，沿著【${currentRoad}】繼續前進。`;
+          const msg = `📍 沿著【${currentRoad}】繼續前進。`;
           this.announceRoad(msg, false);
           return;
         }
 
-        // C. 提前接近路口 (8.0m ~ 25.0m)
+        // C. 提前接近路口 (8.0m ~ 25.0m) - 【動態鐘點分支導引，不講幾何贅字】
         else if (juncDist <= 25.0 && juncDist >= 8.0 && !isJunctionLocked) {
           const lastAppTime = this.approachedJunctionCooldown.get(juncName) || 0;
           const globalAppGap = now - (this.lastIntersectionAlertTime || 0);
@@ -2887,23 +2792,28 @@ class NmapWebApp {
             this.lastIntersectionAlertTime = now;
             this.approachedJunctionCooldown.set(juncName, now);
 
-            let roads = "";
-            const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路" && r !== "無名路" && r !== "1F");
-            if (filteredRoads.length > 0 && !filteredRoads.some(r => juncName.includes(r))) {
-              roads = `（交會 ${filteredRoads.join("、")}）`;
+            let branchPart = "";
+            if (data.intersection.concise_branches) {
+              branchPart = data.intersection.concise_branches;
+            } else if (data.intersection.branches_info && data.intersection.branches_info.length > 0) {
+              const validBranches = data.intersection.branches_info.filter(b => b.road_name && b.road_name !== currentRoad && !b.road_name.startsWith("無名") && Math.abs(b.relative_angle || 0) < 140);
+              if (validBranches.length > 0) {
+                branchPart = validBranches.map(b => `${b.clock_position || b.relative_direction} ${b.road_name}`).join("，");
+              }
             }
 
-            let signalPart = "";
-            if (isSignalized) {
-              signalPart = hasAps ? "：有紅綠燈（設有聲號誌）" : "：有紅綠燈";
-            } else {
-              signalPart = "：無號誌巷口，請側聽車聲";
+            if (!branchPart) {
+              const filteredRoads = (data.intersection.intersecting_roads || []).filter(r => r && r !== currentRoad && r !== "未命名道路" && r !== "無名路" && r !== "1F");
+              branchPart = filteredRoads.length > 0 ? filteredRoads.join("、") : (juncName !== "路口" ? juncName : "前方交會");
             }
+
+            const apsTag = hasAps ? "（有聲號誌）" : (isSignalized ? "（紅綠燈）" : "");
             const islandPart = hasIsland ? "，設庇護島" : "";
-            const msg = `📍 前方 ${Math.round(juncDist)}公尺【${juncName}】${roads}${signalPart}${islandPart}。`;
+            const msg = `📍 接近路口${apsTag}，${branchPart}${islandPart}。`;
             this.announceJunction(msg, true);
             return;
           }
+          isJunctionHandled = true;
         }
 
         // D. 離開遠離路口 (> 25.0m) -> 回歸 IDLE
@@ -2914,7 +2824,9 @@ class NmapWebApp {
       }
     }
 
-    // 3. 轉彎進入新路名防抖播報 (至少連續 2 筆 GPS 穩定判定，且 20 秒冷卻)
+    // =========================================================================
+    // 【2. 轉彎進入新路名防抖播報 (至少連續 2 筆 GPS 穩定判定，且 20 秒冷卻)】
+    // =========================================================================
     if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
       const st = data.road_info.street_name;
       if (this.currentStreetName === null) {
@@ -2941,7 +2853,109 @@ class NmapWebApp {
       }
     }
 
-    // 4. 若都沒有店家 / 語音安靜超過 20 秒，精簡播報當前走在哪條路上與大約門牌號碼
+    // =========================================================================
+    // 【3. 前進路徑走廊 POI 店家自適應節奏廣播 (Speed-Adaptive POI Throttle)】
+    // 核心哲學：在直行平穩前進時，提供「鐘點方位 + 公尺」極簡立體探索
+    // 格式範例：單店「7-11，2點鐘 8米」；雙店打包「左 鮮香豆腐 5米、右 50嵐 7米」
+    // =========================================================================
+    const realtimePois = this.getRealtimePois();
+    const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
+    
+    // 依據步行速度動態調節 POI 最小全域間隔 (Global Speech Interval)
+    // 速度 < 0.4 m/s (停步/等紅燈)：12秒防吵；速度 0.4~1.0 m/s：6.5秒；速度 > 1.0 m/s：5.0秒
+    const minPoiInterval = curSpeed < 0.4 ? 12000 : (curSpeed <= 1.0 ? 6500 : 5000);
+
+    if (realtimePois && realtimePois.length > 0 && !isJunctionHandled) {
+      // A. 近身抵達感知 (距離 <= 3.8 公尺，宣告抵達店家)
+      const arrivalCandidate = realtimePois.find((p) => {
+        if (this.isIgnoredPoi(p.name, p.category)) return false;
+        return p.distance_m <= 3.8;
+      });
+
+      if (arrivalCandidate) {
+        const cleanedName = this.cleanPoiName(arrivalCandidate.name);
+        const arrivalKey = arrivalCandidate.id || (arrivalCandidate.lat && arrivalCandidate.lon ? `${cleanedName}_${arrivalCandidate.lat.toFixed(4)}_${arrivalCandidate.lon.toFixed(4)}` : cleanedName);
+        const lastArrival = this.arrivedPoiCooldown.get(arrivalKey) || 0;
+        if (now - lastArrival > 60000) { // 60秒冷卻
+          this.arrivedPoiCooldown.set(arrivalKey, now);
+          this.announcedPoiCooldown.set(arrivalKey, now);
+          this.lastPoiBroadcastTime = now;
+
+          const arrivalMsg = `🎉 抵達【${cleanedName}】`;
+          if (this.audio) this.audio.playArrival();
+          this.announceObject(arrivalCandidate, arrivalMsg, true);
+          return;
+        }
+      }
+
+      // B. 前進路徑走廊店家掃描 (前方 0.0 ~ 25.0 公尺，側向 <= 14.0 公尺)
+      if (now - (this.lastPoiBroadcastTime || 0) >= minPoiInterval) {
+        const corridorPois = realtimePois.filter((p) => {
+          const d = p.distance_m;
+          const relBearing = Math.abs(p.relative_bearing_deg || 0);
+          const dir = p.relative_direction || "";
+          
+          if (this.isIgnoredPoi(p.name, p.category)) return false;
+          if (dir.includes("後方") || relBearing > 90) return false;
+          const rad = (relBearing * Math.PI) / 180.0;
+          const latDist = Math.abs(d * Math.sin(rad));
+          const fwdDist = d * Math.cos(rad);
+          return fwdDist >= 0.0 && fwdDist <= 25.0 && latDist <= 14.0;
+        });
+
+        if (corridorPois.length > 0) {
+          const leftCandidate = corridorPois.find(p => (p.relative_direction || "").includes("左"));
+          const rightCandidate = corridorPois.find(p => (p.relative_direction || "").includes("右"));
+          const frontCandidate = corridorPois.find(p => !(p.relative_direction || "").includes("左") && !(p.relative_direction || "").includes("右"));
+
+          // 雙側走廊合併打包：若左右兩側近身 (<= 12m) 均有未播報之優選店家，一次報完超省話！
+          let didBroadcast = false;
+          if (leftCandidate && rightCandidate && leftCandidate.distance_m <= 12.0 && rightCandidate.distance_m <= 12.0) {
+            const leftKey = leftCandidate.id || `${this.cleanPoiName(leftCandidate.name)}_${leftCandidate.lat.toFixed(4)}_${leftCandidate.lon.toFixed(4)}`;
+            const rightKey = rightCandidate.id || `${this.cleanPoiName(rightCandidate.name)}_${rightCandidate.lat.toFixed(4)}_${rightCandidate.lon.toFixed(4)}`;
+            const lastLeft = this.announcedPoiCooldown.get(leftKey) || 0;
+            const lastRight = this.announcedPoiCooldown.get(rightKey) || 0;
+
+            if (now - lastLeft > 35000 && now - lastRight > 35000) {
+              this.announcedPoiCooldown.set(leftKey, now);
+              this.announcedPoiCooldown.set(rightKey, now);
+              this.lastPoiBroadcastTime = now;
+
+              const leftName = this.cleanPoiName(leftCandidate.name);
+              const rightName = this.cleanPoiName(rightCandidate.name);
+              const dualMsg = `左 ${leftName} ${Math.round(leftCandidate.distance_m)}米、右 ${rightName} ${Math.round(rightCandidate.distance_m)}米`;
+              this.announceObject(leftCandidate, dualMsg, false);
+              didBroadcast = true;
+              return;
+            }
+          }
+
+          if (!didBroadcast) {
+            const candidates = [leftCandidate, rightCandidate, frontCandidate].filter(Boolean).sort((a, b) => a.distance_m - b.distance_m);
+            for (const poi of candidates) {
+              const cleanedName = this.cleanPoiName(poi.name);
+              const poiKey = poi.id || (poi.lat && poi.lon ? `${cleanedName}_${poi.lat.toFixed(4)}_${poi.lon.toFixed(4)}` : cleanedName);
+              const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
+              if (now - lastTime > 35000) {
+                this.announcedPoiCooldown.set(poiKey, now);
+                this.lastPoiBroadcastTime = now;
+
+                const floorTag = (poi.floor && poi.floor !== "1F") ? ` (${poi.floor})` : "";
+                const clockOrDir = poi.clock_position || poi.relative_direction || "前方";
+                const msg = `${cleanedName}${floorTag}，${clockOrDir} ${Math.round(poi.distance_m)}米`;
+
+                this.announceObject(poi, msg, false);
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // =========================================================================
+    // 【4. 若都沒有店家 / 語音安靜超過 20 秒，精簡播報當前走在哪條路上與大約門牌】
+    // =========================================================================
     if (now - this.lastSpeechTime >= 20000 && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
       if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
         const street = data.road_info.street_name;
@@ -4305,9 +4319,9 @@ window.onUpdateError = (errMsg) => {
   }
 };
 
-window.onUpdateCheckResult = (status, info) => {
-  if (status === 'latest' && window.app) {
-    window.app.updateLiveLog(`目前已是最新版本 (v${info})。`);
+window.onUpdateCheckResult = (status, info, isManual = false) => {
+  if (status === 'latest' && window.app && isManual) {
+    window.app.updateLiveLog(`目前已是最新版本 (v${info})。`, false, true);
   }
 };
 
@@ -4800,6 +4814,25 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
                 window.app.lastData = data;
                 if (window.app.renderRadarCanvas) window.app.renderRadarCanvas(data);
                 if (window.app.updatePOIs) window.app.updatePOIs(data.pois || []);
+                
+                if (data.ground_elevation_m !== undefined && window.nmapAndroid && typeof window.nmapAndroid.setGroundElevation === 'function') {
+                    window.nmapAndroid.setGroundElevation(data.ground_elevation_m);
+                }
+                
+                // 戶外防誤判 (GPS 霸體模式) 邏輯：
+                // 如果在一般道路上前進超過 15 公尺，強制解除天橋模式
+                const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路" && data.road_info.street_name !== "1F") ? data.road_info.street_name : null;
+                if (currentRoad && accuracy < 22.0 && window.currentVerticalLevel !== "GROUND") {
+                    window.roadLockDistance = (window.roadLockDistance || 0) + dist;
+                    if (window.roadLockDistance > 15.0) {
+                        if (window.nmapAndroid && typeof window.nmapAndroid.forceResetBarometerToGround === 'function') {
+                            window.nmapAndroid.forceResetBarometerToGround();
+                        }
+                        window.roadLockDistance = 0;
+                    }
+                } else if (!currentRoad || window.currentVerticalLevel === "GROUND") {
+                    window.roadLockDistance = 0;
+                }
 
                 // 首次定位與後續行進走廊提示分流，徹底杜絕開口 2ms 互掐剪音！
                 if (dist === 999999) {

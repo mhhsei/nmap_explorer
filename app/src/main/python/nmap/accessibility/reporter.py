@@ -90,30 +90,21 @@ class NVDAReporter:
             parts.append(f"{m['speech_prompt']}")
             has_mrt_alert = True
 
-        # 4. 路口接近與過馬路安全性導引（有號誌時說出來，沒有就精簡描述路口狀況）
+        # 4. 路口接近與過馬路走向導引 (安全第一，動態鐘點分支走向)
         is_intersection = intersection.get('junction_type') not in ["直行道路", None]
         has_junc_alert = False
         if is_intersection:
             dist = intersection.get('junction_distance_m', 0)
-            jtype = intersection.get('junction_type', '路口')
             if dist is not None and dist < 6.0:
-                parts.append(f"📍 正通過【{jtype}】，請直線前進。")
+                parts.append("📍 正通過路口，請直線前進。")
                 has_junc_alert = True
             elif dist is not None and dist <= 28.0:
-                # 檢查號誌安全情報 (有聲號誌/即時秒數/按鈕位置)
-                sig_info = agent.world_model.get_signal_safety(agent.lat, agent.lon, agent.heading_deg, radius_m=28.0)
-                if sig_info and (sig_info.get("has_aps") or sig_info.get("has_live_seconds")):
-                    # 具備有聲號誌或即時秒數時直接報讀
-                    parts.append(f"📍 {sig_info['speech_prompt']}")
+                approaching_prompt = intersection.get("concise_approaching_prompt")
+                if approaching_prompt:
+                    parts.append(f"📍 {approaching_prompt}。")
                 else:
-                    # 無有聲號誌且無即時秒數時，精簡描述路況 (路口型態、車道數/路寬、斑馬線方向、按鈕位置、無有聲號誌)
-                    lanes = road_info.get("lanes", 2)
-                    oneway = road_info.get("oneway", "雙向")
-                    width_approx = int(lanes * 3.5)
-                    crossings = intersection.get("nearby_crossings") or []
-                    clock_str = f"，斑馬線在 {crossings[0]['clock_position']}" if crossings else ""
-                    btn_hint = "，右側桿高110公分處有按鈕" if (sig_info and sig_info.get("has_button")) else ""
-                    parts.append(f"📍 前方 {round(dist)}公尺【{jtype}】，{oneway}{lanes}線道約{width_approx}米{clock_str}{btn_hint}，無有聲號誌。")
+                    j_name = intersection.get("junction_name", "路口")
+                    parts.append(f"📍 接近路口，{j_name}。")
                 has_junc_alert = True
 
         # 5. 前方前進走廊左右店家提醒（經垂直樓層過濾，排除後方店家）
@@ -121,12 +112,13 @@ class NVDAReporter:
         corridor_pois = [p for p in filtered_pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
-        if corridor_pois:
+        if corridor_pois and not has_junc_alert:
             corridor_pois.sort(key=lambda x: x["distance_m"])
             poi_texts = []
             for p in corridor_pois[:2]:
                 tag = f"[{p['level_tag']}] " if "level_tag" in p else ""
-                poi_texts.append(f"{tag}{p['name']} ({p.get('relative_direction', '')} {round(p['distance_m'])}公尺)")
+                clock_or_dir = p.get("clock_position") or p.get("relative_direction", "")
+                poi_texts.append(f"{tag}{p['name']} ({clock_or_dir} {round(p['distance_m'])}米)")
             parts.append(f"前進路上：{'、'.join(poi_texts)}。")
             has_poi_alert = True
 
@@ -184,14 +176,15 @@ class NVDAReporter:
         # Section 1: Current State
         lines.append(f"【目前位置】{agent.location_label}")
         lines.append(f"• GPS座標：({round(agent.lat, 5)}, {round(agent.lon, 5)})")
-        lines.append(f"• 朝向：面向{cardinal} (方位角 {int(agent.heading_deg)}°)")
+        lines.append(f"• 朝向：面向{bearing_to_cardinal(agent.heading_deg)} (方位角 {int(agent.heading_deg)}°)")
 
         # Section 1.2: 3D 垂直空間高程與公眾 Beacon 定錨
         level_name = LEVEL_DISPLAY_NAMES.get(vertical_level, "地面層")
         alt_str = f"{altitude_m:+.1f} 公尺" if altitude_m != 0.0 else "±0.0 公尺"
-        lines.append(f"\n【3D 垂直空間與高程】")
+        lines.append(f"\n【3D 垂直空間與地形高程】")
         lines.append(f"• 所在立體層級：{level_name}")
         lines.append(f"• 相對地面高程：{alt_str}")
+        lines.append(f"• 真實地形海拔：{ground_elevation_m:+.1f} 公尺 (由 SRTM 3D 地形庫提供)")
         if beacon_anchor:
             dist_val = beacon_anchor.get('dist_m', 2.0)
             lines.append(f"• 📡 公眾 Beacon 定錨：{beacon_anchor.get('name')} (距離約 {round(dist_val)} 公尺)")

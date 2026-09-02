@@ -212,6 +212,44 @@ class IntersectionAnalyzer:
         elif sorted_intersecting_roads:
             cross_first = sorted_intersecting_roads[0]
             junction_display_name = f"{cross_first}口" if not cross_first.endswith("口") else cross_first
+        elif junction_type != "直行道路":
+            junction_display_name = "路口"
+
+        # 構建視障極簡「鐘點走向」動態分支導引 (Dynamic Clock-Position Branches)
+        # 排除當前行進道路與正後方來時路，只提取前方與側向的目標分支
+        valid_branches = [
+            b for b in branches_info 
+            if b.get("road_name") 
+            and b.get("road_name") != curr_street 
+            and not b.get("road_name").startswith("無名") 
+            and abs(b.get("relative_angle", 0)) < 140 
+            and "來時路" not in b.get("relative_direction", "")
+        ]
+
+        concise_branches_parts = []
+        for b in valid_branches:
+            r_name = b["road_name"]
+            clock = b.get("clock_position", "")
+            r_dir = b.get("relative_direction", "")
+            # 簡明左右前綴：若有多個分支，標註左右以強化空間感 (例如: "左 10點鐘 大忠街")
+            prefix = ""
+            if "左" in r_dir and len(valid_branches) > 1:
+                prefix = "左 "
+            elif "右" in r_dir and len(valid_branches) > 1:
+                prefix = "右 "
+            
+            if clock:
+                concise_branches_parts.append(f"{prefix}{clock} {r_name}")
+            else:
+                concise_branches_parts.append(f"{r_dir} {r_name}")
+
+        concise_branches_str = "，".join(concise_branches_parts)
+        if not concise_branches_str:
+            concise_branches_str = junction_display_name if junction_display_name not in ["十字路口", "T字/岔路口", "直行道路"] else "前方交會"
+
+        aps_tag = "（有聲號誌）" if has_aps else ("（紅綠燈）" if is_signalized else "")
+        concise_approaching_prompt = f"接近路口{aps_tag}，{concise_branches_str}"
+        concise_passing_prompt = "正通過路口，請直線前進"
 
         # Build accessibility & safety summary text for NVDA
         safety_notes = []
@@ -301,6 +339,9 @@ class IntersectionAnalyzer:
             "button_guide": button_guide,
             "intersecting_roads": list(intersecting_roads),
             "branches_info": branches_info,
+            "concise_branches": concise_branches_str,
+            "concise_approaching_prompt": concise_approaching_prompt,
+            "concise_passing_prompt": concise_passing_prompt,
             "crossings": nearby_crossings,
             "traffic_signals": nearby_signals,
             "signal_nearby": is_signalized,

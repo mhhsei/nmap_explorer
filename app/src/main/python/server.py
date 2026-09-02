@@ -88,6 +88,10 @@ def build_status_dict(
     agent.lon = cur_lon
     agent.heading_deg = cur_head
 
+    import nmap.spatial.srtm_reader as srtm
+    ground_elev = srtm.get_elevation(cur_lat, cur_lon)
+    agent.current_ground_elevation = ground_elev if ground_elev is not None else 0.0
+
     road_info = agent.world_model.get_road_info(cur_lat, cur_lon, cur_head)
     pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=150.0)
     buildings = agent.world_model.get_nearby_buildings(cur_lat, cur_lon, cur_head, radius_m=50.0)
@@ -122,7 +126,8 @@ def build_status_dict(
             scene=street_scene,
             vertical_level=vertical_level,
             altitude_m=altitude_m,
-            beacon_anchor=beacon_anchor
+            beacon_anchor=beacon_anchor,
+            ground_elevation_m=ground_elev if ground_elev is not None else 0.0
         )
     else:
         full_report = concise_report
@@ -148,6 +153,7 @@ def build_status_dict(
         "sidewalk_hazards": sidewalk_hazards,
         "mrt_exits": mrt_exits,
         "full_report": full_report,
+        "ground_elevation_m": getattr(agent, "current_ground_elevation", 0.0),
         "concise_report": concise_report,
         "street_scene": street_scene
     }

@@ -932,27 +932,41 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     }
 
     /**
-     * 螢幕開關自適應降頻省電調節
+     * 螢幕開關自適應降頻省電調節 (Screen-Off Power-Saving & Continuous Background Tracking)
+     *
+     * 核心安全原則 (Safety & Accessibility First)：
+     * 視障者在路上導航時，高達 90% 的時間手機處於「口袋模式」或「螢幕熄滅」狀態。
+     * 【嚴禁在熄屏時完全註銷方向感測器】，否則會導致 Heading（朝向角）死鎖在熄屏前的角度，
+     * 進而導致後端路口與 POI 前方視野判定（±75°）完全失真！
+     *
+     * 最佳實踐：
+     * 1. 螢幕關閉 (active=false)：感測器切換至 SENSOR_DELAY_NORMAL (~5-10Hz)，兼顧超低功耗與持續背景朝向追蹤。
+     * 2. 螢幕開啟 (active=true)：感測器切換至 SENSOR_DELAY_GAME (50Hz)，提供流暢零延遲的立體聲音效與雷達渲染。
      */
     fun setScreenActive(active: Boolean) {
         if (!isRunning) return
-        Log.i(tag, "setScreenActive: $active (throttling sensors accordingly)")
-        if (!active) {
-            sensorManager.unregisterListener(this, sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR))
-            sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sensorManager.unregisterListener(this, it) }
-            sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sensorManager.unregisterListener(this, it) }
+        Log.i(tag, "setScreenActive: $active (switching sensor rate accordingly)")
+        val delay = if (active) SensorManager.SENSOR_DELAY_GAME else SensorManager.SENSOR_DELAY_NORMAL
+
+        // 重新調整加速度計（供 PDR 步長推算、波峰計步與靜止偵測）
+        sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
+            sensorManager.unregisterListener(this, it)
+            sensorManager.registerListener(this, it, delay)
+        }
+
+        // 重新調整旋轉向量感測器（供 3D 朝向與真北磁偏角計算）
+        val rotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        val geoRotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR)
+        if (rotVectorSensor != null) {
+            sensorManager.unregisterListener(this, rotVectorSensor)
+            sensorManager.registerListener(this, rotVectorSensor, delay)
+        } else if (geoRotVectorSensor != null) {
+            sensorManager.unregisterListener(this, geoRotVectorSensor)
+            sensorManager.registerListener(this, geoRotVectorSensor, delay)
         } else {
-            // 喚醒時：無條件重新註冊加速度計（供 PDR 步長推算、波峰計步與靜止偵測），徹底杜絕口袋模式取出後感測器脫鉤停擺！
-            sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-            }
-            val rotVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-            if (rotVectorSensor != null) {
-                sensorManager.registerListener(this, rotVectorSensor, SensorManager.SENSOR_DELAY_GAME)
-            } else {
-                sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.also {
-                    sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-                }
+            sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.also {
+                sensorManager.unregisterListener(this, it)
+                sensorManager.registerListener(this, it, delay)
             }
         }
     }
@@ -1176,7 +1190,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val isStationary = stationaryDetector.currentState == MotionState.STATIONARY_LOCKED
             val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut() || stationaryDetector.currentAccVariance > 0.28f
             val isPocketLikely = isProximityNear && isWalking
-            barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely)
+            
+            // 判斷 GPS 訊號是否微弱 (進入室內商場)
+            val timeSinceGps = SystemClock.uptimeMillis() - lastGpsFixTimeMs
+            val isGpsWeak = timeSinceGps > 2000L || lastGpsAccuracyM > 25.0f || satelliteTotalCount == 0 || (satelliteUsedCount < 4 && satelliteAvgSnr < 22f)
+            
+            barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
             return
         }
 
@@ -1308,6 +1327,22 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         if (location.hasSpeed() && speed > 0.6f && location.hasAccuracy() && acc < 5.0f) {
             val estimatedStep = (speed / 1.8f).coerceIn(0.50f, 0.85f)
             userStepLengthM = 0.85f * userStepLengthM + 0.15f * estimatedStep
+        }
+
+        // GPS 行進航向備援 (Course-over-Ground Heading Fallback)
+        // 核心設計意圖：若使用者手持手機行走 (speed > 0.8 m/s) 但硬體陀螺儀/旋轉向量在口袋中超時未更新，
+        // 自動由真實 GPS 前進航向 (Bearing) 接管，徹底杜絕整條街 (80m) Heading 凍結在錯誤角度的慘劇！
+        if (bearing >= 0f && speed > 0.8f) {
+            val nowMs = SystemClock.uptimeMillis()
+            if (smoothedHeading < 0f || (nowMs - lastHeadingEmitTime > 1500L)) {
+                smoothedHeading = bearing
+                lastEmittedHeading = bearing
+                lastHeadingEmitTime = nowMs
+                val deg = bearing
+                webView.post {
+                    webView.evaluateJavascript("if (window.onHeadingUpdate) window.onHeadingUpdate(${deg});", null)
+                }
+            }
         }
 
         // 判定當前生效之差分品質等級（符合五大嚴格工程檢核標準）
@@ -1479,9 +1514,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     put("vertical_level", inst.currentVerticalLevel.name)
                     put("vertical_level_display", inst.currentVerticalLevel.displayName)
                     put("altitude_m", inst.currentAltitudeM)
-                    put("raw_pressure_hpa", inst.barometerFilter?.getRawPressure() ?: 1013.25f)
-                    put("baseline_pressure_hpa", inst.barometerFilter?.getBaselinePressure() ?: 1013.25f)
-                    put("vertical_velocity_mps", inst.barometerFilter?.getVelocity() ?: 0.0f)
+                    put("raw_pressure_hpa", inst.barometerFilter?.getRawPressure() ?: 0.0)
+                    put("baseline_pressure_hpa", inst.barometerFilter?.getBaselinePressure() ?: 0.0)
+                    put("vertical_velocity_mps", inst.barometerFilter?.getVelocity() ?: 0.0)
                     put("diff_tier_name", inst.currentDiffTier.name)
                     put("diff_tier_display", inst.currentDiffTier.displayName)
                     put("satellites_total", inst.satelliteTotalCount)
@@ -1511,6 +1546,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     put("recent_beacons", inst.beaconManager?.getRecentScannedBeaconsJson() ?: org.json.JSONArray())
                 }
             }
+        }
+
+        fun forceResetBarometerToGround() {
+            activeInstance?.barometerFilter?.forceResetToGround()
+        }
+
+        fun setGroundElevation(elevationM: Float) {
+            activeInstance?.barometerFilter?.setDemGroundElevation(elevationM)
         }
 
         fun getGpsCoordinatesList(): List<Pair<Double, Double>> {
