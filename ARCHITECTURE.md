@@ -19,35 +19,46 @@
 
 ## 2. 網頁前端層 (WebView UI & Logic)
 **路徑**: `app/src/main/python/web/`
-負責使用者互動、Web Audio 3D 音效、狀態機管理與發送 API 請求至本地 Python 伺服器。
+負責使用者互動、Web Audio 聽覺圖標與 3D 空間音效、狀態機管理與發送 API 請求至本地 Python 伺服器。
 
-*   [`app.js`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/web/app.js)：**前端核心大腦**。
-    *   負責向後端輪詢狀態 (`/api/sync`, `/api/turn`, `/api/gps`)。
-    *   執行 **路口到達狀態機** (`checkProximityAlerts`)，根據距離（6m~28m）進行提前預警、過馬路提示。
+*   [`app.js`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/web/app.js)：**前端核心調度大腦**。
+    *   負責每秒輪詢向後端同步狀態 (`POST /api/gps`)。
+    *   執行 **聽覺四級降序發話權優先級鏈** (`checkProximityAlerts`)：
+        1. `Priority 1`: 人行道障礙物（變電箱/消防栓 $\le 8$m）
+        2. `Priority 2`: 視障有聲號誌（APS $\le 22$m）
+        3. `Priority 3`: **路口到達三態與連續巷口接力狀態機**（APPROACHING $\to$ PASSING $\to$ LEAVING）
+        4. `Priority 4`: **前進走廊店家引導**（緊鄰同側聚類打包、門牌自然錨定）
     *   硬體控制解耦：直接呼叫 `window.AndroidBridge` 啟動/關閉紅綠燈相機，不受語音播報中斷。
-*   [`spatial_engine.js`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/web/spatial_engine.js)：**3D 空間音效引擎**。利用 Web Audio API (HRTF) 計算聲源方位，提供左右耳空間感。
-*   `index.html` / `style.css`：前端 UI 介面，支援螢幕報讀軟體 (TalkBack/NVDA)。
+*   [`spatial_engine.js`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/web/spatial_engine.js)：**3D 空間音效與 Earcons 引擎**。提供極短促專屬樂器聽覺圖標與 Web Audio API (HRTF) 方位立體聲。
+*   `index.html` / `style.css`：前端 UI 介面，嚴格支援螢幕報讀軟體 (TalkBack/NVDA ARIA Live Regions)。
 
 ---
 
 ## 3. Python 嵌入式後端 (Chaquopy Backend)
 **路徑**: `app/src/main/python/`
-負責純邏輯運算、空間拓撲分析、地標資料庫檢索。透過 `Bottle` 框架建立輕量級 HTTP API 供前端呼叫。
+負責純邏輯運算、空間幾何與拓撲分析、3D 地形高程讀取、地標資料庫檢索。透過 `Bottle` 框架建立輕量級 HTTP API 供前端呼叫。
 
 ### 伺服器入口
 *   [`server.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/server.py)：Bottle API 伺服器 (127.0.0.1:8000)。定義所有路由（如 `/api/gps`, `/api/intersection`），並將資料組裝為前端需要的 JSON 格式。
-*   [`server_runner.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/server_runner.py)：背景啟動器，確保 Bottle 在獨立執行緒運行。
+*   [`server_runner.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/server_runner.py)：背景啟動器，確保 Bottle 在獨立執行緒穩定運行。
 
 ### 空間演算法與地標模組 (`nmap/spatial/`)
-*   [`world_model.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/world_model.py)：世界模型。負責門牌地址空間共識仲裁（實體門牌投票），以及跨資料庫同名 POI 智慧去重。
-*   [`intersection.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/intersection.py)：路口分析引擎。計算使用者與路口的距離，並**提取實體交通號誌的真北方位與鐘點方向**供相機精準對齊。
+*   [`world_model.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/world_model.py)：世界模型。負責門牌地址空間共識仲裁（實體門牌投票）、周遭 POI 店家檢索、以及跨資料庫同名地標智慧去重。
+*   [`intersection.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/intersection.py)：**路口分析引擎**。
+    *   計算路口幾何、實體交通號誌方位與鐘點走向（排除視覺幾何名詞）。
+    *   **對向直行接續路名確認**（如直行接中正路）。
+    *   **連續/相鄰路口鏈式接力偵測 (Chained Junction Pacing)**：前方 $\le 12$ 米連續巷口自動生成同側前續與通過接力提示。
+*   [`srtm_reader.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/srtm_reader.py)：**NASA SRTM 3D 數位地表高程庫**。
+    *   讀取 `data/taiwan_srtm3.zip` 全台 16 塊高程瓦片。
+    *   具備 LRU 瓦片快取與四點雙線性插值（查詢耗時 $< 0.05$ms）。
+    *   實作 **自適應地表裸地濾波 (Bare-Earth DTM Filter)**，過濾都市高樓雷達毛刺（如 101、85大樓屋頂反射），還原真實行人路面海拔。
 *   [`pure_geometry.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/pure_geometry.py)：**純 Python 幾何計算庫**。取代 C-extension（如 shapely），包含 Haversine 距離、射線法等。
 *   [`grid_index.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/grid_index.py)：純 Python 網格空間索引，取代 `rtree`，確保 Chaquopy ARM64 相容。
 *   [`taiwan_signals.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/taiwan_signals.py)：台灣在地交通號誌與路網特性定義。
 *   [`sidewalk_hazards.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/spatial/sidewalk_hazards.py)：人行道防撞雷達與安全偵測。
 
 ### 語音報讀與 Agent (`nmap/accessibility/` & `nmap/agent/`)
-*   [`reporter.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/accessibility/reporter.py)：負責生成極簡的視障專用報讀文案。
+*   [`reporter.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/accessibility/reporter.py)：負責生成極簡的視障專用報讀文案（包含 POI 門牌自然錨定、聚類打包、高程與路口接力）。
 *   [`explorer.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/nmap/agent/explorer.py)：代理人狀態與導航主幹。
 
 ---

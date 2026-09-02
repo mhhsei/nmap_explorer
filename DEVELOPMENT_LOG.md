@@ -9,7 +9,7 @@
 
 基於 [NMap Android APK 轉換計畫書](./nmap_android_plan.md) 所定義的階段，目前進度如下：
 
-### 🔴 Phase 1：基礎架構（技術驗證與 Python 後端）
+### 🟢 Phase 1：基礎架構（技術驗證與 Python 後端）
 - [x] 建立 Android Studio 專案與 Chaquopy 設定
 - [x] 驗證 Python 環境 (networkx, requests, bottle, numpy)
 - [x] 實作純 Python 幾何計算 (`PureGeometry`) 以備 shapely 相容性問題
@@ -17,30 +17,31 @@
 - [x] 實作 `OvertureSQLiteClient` 直接查詢 SQLite (已確認未在原專案實作，故跳過)
 - [x] 在 Android 上成功啟動 Bottle Server
 
-### 🔴 Phase 2：WebView 前端移植
+### 🟢 Phase 2：WebView 前端移植
 - [x] 移入 web 靜態資源 (HTML/CSS/JS/Sounds)
 - [x] 設定 WebView 啟用 Web Audio 與 DOM Storage
 - [x] 實作 JS `TouchGestureController` 觸控手勢
 - [x] 實作 TalkBack 相容的替代 D-pad 介面
-- [ ] 驗證 ARIA Live Region 與 TalkBack 的連動
-- [ ] 驗證 3D 空間音效 (Web Audio API HRTF) 在 WebView 的執行狀況
+- [x] 驗證 ARIA Live Region 與 TalkBack 的連動
+- [x] 驗證 3D 空間音效與 Earcons 聽覺圖標在 WebView 的執行狀況
 
-### 🔴 Phase 3：原生功能整合
-- [x] Kotlin 實作 `SensorBridge` (GPS)
-- [x] Kotlin 實作 `SensorBridge` (陀螺儀方向)
-- [x] Kotlin 實作 `HapticBridge` (震動反饋)
+### 🟢 Phase 3：原生功能整合
+- [x] Kotlin 實作 `LocationSensorBridge` (GPS + 卡爾曼濾波防塌陷)
+- [x] Kotlin 實作姿態融合與台灣地磁偏角校正 (-3.8°)
+- [x] Kotlin 實作 `WebAppInterface` (震動反饋與診斷日誌匯出)
 - [x] JS Bridge 串接，將感測器資料與震動功能提供給前端 JS
 - [x] 實作 Foreground Service 以防 Python Server 遭 Android 系統查殺
 
-### 🔴 Phase 4：資料管理與下載
-- [x] 實作 `DataDownloadManager` (改為直接內建 280MB DB 於 APK，符合使用者「接受較大體積」之需求)
-- [x] 設計首次啟動下載 UI 與 TalkBack 進度播報 (改為內建，Chaquopy 自動解壓縮)
+### 🟢 Phase 4：資料管理與高程庫
+- [x] 實作內建 SQLite 離線空間資料庫 (Chaquopy 自動部署)
+- [x] 整合 NASA SRTM 台灣全區 16 塊 3D 數位地表高程庫 (`taiwan_srtm3.zip`)
+- [x] 實作自適應地表裸地濾波 (Bare-Earth DTM Filter)，消除都市大樓雷達毛刺
 - [x] Android 內部儲存路徑與 Python 端路徑的橋接 (透過 Chaquopy 虛擬與實體路徑解析處理)
 
-### 🔴 Phase 5：打磨與測試
-- [ ] 完整無障礙 (TalkBack) 探索測試
-- [ ] 實機測試 (Android 12+) 與效能優化
-- [ ] APK 打包與簽署
+### 🟡 Phase 5：打磨、測試與發布
+- [x] 單元測試與空間風洞實驗室 (pytest/unittest 五大地獄場景重播)
+- [x] GitHub Actions 自動編譯簽署與發布 APK (Release 工作流程)
+- [ ] 視障測試者實機街頭探索回饋與參數微調
 
 *(狀態燈號：🔴 尚未開始 / 🟡 進行中 / 🟢 已完成)*
 
