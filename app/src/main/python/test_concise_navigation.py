@@ -247,6 +247,83 @@ class TestConciseNavigation(unittest.TestCase):
         self.assertIn("真實地形海拔", full_rep)
         self.assertIn(f"{elev_tamsui:+.1f}", full_rep)
 
+    def test_chained_junctions_same_side(self):
+        """【測試：同側連續巷弄接力播報 (Chained Junctions - Same Side)】"""
+        analyzer = IntersectionAnalyzer()
+        wm_chain = MockWorldModel()
+        j1_lat, j1_lon = 25.179900, 121.451200
+        j2_lat, j2_lon = 25.179945, 121.451200
+
+        wm_chain.road_graph.add_node(1, lat=j1_lat, lon=j1_lon)
+        wm_chain.road_graph.add_node(2, lat=j2_lat, lon=j2_lon)
+        wm_chain.road_graph.add_node(10, lat=j1_lat, lon=j1_lon + 0.0005) # 182巷 (East, Right)
+        wm_chain.road_graph.add_node(20, lat=j2_lat, lon=j2_lon + 0.0005) # 184巷 (East, Right)
+        wm_chain.road_graph.add_node(30, lat=j1_lat - 0.0005, lon=j1_lon) # South
+        wm_chain.road_graph.add_node(40, lat=j2_lat + 0.0005, lon=j2_lon) # North
+
+        wm_chain.road_graph.add_edge(1, 10, key=0, name="北新路182巷")
+        wm_chain.road_graph.add_edge(1, 30, key=0, name="北新路一段")
+        wm_chain.road_graph.add_edge(1, 2, key=0, name="北新路一段")
+        wm_chain.road_graph.add_edge(2, 20, key=0, name="北新路184巷")
+        wm_chain.road_graph.add_edge(2, 40, key=0, name="北新路一段")
+
+        wm_chain.junction_rtree.insert(1, (j1_lon, j1_lat, j1_lon, j1_lat), obj=(1, 3, j1_lat, j1_lon, {}))
+        wm_chain.junction_rtree.insert(2, (j2_lon, j2_lat, j2_lon, j2_lat), obj=(2, 3, j2_lat, j2_lon, {}))
+
+        user_lat = j1_lat - 0.000108 # ~12m south of j1
+        user_lon = j1_lon
+        road_info = {"street_name": "北新路一段"}
+
+        # 1. 接近階段：預告同側連續巷弄
+        res_app = analyzer.analyze(user_lat, user_lon, 0.0, wm_chain, max_distance_m=50.0, curr_road_info=road_info)
+        self.assertTrue(res_app["has_chained_junction"])
+        self.assertIn("北新路182巷", res_app["concise_approaching_prompt"])
+        self.assertIn("前續 北新路184巷", res_app["concise_approaching_prompt"])
+
+        # 2. 跨過第 1 條巷子：即時報讀通過第 1 條並預告第 2 條剩餘距離
+        user_lat_pass = j1_lat - 0.000030 # ~3m from j1
+        res_pass = analyzer.analyze(user_lat_pass, user_lon, 0.0, wm_chain, max_distance_m=50.0, curr_road_info=road_info)
+        self.assertTrue(res_pass["has_chained_junction"])
+        self.assertIn("通過【北新路182巷】", res_pass["concise_passing_prompt"])
+        self.assertIn("【北新路184巷】", res_pass["concise_passing_prompt"])
+
+    def test_chained_junctions_opposite_sides(self):
+        """【測試：左右錯開連續巷弄接力播報 (Chained Junctions - Opposite Sides)】"""
+        analyzer = IntersectionAnalyzer()
+        wm_chain = MockWorldModel()
+        j1_lat, j1_lon = 25.179900, 121.451200
+        j2_lat, j2_lon = 25.179936, 121.451200 # 4m ahead
+
+        wm_chain.road_graph.add_node(1, lat=j1_lat, lon=j1_lon)
+        wm_chain.road_graph.add_node(2, lat=j2_lat, lon=j2_lon)
+        wm_chain.road_graph.add_node(10, lat=j1_lat, lon=j1_lon - 0.0005) # 182巷 (West, Left)
+        wm_chain.road_graph.add_node(20, lat=j2_lat, lon=j2_lon + 0.0005) # 184巷 (East, Right)
+        wm_chain.road_graph.add_node(30, lat=j1_lat - 0.0005, lon=j1_lon) # South
+        wm_chain.road_graph.add_node(40, lat=j2_lat + 0.0005, lon=j2_lon) # North
+
+        wm_chain.road_graph.add_edge(1, 10, key=0, name="北新路182巷")
+        wm_chain.road_graph.add_edge(1, 30, key=0, name="北新路一段")
+        wm_chain.road_graph.add_edge(1, 2, key=0, name="北新路一段")
+        wm_chain.road_graph.add_edge(2, 20, key=0, name="北新路184巷")
+        wm_chain.road_graph.add_edge(2, 40, key=0, name="北新路一段")
+
+        wm_chain.junction_rtree.insert(1, (j1_lon, j1_lat, j1_lon, j1_lat), obj=(1, 3, j1_lat, j1_lon, {}))
+        wm_chain.junction_rtree.insert(2, (j2_lon, j2_lat, j2_lon, j2_lat), obj=(2, 3, j2_lat, j2_lon, {}))
+
+        user_lat = j1_lat - 0.000108
+        user_lon = j1_lon
+        road_info = {"street_name": "北新路一段"}
+
+        res_app = analyzer.analyze(user_lat, user_lon, 0.0, wm_chain, max_distance_m=50.0, curr_road_info=road_info)
+        self.assertTrue(res_app["has_chained_junction"])
+        self.assertIn("左", res_app["concise_approaching_prompt"])
+        self.assertIn("右", res_app["concise_approaching_prompt"])
+
+        user_lat_pass = j1_lat - 0.000030
+        res_pass = analyzer.analyze(user_lat_pass, user_lon, 0.0, wm_chain, max_distance_m=50.0, curr_road_info=road_info)
+        self.assertIn("通過【北新路182巷】", res_pass["concise_passing_prompt"])
+        self.assertIn("【北新路184巷】", res_pass["concise_passing_prompt"])
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestConciseNavigation)
     runner = unittest.TextTestRunner(verbosity=2)

@@ -2765,10 +2765,10 @@ class NmapWebApp {
             const islandGuide = hasIsland ? "，設庇護島" : "";
             
             let passMsg = "📍 正通過路口";
-            if (data.intersection.straight_continuation_road && data.intersection.straight_continuation_road !== currentRoad && !data.intersection.straight_continuation_road.startsWith("無名") && data.intersection.straight_continuation_road !== "人行通道") {
-              passMsg = `📍 正通過路口，直行接【${data.intersection.straight_continuation_road}】`;
-            } else if (data.intersection.concise_passing_prompt) {
+            if (data.intersection.concise_passing_prompt) {
               passMsg = `📍 ${data.intersection.concise_passing_prompt}`;
+            } else if (data.intersection.straight_continuation_road && data.intersection.straight_continuation_road !== currentRoad && !data.intersection.straight_continuation_road.startsWith("無名") && data.intersection.straight_continuation_road !== "人行通道") {
+              passMsg = `📍 正通過路口，直行接【${data.intersection.straight_continuation_road}】`;
             }
             const msg = `${passMsg}${islandGuide}。`;
             this.announceJunction(msg, false);

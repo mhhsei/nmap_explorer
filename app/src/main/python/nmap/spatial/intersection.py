@@ -91,7 +91,7 @@ class IntersectionAnalyzer:
 
         nearby_signals.sort(key=lambda x: x["distance_m"])
 
-        # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3，延伸搜尋下一個路口，最遠 500 公尺)
+        # 3. 藉由空間網格檢索拓撲路口節點 (degree >= 3，搜尋前方所有實體路口)
         junction_type = "直行道路"
         closest_junction_dist = 999.0
         closest_junction_t_brng = 0.0
@@ -102,13 +102,61 @@ class IntersectionAnalyzer:
             curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
         curr_street = curr_road_info.get("street_name", "")
 
-        # 延伸至前方 500 公尺搜尋下一個實體路口，消除距離限制
+        # 延伸至前方 500 公尺搜尋實體路口節點
         max_junction_distance_m = max(max_distance_m, 500.0)
         j_radius_deg_lon = max_junction_distance_m / (111139.0 * cos_lat)
         j_radius_deg_lat = max_junction_distance_m / 111139.0
         j_bounds = (lon - j_radius_deg_lon, lat - j_radius_deg_lat, lon + j_radius_deg_lon, lat + j_radius_deg_lat)
         closest_junction_meta = {}
 
+        def extract_node_branches(n_id, n_lt, n_ln, neighbors_set):
+            b_info = []
+            int_roads = set()
+            v_visited = set()
+            for v in neighbors_set:
+                if v in v_visited:
+                    continue
+                v_visited.add(v)
+                edge_data = None
+                if world_model.road_graph.has_edge(n_id, v):
+                    edge_data = list(world_model.road_graph[n_id][v].values())[0]
+                elif world_model.road_graph.has_edge(v, n_id):
+                    edge_data = list(world_model.road_graph[v][n_id].values())[0]
+
+                raw_name = edge_data.get("name", "") if edge_data else ""
+                if not raw_name or raw_name == "未命名道路":
+                    highway_type = edge_data.get("road", {}).get("highway", "") if edge_data else ""
+                    if highway_type in ["footway", "pedestrian", "path", "steps"]:
+                        road_name = "人行通道"
+                    else:
+                        road_name = "無名巷弄"
+                else:
+                    road_name = raw_name
+
+                if road_name and road_name != curr_street and not road_name.startswith("無名") and road_name != "人行通道":
+                    int_roads.add(road_name)
+
+                v_data = world_model.road_graph.nodes[v]
+                v_lat, v_lon = v_data["lat"], v_data["lon"]
+                out_brng = calculate_bearing(n_lt, n_ln, v_lat, v_lon)
+                out_rel = relative_bearing(heading_deg, out_brng)
+                
+                clock_pos = bearing_to_clock_position(out_rel)
+                rel_dir = bearing_to_relative_direction(out_rel)
+                if abs(out_rel) >= 140:
+                    rel_dir = "正後方 (來時路)"
+
+                b_info.append({
+                    "road_name": road_name,
+                    "relative_direction": rel_dir,
+                    "clock_position": clock_pos,
+                    "relative_angle": out_rel
+                })
+            b_info.sort(key=lambda b: abs(b.get("relative_angle", 0)))
+            return b_info, int_roads
+
+        # 收集前方所有路口候選節點
+        front_junction_candidates = []
         for item in world_model.junction_rtree.intersection(j_bounds, objects=True):
             node_id, degree, n_lat, n_lon = item.object[:4]
             junction_meta = item.object[4] if len(item.object) > 4 else {}
@@ -117,67 +165,66 @@ class IntersectionAnalyzer:
             if dist <= max_junction_distance_m:
                 t_brng = calculate_bearing(lat, lon, n_lat, n_lon)
                 rel_brng = relative_bearing(heading_deg, t_brng)
-                # 關注前方視野 (朝向 ±75° 以內) 或近距離但非身後 (< 12m 且 abs(rel_brng) <= 90°) 的路口節點
-                is_front_junction = abs(rel_brng) <= 75 or (dist < 12.0 and abs(rel_brng) <= 90)
-                if is_front_junction and dist < closest_junction_dist:
+                is_front = abs(rel_brng) <= 75 or (dist < 12.0 and abs(rel_brng) <= 90)
+                if is_front:
                     physical_neighbors = (set(world_model.road_graph.predecessors(node_id)) | set(world_model.road_graph.successors(node_id))) - {node_id}
                     real_degree = len(physical_neighbors)
                     if real_degree >= 3:
-                        closest_junction_dist = dist
-                        closest_junction_t_brng = t_brng
-                        closest_junction_rel_brng = rel_brng
-                        closest_junction_meta = junction_meta
-                        junction_type = "十字路口" if real_degree >= 4 else "T字/岔路口"
-                        
-                        intersecting_roads.clear()
-                        branches_info.clear()
-                        visited_neighbors = set()
+                        front_junction_candidates.append({
+                            "node_id": node_id,
+                            "degree": real_degree,
+                            "lat": n_lat,
+                            "lon": n_lon,
+                            "dist": dist,
+                            "t_brng": t_brng,
+                            "rel_brng": rel_brng,
+                            "meta": junction_meta,
+                            "physical_neighbors": physical_neighbors
+                        })
 
-                        for v in physical_neighbors:
-                            if v in visited_neighbors:
-                                continue
-                            visited_neighbors.add(v)
+        front_junction_candidates.sort(key=lambda x: x["dist"])
 
-                            # 獲取連接邊的屬性
-                            edge_data = None
-                            if world_model.road_graph.has_edge(node_id, v):
-                                edge_data = list(world_model.road_graph[node_id][v].values())[0]
-                            elif world_model.road_graph.has_edge(v, node_id):
-                                edge_data = list(world_model.road_graph[v][node_id].values())[0]
+        has_chained_junction = False
+        chained_junction_info = None
 
-                            raw_name = edge_data.get("name", "") if edge_data else ""
-                            if not raw_name or raw_name == "未命名道路":
-                                highway_type = edge_data.get("road", {}).get("highway", "") if edge_data else ""
-                                if highway_type in ["footway", "pedestrian", "path", "steps"]:
-                                    road_name = "人行通道"
-                                else:
-                                    road_name = "無名巷弄"
-                            else:
-                                road_name = raw_name
+        if front_junction_candidates:
+            j1 = front_junction_candidates[0]
+            closest_junction_dist = j1["dist"]
+            closest_junction_t_brng = j1["t_brng"]
+            closest_junction_rel_brng = j1["rel_brng"]
+            closest_junction_meta = j1["meta"]
+            junction_type = "十字路口" if j1["degree"] >= 4 else "T字/岔路口"
+            branches_info, intersecting_roads = extract_node_branches(j1["node_id"], j1["lat"], j1["lon"], j1["physical_neighbors"])
 
-                            if road_name and road_name != curr_street and not road_name.startswith("無名"):
-                                intersecting_roads.add(road_name)
-
-                            v_data = world_model.road_graph.nodes[v]
-                            v_lat, v_lon = v_data["lat"], v_data["lon"]
-                            out_brng = calculate_bearing(n_lat, n_lon, v_lat, v_lon)
-                            out_rel = relative_bearing(heading_deg, out_brng)
-                            
-                            clock_pos = bearing_to_clock_position(out_rel)
-                            rel_dir = bearing_to_relative_direction(out_rel)
-                            if abs(out_rel) >= 140:
-                                rel_dir = "正後方 (來時路)"
-
-                            branches_info.append({
-                                "road_name": road_name,
-                                "relative_direction": rel_dir,
-                                "clock_position": clock_pos,
-                                "relative_angle": out_rel
-                            })
-
-                        # 按相對角度排序：前向與側向分支優先，後方來時路放最後
-                        branches_info.sort(key=lambda b: abs(b.get("relative_angle", 0)))
-                        logger.info(f"[JUNCTION_DETECT] node={node_id}, degree={real_degree}, type={junction_type}, dist={dist:.1f}m, intersecting={list(intersecting_roads)}")
+            # 檢查是否存在相距 <= 12 米之連續接力路口 (Chained Junction)
+            if len(front_junction_candidates) >= 2:
+                j2 = front_junction_candidates[1]
+                delta_dist = j2["dist"] - j1["dist"]
+                if delta_dist <= 12.0 and j1["dist"] <= 35.0:
+                    j2_branches, j2_intersecting = extract_node_branches(j2["node_id"], j2["lat"], j2["lon"], j2["physical_neighbors"])
+                    j2_valid = [
+                        b for b in j2_branches 
+                        if b.get("road_name") 
+                        and b.get("road_name") != curr_street 
+                        and not b.get("road_name").startswith("無名") 
+                        and abs(b.get("relative_angle", 0)) < 140 
+                        and "來時路" not in b.get("relative_direction", "")
+                    ]
+                    if j2_valid:
+                        j2_branch = j2_valid[0]
+                        j2_name = j2_branch["road_name"]
+                        j2_dir = j2_branch.get("relative_direction", "")
+                        j2_clock = j2_branch.get("clock_position", "")
+                        j2_delta_m = max(2, round(delta_dist))
+                        has_chained_junction = True
+                        chained_junction_info = {
+                            "name": j2_name,
+                            "distance_m": round(j2["dist"], 1),
+                            "relative_dist_m": j2_delta_m,
+                            "clock_position": j2_clock,
+                            "relative_direction": j2_dir,
+                            "branches_info": j2_branches
+                        }
 
         # If crossing exists nearby, confirm junction presence
         if junction_type == "直行道路" and nearby_crossings:
@@ -216,7 +263,6 @@ class IntersectionAnalyzer:
             junction_display_name = "路口"
 
         # 構建視障極簡「鐘點走向」動態分支導引 (Dynamic Clock-Position Branches)
-        # 排除當前行進道路與正後方來時路，只提取前方與側向的目標分支
         valid_branches = [
             b for b in branches_info 
             if b.get("road_name") 
@@ -226,43 +272,67 @@ class IntersectionAnalyzer:
             and "來時路" not in b.get("relative_direction", "")
         ]
 
-        concise_branches_parts = []
-        for b in valid_branches:
-            r_name = b["road_name"]
-            clock = b.get("clock_position", "")
-            r_dir = b.get("relative_direction", "")
-            # 簡明左右前綴：若有多個分支，標註左右以強化空間感 (例如: "左 10點鐘 大忠街")
-            prefix = ""
-            if "左" in r_dir and len(valid_branches) > 1:
-                prefix = "左 "
-            elif "右" in r_dir and len(valid_branches) > 1:
-                prefix = "右 "
-            
-            if clock:
-                concise_branches_parts.append(f"{prefix}{clock} {r_name}")
-            else:
-                concise_branches_parts.append(f"{r_dir} {r_name}")
+        straight_continuation_road = None
 
-        concise_branches_str = "，".join(concise_branches_parts)
-        if not concise_branches_str:
-            concise_branches_str = junction_display_name if junction_display_name not in ["十字路口", "T字/岔路口", "直行道路"] else "前方交會"
+        if has_chained_junction and valid_branches:
+            j1_branch = valid_branches[0]
+            j1_name = j1_branch["road_name"]
+            j1_clock = j1_branch.get("clock_position", "")
+            j1_dir = j1_branch.get("relative_direction", "")
+            j2_name = chained_junction_info["name"]
+            j2_clock = chained_junction_info["clock_position"]
+            j2_dir = chained_junction_info["relative_direction"]
+            j2_delta_m = chained_junction_info["relative_dist_m"]
+
+            is_same_side = ("右" in j1_dir and "右" in j2_dir) or ("左" in j1_dir and "左" in j2_dir)
+            chained_junction_info["is_same_side"] = is_same_side
+
+            if is_same_side:
+                side_prefix = "右 " if "右" in j1_dir else ("左 " if "左" in j1_dir else "")
+                dir_desc = "右前方" if "右" in j1_dir else ("左前方" if "左" in j1_dir else "前方")
+                concise_branches_str = f"{side_prefix}{j1_clock} {j1_name}，前續 {j2_name}"
+                concise_passing_prompt = f"通過【{j1_name}】，{dir_desc} {j2_delta_m}米【{j2_name}】"
+            else:
+                j1_prefix = "左 " if "左" in j1_dir else ("右 " if "右" in j1_dir else "")
+                j2_prefix = "右 " if "右" in j2_dir else ("左 " if "左" in j2_dir else "")
+                concise_branches_str = f"{j1_prefix}{j1_clock} {j1_name}，{j2_prefix}{j2_clock} {j2_name}"
+                concise_passing_prompt = f"通過【{j1_name}】，{j2_prefix}{j2_clock} {j2_delta_m}米【{j2_name}】"
+        else:
+            concise_branches_parts = []
+            for b in valid_branches:
+                r_name = b["road_name"]
+                clock = b.get("clock_position", "")
+                r_dir = b.get("relative_direction", "")
+                prefix = ""
+                if "左" in r_dir and len(valid_branches) > 1:
+                    prefix = "左 "
+                elif "右" in r_dir and len(valid_branches) > 1:
+                    prefix = "右 "
+                
+                if clock:
+                    concise_branches_parts.append(f"{prefix}{clock} {r_name}")
+                else:
+                    concise_branches_parts.append(f"{r_dir} {r_name}")
+
+            concise_branches_str = "，".join(concise_branches_parts)
+            if not concise_branches_str:
+                concise_branches_str = junction_display_name if junction_display_name not in ["十字路口", "T字/岔路口", "直行道路"] else "前方交會"
+
+            # 尋找對向直行接續路段 (Opposite straight forward branch: abs(relative_angle) <= 35)
+            for b in branches_info:
+                if abs(b.get("relative_angle", 180)) <= 35 and "來時路" not in b.get("relative_direction", ""):
+                    r_name = b.get("road_name", "")
+                    if r_name and not r_name.startswith("無名") and r_name != "人行通道":
+                        straight_continuation_road = r_name
+                        break
+
+            if straight_continuation_road and straight_continuation_road != curr_street:
+                concise_passing_prompt = f"正通過路口，直行接【{straight_continuation_road}】"
+            else:
+                concise_passing_prompt = "正通過路口，請直線前進"
 
         aps_tag = "（有聲號誌）" if has_aps else ("（紅綠燈）" if is_signalized else "")
         concise_approaching_prompt = f"接近路口{aps_tag}，{concise_branches_str}"
-
-        # 尋找對向直行接續路段 (Opposite straight forward branch: abs(relative_angle) <= 35)
-        straight_continuation_road = None
-        for b in branches_info:
-            if abs(b.get("relative_angle", 180)) <= 35 and "來時路" not in b.get("relative_direction", ""):
-                r_name = b.get("road_name", "")
-                if r_name and not r_name.startswith("無名") and r_name != "人行通道":
-                    straight_continuation_road = r_name
-                    break
-
-        if straight_continuation_road and straight_continuation_road != curr_street:
-            concise_passing_prompt = f"正通過路口，直行接【{straight_continuation_road}】"
-        else:
-            concise_passing_prompt = "正通過路口，請直線前進"
 
         # Build accessibility & safety summary text for NVDA
         safety_notes = []
@@ -353,6 +423,8 @@ class IntersectionAnalyzer:
             "intersecting_roads": list(intersecting_roads),
             "branches_info": branches_info,
             "straight_continuation_road": straight_continuation_road,
+            "has_chained_junction": has_chained_junction,
+            "chained_junction": chained_junction_info,
             "concise_branches": concise_branches_str,
             "concise_approaching_prompt": concise_approaching_prompt,
             "concise_passing_prompt": concise_passing_prompt,
