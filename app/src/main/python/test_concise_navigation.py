@@ -217,19 +217,29 @@ class TestConciseNavigation(unittest.TestCase):
         ]
 
     def test_srtm_elevation_reading(self):
-        """【測試：NASA SRTM 3D 地形高程讀取與雙線性插值】"""
+        """【測試：NASA SRTM 3D 地形高程讀取與自適應地表裸地濾波 (Bare-Earth DTM)】"""
         from nmap.spatial.srtm_reader import get_elevation
-        # Test Taipei 101 elevation
+        # 測試台北 101 信義商圈地面真實海拔 (已過濾 50m 摩天樓雷達回波，應落在 12~18m 之間)
         elev_101 = get_elevation(25.0339, 121.5644)
         self.assertIsNotNone(elev_101)
-        self.assertTrue(20.0 <= elev_101 <= 60.0)
+        self.assertTrue(10.0 <= elev_101 <= 20.0, f"Expected 10-20m, got {elev_101}")
 
-        # Test Tamsui elevation
+        # 測試高雄 85 大樓港邊地面真實海拔 (已過濾 101m 高樓雷達回波，應落在 2~10m 之間)
+        elev_kh = get_elevation(22.6117, 120.3005)
+        self.assertIsNotNone(elev_kh)
+        self.assertTrue(2.0 <= elev_kh <= 10.0, f"Expected 2-10m, got {elev_kh}")
+
+        # 測試淡水北新路坡道海拔
         elev_tamsui = get_elevation(25.1799, 121.4512)
         self.assertIsNotNone(elev_tamsui)
-        self.assertTrue(30.0 <= elev_tamsui <= 70.0)
+        self.assertTrue(40.0 <= elev_tamsui <= 55.0, f"Expected 40-55m, got {elev_tamsui}")
 
-        # Test reporter full report with ground elevation
+        # 測試玉山主峰海拔
+        elev_yushan = get_elevation(23.4700, 120.9573)
+        self.assertIsNotNone(elev_yushan)
+        self.assertTrue(3800.0 <= elev_yushan <= 3952.0, f"Expected 3800-3952m, got {elev_yushan}")
+
+        # 測試 NVDAReporter 全景報讀中包含真實地表海拔
         reporter = NVDAReporter()
         agent = MockAgent(25.1799, 121.4512, 0.0, self.wm)
         agent.location_label = "淡水老街"
