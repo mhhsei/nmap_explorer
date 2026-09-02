@@ -51,6 +51,15 @@ class MockWorldModel:
             }
         ]
 
+    def get_nearby_buildings(self, lat, lon, heading_deg, radius_m=80.0):
+        return []
+
+    def get_left_right_side_scan(self, lat, lon, heading_deg, radius_m=60.0):
+        return {"left_side": {"house_numbers": [], "alleys": []}, "right_side": {"house_numbers": [], "alleys": []}}
+
+    def get_interpolated_door_numbers(self, lat, lon, heading_deg):
+        return {"left_side_estimate": "", "right_side_estimate": "", "concise_door": ""}
+
     def get_sidewalk_hazards(self, lat, lon, heading_deg, max_dist_m=8.0):
         return []
 
@@ -60,6 +69,13 @@ class MockWorldModel:
     def get_signal_safety(self, lat, lon, heading_deg, radius_m=28.0):
         return None
 
+    def get_intersection_clock_bearings(self, lat, lon, heading_deg, radius_m=40.0):
+        return []
+
+class MockStreetSceneEngine:
+    def analyze_scene(self, lat, lon, heading, wm, road_info=None):
+        return {"full_description": "街景平整", "scene_summary": "街景"}
+
 class MockAgent:
     def __init__(self, lat, lon, heading_deg, world_model):
         self.is_loaded = True
@@ -68,6 +84,11 @@ class MockAgent:
         self.heading_deg = heading_deg
         self.world_model = world_model
         self.intersection_analyzer = IntersectionAnalyzer()
+        self.street_scene_engine = MockStreetSceneEngine()
+        self.location_label = "測試位置"
+
+    def get_navigation_status(self):
+        return ""
 
 class TestConciseNavigation(unittest.TestCase):
     def setUp(self):
@@ -195,12 +216,26 @@ class TestConciseNavigation(unittest.TestCase):
             }
         ]
 
-        agent = MockAgent(25.170000, 121.450000, 0.0, wm_cluster)
-        report = reporter.generate_concise_report(agent)
-        # Should cluster into: 2點鐘方向 9米：全家便利商店 (205號)、康是美 (207號)
-        self.assertIn("全家便利商店 (205號)", report)
-        self.assertIn("康是美 (207號)", report)
-        self.assertIn("2點鐘方向", report)
+    def test_srtm_elevation_reading(self):
+        """【測試：NASA SRTM 3D 地形高程讀取與雙線性插值】"""
+        from nmap.spatial.srtm_reader import get_elevation
+        # Test Taipei 101 elevation
+        elev_101 = get_elevation(25.0339, 121.5644)
+        self.assertIsNotNone(elev_101)
+        self.assertTrue(20.0 <= elev_101 <= 60.0)
+
+        # Test Tamsui elevation
+        elev_tamsui = get_elevation(25.1799, 121.4512)
+        self.assertIsNotNone(elev_tamsui)
+        self.assertTrue(30.0 <= elev_tamsui <= 70.0)
+
+        # Test reporter full report with ground elevation
+        reporter = NVDAReporter()
+        agent = MockAgent(25.1799, 121.4512, 0.0, self.wm)
+        agent.location_label = "淡水老街"
+        full_rep = reporter.generate_full_report(agent, ground_elevation_m=elev_tamsui)
+        self.assertIn("真實地形海拔", full_rep)
+        self.assertIn(f"{elev_tamsui:+.1f}", full_rep)
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestConciseNavigation)

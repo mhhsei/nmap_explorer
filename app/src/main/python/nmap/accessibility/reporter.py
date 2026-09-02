@@ -33,7 +33,9 @@ class NVDAReporter:
         intersection: Optional[Dict[str, Any]] = None,
         vertical_level: str = "GROUND",
         altitude_m: float = 0.0,
-        beacon_anchor: Optional[Dict[str, Any]] = None
+        beacon_anchor: Optional[Dict[str, Any]] = None,
+        ground_elevation_m: float = 0.0,
+        **kwargs: Any
     ) -> str:
         """
         【產生極簡「省話模式」即時播報 (VoiceVista-Style Concise Announcement)】
@@ -157,7 +159,9 @@ class NVDAReporter:
         scene: Optional[Dict[str, Any]] = None,
         vertical_level: str = "GROUND",
         altitude_m: float = 0.0,
-        beacon_anchor: Optional[Dict[str, Any]] = None
+        beacon_anchor: Optional[Dict[str, Any]] = None,
+        ground_elevation_m: float = 0.0,
+        **kwargs: Any
     ) -> str:
         """
         【產生 360 度周遭全景探索報告 (Full Spatial Exploration Report)】

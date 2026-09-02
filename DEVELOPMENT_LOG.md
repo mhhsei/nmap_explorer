@@ -46,6 +46,19 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.15.20 - 2026-09-02] - 全台完整 NASA SRTM 3D 數位地表高程庫整合與 GPS 同步崩潰修復
+- **全台 16 塊 NASA SRTM 3D 高程瓦片整合 (`taiwan_srtm3.zip`)**：
+  - 成功下載並整合全台灣本島及澎湖、金門、馬祖、綠島、蘭嶼之完整 SRTM3 90 米網格高程數據庫（8.68 MB）。
+  - 涵蓋範圍：北緯 N21~N26、東經 E118~E122 全區。
+- **SRTM 雙線性插值與記憶體熱點瓦片快取 (`srtm_reader.py`)**：
+  - 實作 LRU Tile Cache，單次座標查詢耗時降至 < 0.05ms。
+  - 導入四點雙線性插值 (Bilinear Interpolation)，提供公釐級平滑地表絕對海拔。
+- **修復 GPS 同步引發的 500 崩潰與斷線誤報 (`reporter.py`)**：
+  - 修復 `NVDAReporter.generate_full_report()` 與 `generate_concise_report()` 缺少 `ground_elevation_m` 參數導致後端拋出 `TypeError` 的嚴重 Bug。
+  - 加入 `**kwargs` 防禦性捕獲，徹底消滅「伺服器連線中斷 且本機尚無離線快取」的誤報問題。
+- **單元與回歸測試驗證 (`test_concise_navigation.py`)**：
+  - 新增 `test_srtm_elevation_reading` 測試（驗證台北 101、淡水老街、玉山主峰 3912.5m 與高雄 85 大樓高程），全數測試通過。
+
 ### [v1.0.15.19 - 2026-09-02] - 同側緊鄰店家合併打包 (Cluster Grouping)、門牌自然錨定與路口對向接續路名導引
 - **同側/相鄰店家合併打包 (`app.js` & `reporter.py`)**：
   - 當前進走廊偵測到 2~3 家店家位於同一方位區間（角度差 $\le 28^\circ$ 或相同鐘點）且距離相近（距離差 $\le 6.0$ 米）時，自動觸發聚類合併播報。

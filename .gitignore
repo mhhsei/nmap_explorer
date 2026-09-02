@@ -16,6 +16,8 @@ __pycache__/
 *log*.txt
 *.apk
 *.zip
+!app/src/main/python/data/taiwan_srtm3.zip
+
 
 *.ipa
 ios_build_output/
