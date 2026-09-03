@@ -71,32 +71,32 @@ class RealPoiFetcher:
 
     def _resolve_db_paths(self):
         """動態偵測並鎖定本機/手機內有效存在的離線資料庫路徑"""
-        # 1. 優先檢查目前 db_path
-        if self.db_path and os.path.exists(self.db_path):
+        # 1. 優先檢查目前 db_path 是否有效且非空檔案 (> 100KB)
+        if self.db_path and os.path.exists(self.db_path) and os.path.getsize(self.db_path) > 102400:
             return self.db_path, self.gov_db_path
 
         # 2. 檢查 NMAP_DATA_DIR 環境變數
         data_dir = os.environ.get("NMAP_DATA_DIR")
         if data_dir:
             cand = os.path.join(data_dir, "overture_places.db")
-            if os.path.exists(cand):
+            if os.path.exists(cand) and os.path.getsize(cand) > 102400:
                 self.db_path = cand
                 self.gov_db_path = os.path.join(data_dir, "gov_places.db")
                 return self.db_path, self.gov_db_path
 
-        # 3. 搜尋 Android 內部/外部儲存區與專案目錄
+        # 3. 搜尋 Android 內部/外部儲存區與專案目錄 (排除小於 100KB 的空檔案)
         candidates = [
             "/sdcard/Android/data/com.example.nmapexplorer/files/data/overture_places.db",
             "/storage/emulated/0/Android/data/com.example.nmapexplorer/files/data/overture_places.db",
             "/data/user/0/com.example.nmapexplorer/files/data/overture_places.db",
             "/data/data/com.example.nmapexplorer/files/data/overture_places.db",
             os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "database_assets", "overture_places.db"),
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "overture_places.db"),
             "database_assets/overture_places.db",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "overture_places.db"),
             "data/overture_places.db"
         ]
         for cand in candidates:
-            if os.path.exists(cand):
+            if os.path.exists(cand) and os.path.getsize(cand) > 102400:
                 self.db_path = cand
                 self.gov_db_path = cand.replace("overture_places", "gov_places")
                 return self.db_path, self.gov_db_path
