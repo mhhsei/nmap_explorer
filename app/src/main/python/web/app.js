@@ -5327,4 +5327,54 @@ window.onBeaconAnchorUpdate = function(beaconId, beaconName, lat, lon, distM, le
     }
 };
 
+/**
+ * 🧠 步態猶豫與迷航意圖即時回調 (項目 3：神經網路注入)
+ */
+window.currentGaitIntent = "CONFIDENT_WALKING";
+window.onGaitIntentUpdate = function(intentName, displayName, reason) {
+    const oldIntent = window.currentGaitIntent;
+    window.currentGaitIntent = intentName;
+
+    // 當偵測到使用者停下腳步、原地轉圈尋向迷茫時，觸發第一優先級定向安撫救援
+    if (intentName === "HESITANT_CONFUSED") {
+        if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+            window.AndroidBridge.vibrate("[0, 80, 50, 120]");
+        }
+        if (window.app && window.app.audio) {
+            window.app.audio.playSettledChime();
+        }
+        
+        const msg = `🧭 別緊張，您停在路口，剛才的來時路在後方 6 點鐘，請辨別車流後再前進。`;
+        if (window.app && window.app.updateLiveLog) {
+            window.app.updateLiveLog(msg, false, true);
+        }
+    }
+};
+
+/**
+ * 🏢 垂直運動微波形與樓層分類回調 (項目 4：神經網路注入)
+ */
+window.currentNeuralFloor = "1F";
+window.currentVerticalMotionType = "HORIZONTAL_CORRIDOR";
+window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
+    window.currentVerticalMotionType = motionType;
+    const oldFloor = window.currentNeuralFloor;
+    window.currentNeuralFloor = floorStr;
+
+    if (oldFloor !== floorStr && window.app && window.app.updateLiveLog) {
+        let actionDesc = "目前位於";
+        if (motionType === "WALKING_STAIRS_UP") actionDesc = "走樓梯抵達";
+        else if (motionType === "WALKING_STAIRS_DOWN") actionDesc = "走樓梯抵達";
+        else if (motionType === "ELEVATOR_MOVING") actionDesc = "搭電梯抵達";
+
+        const msg = `🏢 樓層識別：${actionDesc}【${floorStr}】(高程差 ${altM.toFixed(1)}m)`;
+        window.app.updateLiveLog(msg, false, true);
+
+        if (window.app.audio) {
+            window.app.audio.playVerticalTransitionTone(altM > 0);
+        }
+    }
+};
+
+
 

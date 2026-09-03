@@ -673,7 +673,15 @@ class WorldModel:
         else:
             return f"{final_road} (未登錄門牌)"
 
-    def get_nearby_pois(self, lat: float, lon: float, heading_deg: float, radius_m: float = 60.0, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_nearby_pois(
+        self,
+        lat: float,
+        lon: float,
+        heading_deg: float,
+        radius_m: float = 60.0,
+        category: Optional[str] = None,
+        target_floor: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         【查詢半徑 radius_m 內的所有店家、設施與地標大樓】
         作用：依據距離排序，回傳包含鐘點方位（如 3點鐘方向）、相對方向（如 右側）與距離公尺數的完整 POI 列表。
@@ -733,8 +741,11 @@ class WorldModel:
                         if haversine_distance(poi.lat, poi.lon, existing["lat"], existing["lon"]) <= 18.0:
                             is_dup = True
                             break
-                if is_dup:
-                    continue
+                # 樓層垂直空間過濾 (消滅人在 2F 卻報讀 1F 店家的越級誤報)
+                if target_floor:
+                    poi_floor = getattr(poi, "floor", None) or poi.tags.get("floor") or poi.tags.get("level")
+                    if poi_floor and poi_floor.strip().upper() != target_floor.strip().upper():
+                        continue
 
                 rel = poi.calculate_relative(lat, lon, heading_deg)
                 if rel["distance_m"] <= radius_m:

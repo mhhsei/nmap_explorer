@@ -3,7 +3,9 @@ package com.example.nmapexplorer
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.media.MediaActionSound
 import android.os.Build
 import android.os.SystemClock
@@ -11,6 +13,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import android.view.WindowManager
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -18,7 +21,9 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import org.tensorflow.lite.Interpreter
+import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
@@ -32,12 +37,20 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * 【紅綠燈相機即時辨識與空間方位導航引擎 (TrafficSignalCameraManager)】
  *
- * 核心使命：
+ * 核心使命與台灣交通號誌特化：
  * 1. 到路口自動開相機，過馬路自動關閉，全程以俐落音效取代冗長語音。
  * 2. 鏡頭偏斜時，以 Google 原生 TTS 提示方位（如「號誌在 1 點鐘方向」）。
- * 3. 鏡頭拍到號誌時，跳過方位，直接回報「小綠人，可通行」或「紅燈」。
- * 4. 採用「空間錐形遮罩 (Spatial Geo-Gating)」+「TFLite 端側深度學習」+「時序防抖」，
- *    徹底杜絕紅色招牌與車尾燈誤判，保障視障者過馬路生命安全。
+ * 3. 鏡頭拍到號誌時，跳過方位，直接回報「小綠人，可通行」、「小綠人閃爍」或「紅燈」。
+ * 4. 專為台灣號誌與道路尺度特化：
+ *    - 【兩線道小路適應 (Narrow 2-lane street, 6~12m)】：近距離大號誌（30~80px）多尺度自適應聚類。
+ *    - 【多線道大馬路適應 (Wide avenue, 18~30m)】：遠距離小號誌（10~25px）靈敏捕捉。
+ *    - 【空間幾何 Y 軸遮罩】：嚴格屏蔽畫面底部 28%（柏油路反光、汽車保險桿、機車煞車燈）。
+ *    - 【黑色燈箱遮光罩對比驗證 (Black Housing Contrast)】：檢驗紅光/綠光周邊深色外框，徹底杜絕 7-11/屈臣氏大面積紅色招牌誤判。
+ *    - 【台灣法規 1Hz 綠燈閃爍預警】：綠燈末期每秒 1 次規律脈衝跳動時，即時提示「小綠人閃爍，請勿穿越」。
+ * 5. 【狀態鐵證自動快照留證 (Automated Snapshot Archiving)】：
+ *    變燈瞬間自動儲存當下現場 JPEG 快照，打包進診斷包供事後 100% 驗證地面真值。
+ * 6. 【螢幕喚醒保活 (FLAG_KEEP_SCREEN_ON)】：
+ *    開鏡期間強制防休眠，杜絕 Activity 鎖屏被 Android 砍相機。
  */
 class TrafficSignalCameraManager(
     private val context: Context,
@@ -46,6 +59,7 @@ class TrafficSignalCameraManager(
     companion object {
         private val cameraEventLogs = ArrayDeque<String>()
         private const val MAX_CAMERA_LOGS = 250
+        private const val MAX_SNAPSHOT_FILES = 6
 
         fun recordCameraEvent(msg: String) {
             val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
@@ -60,6 +74,18 @@ class TrafficSignalCameraManager(
             synchronized(cameraEventLogs) {
                 return cameraEventLogs.toList()
             }
+        }
+
+        /**
+         * 取得診斷日誌所需之相機快照圖片清單 (供 WebAppInterface 打包進 .zip)
+         */
+        fun getSnapshotFiles(context: Context): List<File> {
+            val dir = File(context.cacheDir, "camera_snapshots")
+            if (!dir.exists()) return emptyList()
+            return dir.listFiles { _, name -> name.endsWith(".jpg") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.take(MAX_SNAPSHOT_FILES)
+                ?: emptyList()
         }
     }
 
@@ -92,7 +118,7 @@ class TrafficSignalCameraManager(
     private var lastDirectionPromptTimeMs = 0L
     private val DIRECTION_PROMPT_COOLDOWN_MS = 3500L
 
-    // 方案 C 搜尋階段計時器 (實施階段性狀態語音回饋)
+    // 方案 C 搜尋階段計時器
     private var cameraStartTimeMs = 0L
     private var lastSearchPromptTimeMs = 0L
     private val SEARCH_PROMPT_COOLDOWN_MS = 5000L
@@ -110,6 +136,9 @@ class TrafficSignalCameraManager(
     private val TEMPORAL_WINDOW_SIZE = 4
     private val CONFIRMATION_THRESHOLD = 3
 
+    // 綠燈 1Hz 閃爍偵測滑動佇列 (記錄最近 2.5 秒內綠光有無之時序)
+    private val greenHistory = ArrayDeque<Pair<Long, Boolean>>() // timestampMs -> isGreenVisible
+
     // TFLite 深度學習直譯器
     private var tfliteInterpreter: Interpreter? = null
     private var isTfliteLoaded = false
@@ -119,6 +148,7 @@ class TrafficSignalCameraManager(
         UNKNOWN,
         RED,            // 紅燈 / 小紅人 (停止等候)
         GREEN,          // 綠燈 / 小綠人 (安全通行)
+        FLASHING_GREEN, // 小綠人閃爍 (通行即將結束，請勿踏入)
         YELLOW          // 黃燈 (即將變燈)
     }
 
@@ -161,7 +191,6 @@ class TrafficSignalCameraManager(
      */
     fun startCamera(bearingDeg: Double, clockPosition: String) {
         if (isRunning.getAndSet(true)) {
-            // 已在運行中，僅更新目標方位
             this.targetBearingDeg = bearingDeg
             this.targetClockPosition = clockPosition
             return
@@ -170,11 +199,12 @@ class TrafficSignalCameraManager(
         this.targetBearingDeg = bearingDeg
         this.targetClockPosition = clockPosition
         recentStates.clear()
+        greenHistory.clear()
         val now = SystemClock.uptimeMillis()
         cameraStartTimeMs = now
         lastSearchPromptTimeMs = now
 
-        // 1. 播放相機開鏡音效 (短促快門聲) 並語音播報「對街搜尋中」(方案 C)
+        // 1. 播放相機開鏡音效並提示「對街搜尋中」
         try {
             mediaActionSound.play(MediaActionSound.START_VIDEO_RECORDING)
         } catch (e: Exception) {
@@ -183,11 +213,21 @@ class TrafficSignalCameraManager(
         webAppInterface.speakTtsDirect("對街搜尋中", interrupt = false)
         recordCameraEvent("[CAMERA_START] 啟動紅綠燈相機 | 目標號誌方位: ${String.format(Locale.US, "%.1f", bearingDeg)}° ($clockPosition)")
 
-        // 2. 初始化背景執行緒
+        // 2. 螢幕常亮喚醒保活 (FLAG_KEEP_SCREEN_ON)：消滅 070815 的 1 秒休眠砍相機死角！
+        val activity = context as? Activity
+        activity?.runOnUiThread {
+            try {
+                activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                Log.i(tag, "[SCREEN_LOCK] 已設置 FLAG_KEEP_SCREEN_ON，相機運作期間防止自動休眠。")
+            } catch (e: Exception) {
+                Log.w(tag, "設置 FLAG_KEEP_SCREEN_ON 失敗", e)
+            }
+        }
+
+        // 3. 初始化背景執行緒與 CameraX
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        val activity = context as? Activity ?: return
-        activity.runOnUiThread {
+        activity?.runOnUiThread {
             val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
             cameraProviderFuture.addListener({
                 try {
@@ -209,14 +249,20 @@ class TrafficSignalCameraManager(
         recordCameraEvent("[CAMERA_STOP] 關閉紅綠燈相機並釋放硬體資源")
 
         try {
-            // 播放收鏡音效
             mediaActionSound.play(MediaActionSound.STOP_VIDEO_RECORDING)
         } catch (e: Exception) {
             Log.e(tag, "Failed to play camera stop sound", e)
         }
 
+        // 釋放螢幕常亮鎖，恢復系統省電休眠機制
         val activity = context as? Activity
         activity?.runOnUiThread {
+            try {
+                activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                Log.i(tag, "[SCREEN_LOCK] 已清除 FLAG_KEEP_SCREEN_ON，恢復正常待機休眠。")
+            } catch (e: Exception) {
+                Log.w(tag, "清除 FLAG_KEEP_SCREEN_ON 失敗", e)
+            }
             try {
                 cameraProvider?.unbindAll()
             } catch (e: Exception) {
@@ -227,6 +273,7 @@ class TrafficSignalCameraManager(
         cameraExecutor?.shutdown()
         cameraExecutor = null
         recentStates.clear()
+        greenHistory.clear()
         lastAnnouncedState = SignalState.UNKNOWN
         Log.i(tag, "Traffic signal camera stopped and resources released.")
     }
@@ -258,7 +305,7 @@ class TrafficSignalCameraManager(
 
     /**
      * 【影像幀即時分析管線】
-     * 包含：空間姿態檢查 -> 對街 ROI 裁切 -> TFLite / 光學深度分析 -> 時序防抖 -> 語音與震動回饋
+     * 包含：手持姿態檢查 -> 空間 Y 軸遮罩 -> 兩線道/多線道自適應多尺度分析 -> 黑色遮光罩對比驗證 -> 狀態確認與存證
      */
     private fun processFrame(imageProxy: ImageProxy) {
         if (!isRunning.get()) {
@@ -268,9 +315,9 @@ class TrafficSignalCameraManager(
 
         val now = SystemClock.uptimeMillis()
 
-        // 1. 空間仰角導引 (俯仰角太低朝向地面 < -35°，提示稍抬起手機)
+        // 1. 空間仰角導引 (俯仰角太低朝向地面 < -32°，提示稍抬起手機)
         val currentPitch = LocationSensorBridge.currentPitchDeg.toDouble()
-        if (currentPitch < -35.0) {
+        if (currentPitch < -32.0) {
             if (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS) {
                 lastDirectionPromptTimeMs = now
                 webAppInterface.speakTtsDirect("手機朝下，請稍抬起", interrupt = false)
@@ -280,25 +327,26 @@ class TrafficSignalCameraManager(
             return
         }
 
-        // 2. 方案 C 階段性搜尋進度提示：若開鏡超過 3.5 秒仍未捕捉到確定號誌，且距離上次提示已超過 5 秒
+        // 2. 階段性搜尋進度提示：若開鏡超過 3.5 秒仍未捕捉到確定號誌
         if (lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && now - lastSearchPromptTimeMs > SEARCH_PROMPT_COOLDOWN_MS) {
             lastSearchPromptTimeMs = now
             webAppInterface.speakTtsDirect("未見號誌，請左右微調", interrupt = false)
             recordCameraEvent("[CAMERA_SEARCH] 搜尋號誌逾 3.5 秒仍未定錨，提示左右微調")
         }
 
-        // 3. 影像轉換為 Bitmap 進行 ROI 檢測
+        // 3. 轉換為 Bitmap
         val bitmap = imageProxyToBitmap(imageProxy)
         imageProxy.close()
         if (bitmap == null) return
 
-        // 4. 對街超廣角視野 (截取畫面水平中央 10%~90%、垂直 5%~70% 範圍，全幅捕捉對街小綠人)
+        // 4. 空間 ROI 幾何截取：
+        // 水平中央 10%~90%，垂直 3%~72%（頂部天際線至中下部，底部 28% 嚴格屏蔽消滅車尾燈與柏油路）
         val w = bitmap.width
         val h = bitmap.height
         val roiLeft = (w * 0.10).toInt()
-        val roiTop = (h * 0.05).toInt()
+        val roiTop = (h * 0.03).toInt()
         val roiWidth = (w * 0.80).toInt()
-        val roiHeight = (h * 0.65).toInt()
+        val roiHeight = (h * 0.69).toInt() // 底部保留 28% 為地面遮蔽區
 
         val roiBitmap = try {
             Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
@@ -306,36 +354,272 @@ class TrafficSignalCameraManager(
             bitmap
         }
 
-        // 4. 執行號誌辨識 (優先 TFLite，備援高精度光學形態分析)
-        val detectedState = if (isTfliteLoaded && tfliteInterpreter != null) {
-            classifyWithTflite(roiBitmap)
-        } else {
-            classifyWithPhotometricAnalysis(roiBitmap)
+        // 5. 執行自適應光學與黑色燈箱對比度分析
+        val opticalResult = classifyWithAdaptivePhotometricAnalysis(roiBitmap, now)
+        var detectedState = opticalResult.state
+
+        // 若有 TFLite 模型，作為雙重交叉驗證
+        if (isTfliteLoaded && tfliteInterpreter != null && detectedState != SignalState.UNKNOWN) {
+            val tfliteScore = runTfliteInference(roiBitmap)
+            if (detectedState == SignalState.RED && tfliteScore < 0.35f) {
+                // TFLite 強烈反對紅色，降級為 UNKNOWN
+                detectedState = SignalState.UNKNOWN
+            } else if (detectedState == SignalState.GREEN && tfliteScore > 0.65f) {
+                detectedState = SignalState.UNKNOWN
+            }
         }
 
         if (now - lastFrameLogTimeMs > 1500L) {
             lastFrameLogTimeMs = now
-            val methodStr = if (isTfliteLoaded && tfliteInterpreter != null) "TFLite神經網路" else "光學形態色彩"
-            recordCameraEvent("[CAMERA_FRAME] 姿態 Pitch=${String.format(Locale.US, "%.1f", currentPitch)}° | 核心: $methodStr | 即時辨識: $detectedState")
+            val methodStr = if (isTfliteLoaded && tfliteInterpreter != null) "TFLite+光學雙檢" else "自適應幾何黑框光學"
+            recordCameraEvent("[CAMERA_FRAME] 姿態 Pitch=${String.format(Locale.US, "%.1f", currentPitch)}° | 核心: $methodStr | 即時辨識: $detectedState (${opticalResult.details})")
         }
 
         if (roiBitmap != bitmap) {
             roiBitmap.recycle()
         }
-        bitmap.recycle()
 
-        // 5. 時序防抖滑動窗口 (Temporal Filtering)
-        updateTemporalState(detectedState, now)
+        // 6. 時序防抖確認、語音播報、震動回饋與【自動截圖存證】
+        updateTemporalState(detectedState, now, bitmap, opticalResult.details)
+        bitmap.recycle()
     }
 
     /**
-     * 使用 TFLite 深度神經網路進行號誌分類
+     * 號誌光學偵測內部結果資料結構
      */
-    private fun classifyWithTflite(bitmap: Bitmap): SignalState {
-        val interpreter = tfliteInterpreter ?: return classifyWithPhotometricAnalysis(bitmap)
+    private data class OpticalResult(
+        val state: SignalState,
+        val details: String,
+        val isFlashing: Boolean = false
+    )
 
+    /**
+     * 【兩線道小路與多線道自適應多尺度光學防偽引擎】
+     * 核心邏輯：
+     * 1. 兩線道小路（6~12m）：號誌近身成像大（30~80px），聚類跨越多個網格，放寬上限。
+     * 2. 多線道大馬路（18~30m）：號誌遠程成像小（10~25px），靈敏捕捉單點聚類。
+     * 3. 黑色遮光罩外框對比度檢驗 (Black Housing Contrast)：
+     *    號誌發光核心四周必有黑色燈箱遮光罩（亮度低）。整片紅色的廣告招牌四周也是亮色，直接被高對比度門檻剔除！
+     * 4. 1Hz 綠燈閃爍脈衝檢測（台灣法規綠燈即將結束預警）。
+     */
+    private fun classifyWithAdaptivePhotometricAnalysis(bitmap: Bitmap, nowMs: Long): OpticalResult {
+        val w = bitmap.width
+        val h = bitmap.height
+
+        // 網格劃分：將 ROI 分割為 16x12 的微型分析區塊 (Grid Cells)
+        val numCols = 16
+        val numRows = 12
+        val cellW = w / numCols
+        val cellH = h / numRows
+
+        // 矩陣統計每個 Cell 的特徵
+        val redScores = Array(numRows) { IntArray(numCols) }
+        val greenScores = Array(numRows) { IntArray(numCols) }
+        val cellBrightness = Array(numRows) { IntArray(numCols) }
+
+        val step = 3 // 步長下取樣
+
+        for (r in 0 until numRows) {
+            for (c in 0 until numCols) {
+                var cellRCount = 0
+                var cellGCount = 0
+                var totalBri = 0L
+                var sampleCount = 0
+
+                val startX = c * cellW
+                val startY = r * cellH
+
+                for (y in startY until (startY + cellH) step step) {
+                    for (x in startX until (startX + cellW) step step) {
+                        if (x >= w || y >= h) continue
+                        val p = bitmap.getPixel(x, y)
+                        val red = Color.red(p)
+                        val green = Color.green(p)
+                        val blue = Color.blue(p)
+
+                        val bri = (red * 299 + green * 587 + blue * 114) / 1000
+                        totalBri += bri
+                        sampleCount++
+
+                        // 台灣小紅人發光特徵 (高純度 625nm 紅光 LED，以 R 為主導，不設 Y 加權限制以防飽和紅光被誤殺)
+                        if (red >= 150 && red > green * 1.45 && red > blue * 1.45) {
+                            cellRCount++
+                        }
+                        // 台灣小綠人發光特徵 (505nm 翠綠光 LED)
+                        else if (green >= 135 && green > red * 1.30 && blue < green * 1.15) {
+                            cellGCount++
+                        }
+                    }
+                }
+
+                redScores[r][c] = cellRCount
+                greenScores[r][c] = cellGCount
+                cellBrightness[r][c] = if (sampleCount > 0) (totalBri / sampleCount).toInt() else 0
+            }
+        }
+
+        // 連通塊聚類分析 (Connected Component Clustering for 2-Lane vs Wide Avenue)
+        data class SignalCluster(
+            val cells: List<Pair<Int, Int>>,
+            val totalScore: Int,
+            val widthCells: Int,
+            val heightCells: Int
+        )
+
+        fun findClusters(matrix: Array<IntArray>, minScore: Int): List<SignalCluster> {
+            val visited = Array(numRows) { BooleanArray(numCols) }
+            val clusters = mutableListOf<SignalCluster>()
+            for (r in 0 until numRows) {
+                for (c in 0 until numCols) {
+                    if (matrix[r][c] >= minScore && !visited[r][c]) {
+                        val cells = mutableListOf<Pair<Int, Int>>()
+                        val queue = ArrayDeque<Pair<Int, Int>>()
+                        queue.add(Pair(r, c))
+                        visited[r][c] = true
+                        var totalScore = 0
+
+                        while (queue.isNotEmpty()) {
+                            val curr = queue.removeFirst()
+                            cells.add(curr)
+                            totalScore += matrix[curr.first][curr.second]
+
+                            val neighbors = listOf(
+                                Pair(curr.first - 1, curr.second),
+                                Pair(curr.first + 1, curr.second),
+                                Pair(curr.first, curr.second - 1),
+                                Pair(curr.first, curr.second + 1)
+                            )
+                            for (n in neighbors) {
+                                if (n.first in 0 until numRows && n.second in 0 until numCols) {
+                                    if (matrix[n.first][n.second] >= minScore && !visited[n.first][n.second]) {
+                                        visited[n.first][n.second] = true
+                                        queue.add(n)
+                                    }
+                                }
+                            }
+                        }
+
+                        val minR = cells.minOf { it.first }
+                        val maxR = cells.maxOf { it.first }
+                        val minC = cells.minOf { it.second }
+                        val maxC = cells.maxOf { it.second }
+                        clusters.add(SignalCluster(cells, totalScore, maxC - minC + 1, maxR - minR + 1))
+                    }
+                }
+            }
+            return clusters
+        }
+
+        val redClusters = findClusters(redScores, minScore = 4)
+        val greenClusters = findClusters(greenScores, minScore = 4)
+
+        val bestRed = redClusters.maxByOrNull { it.totalScore }
+        val bestGreen = greenClusters.maxByOrNull { it.totalScore }
+
+        fun checkClusterHousing(cluster: SignalCluster): Boolean {
+            // 1. 尺寸過濾：跨越超過 3x3 網格（> 100px）者為大面積看板/招牌，非行人號誌
+            if (cluster.widthCells > 3 || cluster.heightCells > 4) {
+                return false
+            }
+
+            // 2. 外圍深色燈箱遮光罩檢驗 (Dark Housing Perimeter)
+            val clusterSet = cluster.cells.toSet()
+            val minR = cluster.cells.minOf { it.first }
+            val maxR = cluster.cells.maxOf { it.first }
+            val minC = cluster.cells.minOf { it.second }
+            val maxC = cluster.cells.maxOf { it.second }
+
+            var surroundBriSum = 0
+            var surroundCount = 0
+
+            val rStart = (minR - 1).coerceAtLeast(0)
+            val rEnd = (maxR + 1).coerceAtMost(numRows - 1)
+            val cStart = (minC - 1).coerceAtLeast(0)
+            val cEnd = (maxC + 1).coerceAtMost(numCols - 1)
+
+            for (r in rStart..rEnd) {
+                for (c in cStart..cEnd) {
+                    if (!clusterSet.contains(Pair(r, c))) {
+                        surroundBriSum += cellBrightness[r][c]
+                        surroundCount++
+                    }
+                }
+            }
+
+            if (surroundCount == 0) return true
+            val avgSurroundBri = surroundBriSum / surroundCount
+            val coreBri = cluster.cells.map { cellBrightness[it.first][it.second] }.average()
+            val contrast = coreBri - avgSurroundBri
+
+            // 號誌燈箱遮光罩外框亮度低 (< 115) 或有高對比 (>= 25)
+            return avgSurroundBri < 115 || contrast >= 25.0
+        }
+
+        val redScore = bestRed?.totalScore ?: 0
+        val greenScore = bestGreen?.totalScore ?: 0
+
+        // 1. 檢驗紅燈判定
+        if (bestRed != null && redScore > greenScore) {
+            if (checkClusterHousing(bestRed)) {
+                val isNarrow = bestRed.totalScore >= 50 || bestRed.widthCells >= 3 || bestRed.heightCells >= 3
+                val roadDesc = if (isNarrow) "近距/兩線道大號誌" else "遠距/標準號誌"
+                return OpticalResult(SignalState.RED, "$roadDesc(紅燈評分=$redScore)")
+            } else {
+                recordCameraEvent("[CAMERA_REJECT] 濾除無遮光黑框或過大之發光物 (疑似廣告看板/車牌)")
+            }
+        }
+
+        // 2. 檢驗綠燈判定與 1Hz 閃爍偵測
+        if (bestGreen != null && greenScore > redScore) {
+            if (checkClusterHousing(bestGreen)) {
+                val isGreenNow = true
+                greenHistory.addLast(Pair(nowMs, isGreenNow))
+
+                // 維護 2.5 秒滑動窗口
+                while (greenHistory.isNotEmpty() && nowMs - greenHistory.first().first > 2500L) {
+                    greenHistory.removeFirst()
+                }
+
+                // 檢驗最近 2 秒內是否發生 1Hz 亮暗交替 (綠燈閃爍)
+                var transitions = 0
+                var lastState = greenHistory.first().second
+                for (i in 1 until greenHistory.size) {
+                    val st = greenHistory.elementAt(i).second
+                    if (st != lastState) {
+                        transitions++
+                        lastState = st
+                    }
+                }
+
+                val isFlashing = transitions >= 3 // 在 2 秒內有多次亮暗跳變
+                val isNarrow = bestGreen.totalScore >= 50 || bestGreen.widthCells >= 3 || bestGreen.heightCells >= 3
+                val roadDesc = if (isNarrow) "近距/兩線道小綠人" else "遠距小綠人"
+
+                return if (isFlashing) {
+                    OpticalResult(SignalState.FLASHING_GREEN, "$roadDesc(1Hz閃爍中, 變更數=$transitions)", isFlashing = true)
+                } else {
+                    OpticalResult(SignalState.GREEN, "$roadDesc(通行綠燈, 評分=$greenScore)")
+                }
+            } else {
+                recordCameraEvent("[CAMERA_REJECT] 濾除無遮光黑框之大面積綠光物")
+            }
+        }
+
+        // 無號誌時記錄暗態
+        greenHistory.addLast(Pair(nowMs, false))
+        while (greenHistory.isNotEmpty() && nowMs - greenHistory.first().first > 2500L) {
+            greenHistory.removeFirst()
+        }
+
+        return OpticalResult(SignalState.UNKNOWN, "未定錨")
+    }
+
+    /**
+     * TFLite 輕量模型推理
+     */
+    private fun runTfliteInference(bitmap: Bitmap): Float {
+        val interpreter = tfliteInterpreter ?: return 0.5f
         return try {
-            // 縮放至模型輸入尺寸 64x64
             val scaled = Bitmap.createScaledBitmap(bitmap, 64, 64, true)
             val inputBuffer = ByteBuffer.allocateDirect(64 * 64 * 3 * 4).apply {
                 order(ByteOrder.nativeOrder())
@@ -353,109 +637,57 @@ class TrafficSignalCameraManager(
             val outputBuffer = ByteBuffer.allocateDirect(4).apply {
                 order(ByteOrder.nativeOrder())
             }
-
             interpreter.run(inputBuffer, outputBuffer)
             outputBuffer.rewind()
-            val score = outputBuffer.float
-
-            // 搭配光學驗證防護，雙重門檻
-            val opticalState = classifyWithPhotometricAnalysis(bitmap)
-            if (score > 0.6f && opticalState == SignalState.RED) {
-                SignalState.RED
-            } else if (score < 0.4f && opticalState == SignalState.GREEN) {
-                SignalState.GREEN
-            } else {
-                opticalState
-            }
+            outputBuffer.float
         } catch (e: Exception) {
-            classifyWithPhotometricAnalysis(bitmap)
+            0.5f
         }
     }
 
     /**
-     * 高精度光學與形態學分析器 (Photometric & Chrominance Analyzer)
-     * 在 ROI 中檢測高純度 625nm 正紅光 (小紅人/紅燈) 與 505nm 翠綠光 (小綠人/綠燈)
+     * 【時序狀態更新、防抖語音插播與自動截圖存證】
      */
-    private fun classifyWithPhotometricAnalysis(bitmap: Bitmap): SignalState {
-        val w = bitmap.width
-        val h = bitmap.height
-        val step = 4 // 下取樣加速 (4x4 網格)
-        var redPixels = 0
-        var greenPixels = 0
-        var yellowPixels = 0
-
-        for (y in 0 until h step step) {
-            for (x in 0 until w step step) {
-                val p = bitmap.getPixel(x, y)
-                val r = Color.red(p)
-                val g = Color.green(p)
-                val b = Color.blue(p)
-
-                // 亮度閾值 (號誌發光 LED 明度高)
-                val brightness = (r * 299 + g * 587 + b * 114) / 1000
-                if (brightness < 120) continue
-
-                // 紅燈特徵：R 明顯高於 G 和 B (R > 1.6*G 且 R > 1.6*B)
-                if (r > 160 && r > g * 1.5 && r > b * 1.5) {
-                    redPixels++
-                }
-                // 綠燈/小綠人特徵：G 顯著高於 R (G > 1.3*R 且 G > 140 且 B < G)
-                else if (g > 140 && g > r * 1.35 && g > b * 0.9) {
-                    greenPixels++
-                }
-                // 黃燈特徵：R 與 G 皆高且相近，B 明顯低
-                else if (r > 170 && g > 150 && Math.abs(r - g) < 45 && b < 80) {
-                    yellowPixels++
-                }
-            }
-        }
-
-        val minPixelCount = (w * h) / (step * step * 160) // 佔比門檻
-        return when {
-            greenPixels > minPixelCount && greenPixels > redPixels * 1.5 -> SignalState.GREEN
-            redPixels > minPixelCount && redPixels > greenPixels * 1.5 -> SignalState.RED
-            yellowPixels > minPixelCount && yellowPixels > redPixels -> SignalState.YELLOW
-            else -> SignalState.UNKNOWN
-        }
-    }
-
-    /**
-     * 【時序狀態更新與防抖語音插播】
-     */
-    private fun updateTemporalState(state: SignalState, now: Long) {
+    private fun updateTemporalState(state: SignalState, now: Long, sourceBitmap: Bitmap, details: String) {
         if (state == SignalState.UNKNOWN) return
 
-        // 加入滑動窗口
         recentStates.addLast(state)
         if (recentStates.size > TEMPORAL_WINDOW_SIZE) {
             recentStates.removeFirst()
         }
 
-        // 計算窗口內各狀態次數
         val greenCount = recentStates.count { it == SignalState.GREEN }
+        val flashingCount = recentStates.count { it == SignalState.FLASHING_GREEN }
         val redCount = recentStates.count { it == SignalState.RED }
         val yellowCount = recentStates.count { it == SignalState.YELLOW }
 
         val confirmedState = when {
+            flashingCount >= 2 -> SignalState.FLASHING_GREEN
             greenCount >= CONFIRMATION_THRESHOLD -> SignalState.GREEN
             redCount >= CONFIRMATION_THRESHOLD -> SignalState.RED
             yellowCount >= CONFIRMATION_THRESHOLD -> SignalState.YELLOW
             else -> return
         }
 
-        // 狀態變更或週期性提示
         val isStateChanged = confirmedState != lastAnnouncedState
 
         if (isStateChanged) {
             lastAnnouncedState = confirmedState
             lastAnnounceTimeMs = now
-            recordCameraEvent("[CAMERA_STATE_CHANGE] 燈號時序防抖確認為: $confirmedState (綠:$greenCount, 紅:$redCount, 黃:$yellowCount) -> 觸發語音與震動")
+            recordCameraEvent("[CAMERA_STATE_CHANGE] 燈號時序防抖確認為: $confirmedState (綠:$greenCount, 閃綠:$flashingCount, 紅:$redCount, 黃:$yellowCount) | $details -> 觸發存圖與播報")
 
+            // 1. 【自動截圖存證】：留存當下地面真值照片至 snapshots/ 目錄！
+            saveSnapshot(sourceBitmap, confirmedState, details)
+
+            // 2. 語音播報與震動
             when (confirmedState) {
                 SignalState.GREEN -> {
-                    // 轉為綠燈：第一優先級立即插播！
                     webAppInterface.speakTtsDirect("小綠人，可通行！", interrupt = true)
                     triggerDoubleVibrate()
+                }
+                SignalState.FLASHING_GREEN -> {
+                    webAppInterface.speakTtsDirect("小綠人閃爍，請勿穿越！", interrupt = true)
+                    triggerRapidVibrate()
                 }
                 SignalState.RED -> {
                     webAppInterface.speakTtsDirect("紅燈，請等候", interrupt = true)
@@ -467,7 +699,7 @@ class TrafficSignalCameraManager(
                 else -> {}
             }
         } else {
-            // 同一狀態持續中的週期性提醒
+            // 同一紅燈狀態持續中的週期性提醒
             if (confirmedState == SignalState.RED && now - lastAnnounceTimeMs > RED_REMINDER_INTERVAL_MS) {
                 lastAnnounceTimeMs = now
                 webAppInterface.speakTtsDirect("紅燈", interrupt = false)
@@ -476,28 +708,91 @@ class TrafficSignalCameraManager(
     }
 
     /**
+     * 【儲存號誌現場真值快照 (Save Diagnostic Snapshot)】
+     * 作用：當相機辨識出紅綠燈的瞬間，自動將現場畫面加上狀態標記存為 JPEG，
+     * 徹底消滅黑盒子猜測，讓視障者與工程師事後解壓縮 zip 就能 100% 查證照片！
+     */
+    private fun saveSnapshot(sourceBitmap: Bitmap, state: SignalState, details: String) {
+        try {
+            val dir = File(context.cacheDir, "camera_snapshots")
+            if (!dir.exists()) dir.mkdirs()
+
+            // 維護數量上限，清除舊檔只保留最新 MAX_SNAPSHOT_FILES 張
+            val existing = dir.listFiles { _, name -> name.endsWith(".jpg") }
+            if (existing != null && existing.size >= MAX_SNAPSHOT_FILES) {
+                existing.sortedBy { it.lastModified() }
+                    .take(existing.size - (MAX_SNAPSHOT_FILES - 1))
+                    .forEach { it.delete() }
+            }
+
+            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(Date())
+            val file = File(dir, "SIGNAL_${state.name}_${timeStamp}.jpg")
+
+            // 複製 Bitmap 並繪製診斷浮水印
+            val mutableBitmap = sourceBitmap.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(mutableBitmap)
+
+            val paint = Paint().apply {
+                color = when (state) {
+                    SignalState.GREEN, SignalState.FLASHING_GREEN -> Color.GREEN
+                    SignalState.RED -> Color.RED
+                    SignalState.YELLOW -> Color.YELLOW
+                    else -> Color.WHITE
+                }
+                textSize = (mutableBitmap.height * 0.045f).coerceAtLeast(22f)
+                isAntiAlias = true
+                isFakeBoldText = true
+                setShadowLayer(5f, 2f, 2f, Color.BLACK)
+            }
+
+            val bgPaint = Paint().apply {
+                color = Color.argb(170, 0, 0, 0)
+                style = Paint.Style.FILL
+            }
+
+            val bannerH = paint.textSize * 2.4f
+            canvas.drawRect(0f, 0f, mutableBitmap.width.toFloat(), bannerH, bgPaint)
+            val labelText = "NMap [${state.name}] $details"
+            canvas.drawText(labelText, 20f, paint.textSize * 1.5f, paint)
+
+            FileOutputStream(file).use { fos ->
+                mutableBitmap.compress(Bitmap.CompressFormat.JPEG, 85, fos)
+            }
+            mutableBitmap.recycle()
+            recordCameraEvent("[CAMERA_SNAPSHOT] 成功儲存現場號誌照片: ${file.name} (${file.length()} bytes)")
+        } catch (e: Exception) {
+            Log.w(tag, "儲存相機快照失敗: ${e.message}")
+        }
+    }
+
+    /**
      * 將 CameraX ImageProxy 轉為 Bitmap
      */
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap? {
-        val planes = image.planes
-        val yBuffer = planes[0].buffer
-        val uBuffer = planes[1].buffer
-        val vBuffer = planes[2].buffer
+        return try {
+            val planes = image.planes
+            val yBuffer = planes[0].buffer
+            val uBuffer = planes[1].buffer
+            val vBuffer = planes[2].buffer
 
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
+            val ySize = yBuffer.remaining()
+            val uSize = uBuffer.remaining()
+            val vSize = vBuffer.remaining()
 
-        val nv21 = ByteArray(ySize + uSize + vSize)
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
+            val nv21 = ByteArray(ySize + uSize + vSize)
+            yBuffer.get(nv21, 0, ySize)
+            vBuffer.get(nv21, ySize, vSize)
+            uBuffer.get(nv21, ySize + vSize, uSize)
 
-        val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
-        val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, image.width, image.height), 85, out)
-        val imageBytes = out.toByteArray()
-        return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+            val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
+            val out = java.io.ByteArrayOutputStream()
+            yuvImage.compressToJpeg(android.graphics.Rect(0, 0, image.width, image.height), 85, out)
+            val imageBytes = out.toByteArray()
+            android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        } catch (e: Exception) {
+            Log.w(tag, "imageProxyToBitmap conversion error: ${e.message}")
+            null
+        }
     }
 
     /**
@@ -509,6 +804,18 @@ class TrafficSignalCameraManager(
         } else {
             @Suppress("DEPRECATION")
             vibrator?.vibrate(longArrayOf(0, 100, 70, 120), -1)
+        }
+    }
+
+    /**
+     * 急促警示短震動 (小綠人閃爍)
+     */
+    private fun triggerRapidVibrate() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 60, 50, 60, 50, 60), -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(longArrayOf(0, 60, 50, 60, 50, 60), -1)
         }
     }
 

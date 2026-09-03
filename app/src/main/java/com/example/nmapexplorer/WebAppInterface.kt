@@ -438,6 +438,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             val anomaliesArray = json.optJSONArray("anomalies")
             val lastGpsObj = json.optJSONObject("lastGps")
             val cameraLogsList = TrafficSignalCameraManager.getCameraEventLogs()
+            val cameraSnapshots = TrafficSignalCameraManager.getSnapshotFiles(context)
 
             // =========================================================================
             // 檔案 1：0_文字版診斷總覽_SUMMARY.txt (NVDA 螢幕閱讀器與記事本直接秒開的純文字報告)
@@ -453,6 +454,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 appendLine("播報次數：${speechArray?.length() ?: 0} 則")
                 appendLine("發現店家：${poisArray?.length() ?: 0} 處")
                 appendLine("相機事件：${cameraLogsList.size} 筆")
+                appendLine("號誌快照：${cameraSnapshots.size} 張 (存於 snapshots/ 目錄，可直接打開查驗現場真值照片)")
                 appendLine("操作互動：${interactionsArray?.length() ?: 0} 筆")
                 appendLine()
 
@@ -837,6 +839,19 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 addEntry("7_紅綠燈相機辨識紀錄_camera_inference.txt", cameraTxt)
                 addEntry("8_感測器與GPS軌跡_sensor_trajectory.txt", sensorNdjson)
                 addEntry("9_Android系統核心Logcat_system_logcat.log", logText)
+
+                // 打包相機號誌現場快照圖片 (JPEG)
+                for (snap in cameraSnapshots) {
+                    if (snap.exists() && snap.length() > 0) {
+                        try {
+                            zos.putNextEntry(ZipEntry("snapshots/${snap.name}"))
+                            snap.inputStream().use { it.copyTo(zos) }
+                            zos.closeEntry()
+                        } catch (e: Exception) {
+                            Log.w(tag, "打包號誌照片失敗: ${snap.name}", e)
+                        }
+                    }
+                }
             }
 
             // 同步複製一份至外部儲存空間 (/sdcard/Android/data/com.example.nmapexplorer/files/logs/)

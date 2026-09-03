@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.nmapexplorer"
         minSdk = 24
         targetSdk = 35
-        versionCode = 43
-        versionName = "1.0.15.29"
+        versionCode = 44
+        versionName = "1.0.16.1"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
         }

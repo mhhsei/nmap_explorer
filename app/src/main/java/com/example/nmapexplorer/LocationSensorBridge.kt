@@ -33,6 +33,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.Collections
 import kotlin.math.*
+import com.example.nmapexplorer.neural.*
 
 /**
  * 【行人與車載運動狀態列舉 (Motion State)】
@@ -702,6 +703,22 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var currentVerticalLevel: VerticalLevel = VerticalLevel.GROUND
     private var currentAltitudeM: Float = 0.0f
 
+    // 【三大非視覺神經網路導航引擎】
+    val learnedStepEstimator = LearnedStepVelocityEstimator()
+    val gaitIntentEngine = GaitIntentInferenceEngine { intent, reason ->
+        Log.i(tag, "[GAIT_INTENT_NEURAL] 步態意圖識別: ${intent.displayName} | $reason")
+        webView.post {
+            val safeReason = reason.replace("'", "\\'")
+            webView.evaluateJavascript("if (window.onGaitIntentUpdate) window.onGaitIntentUpdate('${intent.name}', '${intent.displayName}', '${safeReason}');", null)
+        }
+    }
+    val verticalMotionClassifier = VerticalMotionNeuralClassifier { motionType, floorStr, altM ->
+        Log.i(tag, "[VERTICAL_MOTION_NEURAL] 垂直運動神經分類: ${motionType.description} | 樓層: $floorStr | 高度差: ${altM}m")
+        webView.post {
+            webView.evaluateJavascript("if (window.onVerticalFloorUpdate) window.onVerticalFloorUpdate('${motionType.name}', '${floorStr}', ${altM});", null)
+        }
+    }
+
     private var isRunning = false
     private var lastEmittedLocation: Location? = null
 
@@ -1136,9 +1153,17 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         val now = SystemClock.uptimeMillis()
         if (now - lastStepEmitTimeMs < 250L) return
+        val stepDuration = if (lastStepEmitTimeMs > 0L) now - lastStepEmitTimeMs else 600L
         lastStepEmitTimeMs = now
 
-        // Weinberg 步長自適應模型: SL = K * (a_max - a_min)^(1/4)
+        // 1. 深度慣性神經網絡步長推算 (Learned Step Length Prediction)
+        val prediction = learnedStepEstimator.predictStep(stepDuration, lastGpsSpeedMps)
+        userStepLengthM = 0.65f * userStepLengthM + 0.35f * prediction.stepLengthM
+
+        // 2. 步態意圖神經網路觸發步伐分析
+        gaitIntentEngine.onStep(now)
+
+        // Weinberg 步長輔助約束
         val deltaAcc = (maxAccInWindow - minAccInWindow).toDouble()
         maxAccInWindow = 9.8f
         minAccInWindow = 9.8f
@@ -1207,6 +1232,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val isGpsWeak = !isStrongOutdoorGps && (timeSinceGps > 4500L || lastGpsAccuracyM > 28.0f || (satelliteUsedCount < 3 && satelliteAvgSnr < 18.0f))
             
             barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
+
+            // 【項目 4：垂直運動神經分類器】即時更新
+            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, accelerometerReading[2], isWalking)
             return
         }
 
@@ -1237,6 +1265,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
             // 灌入靜止偵測器進行即時滑動變異數計算
             stationaryDetector.feedAccelerometer(ax, ay, az, lastGpsSpeedMps)
+
+            // 【項目 2：深度慣性航位推算神經網路】即時餵入 IMU 序列
+            learnedStepEstimator.feedImuSample(ax, ay, az, 0f, 0f, 0f, phonePitchDeg)
         } else if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) {
             System.arraycopy(event.values, 0, magnetometerReading, 0, magnetometerReading.size)
             SensorManager.getRotationMatrix(rotationMatrix, null, accelerometerReading, magnetometerReading)
@@ -1291,6 +1322,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             lastHeadingEmitTime = now
             lastEmittedHeading = smoothedHeading
             val deg = smoothedHeading
+            // 【項目 3：步態猶豫意圖神經網路】餵入連續航向時序
+            gaitIntentEngine.feedHeading(now, deg)
             webView.post {
                 webView.evaluateJavascript("if (window.onHeadingUpdate) window.onHeadingUpdate(${deg});", null)
             }
