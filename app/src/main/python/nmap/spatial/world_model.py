@@ -544,11 +544,13 @@ class WorldModel:
             logging.warning(f"Failed to reload real pois: {e}")
         return len(self.pois)
 
-    def find_nearest_road(self, lat: float, lon: float) -> Tuple[Optional[Dict[str, Any]], float]:
-
+    def find_nearest_road(self, lat: float, lon: float, user_heading: Optional[float] = None, current_road_name: str = "") -> Tuple[Optional[Dict[str, Any]], float]:
         """
         【搜尋距離座標最近的道路折線】
         作用：透過空間網格索引快速過濾方圓 150 公尺內的道路折線，計算精確垂直距離。
+        【防小巷側吸與方向感知機制】：
+        若使用者提供行進朝向 (user_heading)，道路走向與使用者朝向垂直（如橫向小巷）時予以加權懲罰，
+        防止走在主幹道人行道過巷口時被橫向小巷誤吸，造成路名與路口報讀顛倒。
         """
         if not self.roads:
             return None, 999999.0
@@ -557,21 +559,44 @@ class WorldModel:
         radius_deg_lon = 150.0 / (111139.0 * cos_lat)
         radius_deg_lat = 150.0 / 111139.0
         bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
-        min_dist = 999999.0
+        min_cost = 999999.0
+        best_dist = 999999.0
         best_road = None
 
         for item in self.road_rtree.intersection(bounds, objects=True):
             road = item.object
-            geom = road["geometry"]
+            geom = road.get("geometry", [])
             if len(geom) < 2:
                 continue
             
-            dist, _, _ = find_closest_point_on_line(lat, lon, geom)
-            if dist < min_dist:
-                min_dist = dist
+            dist, proj_lat, proj_lon = find_closest_point_on_line(lat, lon, geom)
+            cost = dist
+
+            # 方向感知加權：若提供行進方向且非靜止
+            if user_heading is not None and user_heading >= 0 and len(geom) >= 2:
+                # 計算道路總走向
+                seg_bearing = calculate_bearing(geom[0][0], geom[0][1], geom[-1][0], geom[-1][1])
+                diff = abs((user_heading - seg_bearing + 180.0) % 360.0 - 180.0)
+                axis_diff = min(diff, 180.0 - diff) # 0°=平行, 90°=垂直
+
+                r_name = road.get("name", "")
+                if axis_diff > 55.0:
+                    # 與前進方向垂直的橫向小巷，施加距離懲罰，杜絕側吸
+                    cost = dist * 2.2 + 3.0
+                elif axis_diff < 35.0:
+                    # 與前進方向平行的道路給予加分優先吸附
+                    cost = dist * 0.85
+
+                # 同名道路慣性維持（已在該道路上，除非偏離極遠否則優先維持）
+                if current_road_name and r_name == current_road_name and dist <= 18.0:
+                    cost *= 0.75
+
+            if cost < min_cost:
+                min_cost = cost
+                best_dist = dist
                 best_road = road
 
-        return best_road, min_dist
+        return best_road, best_dist
 
     def resolve_poi_address_by_consensus(self, poi_lat: float, poi_lon: float, street: str = "", housenumber: str = "") -> str:
         """

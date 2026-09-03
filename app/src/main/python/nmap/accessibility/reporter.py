@@ -190,6 +190,17 @@ class NVDAReporter:
             )
 
         lines = []
+
+        # 自動校準地面真實海拔 (若傳入 0.0 則動態向 SRTM 查詢最新 GPS 座標之高程)
+        if (ground_elevation_m == 0.0 or ground_elevation_m is None) and getattr(agent, "lat", None):
+            try:
+                import nmap.spatial.srtm_reader as srtm
+                dyn_elev = srtm.get_elevation(agent.lat, agent.lon)
+                if dyn_elev is not None:
+                    ground_elevation_m = dyn_elev
+                    agent.current_ground_elevation = dyn_elev
+            except Exception:
+                pass
         
         nav_status = agent.get_navigation_status()
         if nav_status:

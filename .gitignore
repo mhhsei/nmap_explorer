@@ -17,11 +17,8 @@ __pycache__/
 *.apk
 *.zip
 !app/src/main/python/data/taiwan_srtm3.zip
-
-
-*.ipa
-ios_build_output/
 *.db
+!app/src/main/python/data/taiwan_signals.db
 *.db-shm
 *.db-wal
 .kotlin/

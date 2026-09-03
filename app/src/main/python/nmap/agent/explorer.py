@@ -277,18 +277,20 @@ class ExplorerAgent:
                 self.heading_deg = heading_deg
             return ok, f"已移至新區域：{msg}"
 
-        # 自適應道路吸附
-        best_road, dist_to_road = self.world_model.find_nearest_road(lat, lon)
+        # 自適應道路吸附（具備防橫向小巷側吸與同名主幹道慣性維持）
+        cur_h = heading_deg if (heading_deg is not None and heading_deg >= 0) else self.heading_deg
+        cur_r = getattr(self, "_current_road_name", "")
+        best_road, dist_to_road = self.world_model.find_nearest_road(lat, lon, user_heading=cur_h, current_road_name=cur_r)
         if best_road and dist_to_road > 1.5 and dist_to_road <= 22.0:
             from nmap.spatial.pure_geometry import snap_pedestrian_to_road
             geom = best_road.get("geometry", [])
             if geom and len(geom) >= 2:
                 last_side = getattr(self, "_current_road_side", None)
-                cur_h = heading_deg if (heading_deg is not None and heading_deg >= 0) else self.heading_deg
                 _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side, user_heading=cur_h)
                 self._current_road_side = side
                 lat = snap_lat
                 lon = snap_lon
+                self._current_road_name = best_road.get("name", "")
 
         # 更新座標與朝向
         self.lat = lat
@@ -317,9 +319,9 @@ class ExplorerAgent:
         if tile_dist > 100.0:
             return self.teleport(f"{lat},{lon}")
 
-        best_road, dist_to_road = self.world_model.find_nearest_road(lat, lon)
-
-        # 自適應道路吸附
+        # 自適應道路吸附（具備防橫向小巷側吸與同名主幹道慣性維持）
+        cur_r = getattr(self, "_current_road_name", "")
+        best_road, dist_to_road = self.world_model.find_nearest_road(lat, lon, user_heading=heading_deg, current_road_name=cur_r)
         if best_road and dist_to_road > 1.5 and dist_to_road <= 22.0:
             from nmap.spatial.pure_geometry import snap_pedestrian_to_road
             geom = best_road.get("geometry", [])
@@ -329,6 +331,7 @@ class ExplorerAgent:
                 self._current_road_side = side
                 lat = snap_lat
                 lon = snap_lon
+                self._current_road_name = best_road.get("name", "")
 
         self.lat = lat
         self.lon = lon

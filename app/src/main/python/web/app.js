@@ -2755,12 +2755,25 @@ class NmapWebApp {
         const passedLockTime = this.passedJunctionCooldown.get(juncName) || 0;
         const isJunctionLocked = (now - passedLockTime < 45000); // 通過後 45 秒內嚴格防抖鎖定
 
-        // A. 踏入 / 正通過路口 (< 6.0m) - 【對向直行接續路名確認】
-        if (juncDist < 6.0 && !isJunctionLocked) {
+        // 追蹤逼近該路口的歷史最小距離 (用於側向巷弄人行道過街的轉折判定)
+        if (this.activeJunctionTargetName !== juncName) {
+          this.activeJunctionTargetName = juncName;
+          this._minJunctionDist = juncDist;
+        } else {
+          this._minJunctionDist = Math.min(this._minJunctionDist || 999.0, juncDist);
+        }
+
+        // A. 踏入 / 正通過路口
+        // 判定條件：
+        // 1. 幾何正中心通過 (juncDist < 7.0m)
+        // 2. 或側向巷弄人行道穿越：距離曾接近至 <= 13.5m 且開始遠離（juncDist >= _minJunctionDist + 0.8m）
+        const isPassingGeometry = juncDist < 7.0;
+        const isPassingByInflexion = (this.currentJunctionState === "APPROACHING" && this._minJunctionDist <= 13.5 && juncDist >= (this._minJunctionDist + 0.8) && juncDist <= 16.0);
+
+        if ((isPassingGeometry || isPassingByInflexion) && !isJunctionLocked) {
           const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
-          if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 3500) {
+          if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 3000) {
             this.currentJunctionState = "PASSING";
-            this.activeJunctionTargetName = juncName;
             this.lastIntersectionAlertTime = now;
             const islandGuide = hasIsland ? "，設庇護島" : "";
             
@@ -2777,8 +2790,8 @@ class NmapWebApp {
           isJunctionHandled = true;
         }
         
-        // B. 通過完成確認 (LEAVING: 6.0m ~ 18.0m 且前一狀態為 PASSING) - 【優先於 APPROACHING 判定】
-        else if (juncDist >= 6.0 && juncDist <= 18.0 && this.currentJunctionState === "PASSING") {
+        // B. 通過完成確認 (LEAVING: 7.0m ~ 20.0m 且前一狀態為 PASSING) - 【優先於 APPROACHING 判定】
+        else if (juncDist >= 7.0 && juncDist <= 20.0 && this.currentJunctionState === "PASSING") {
           this.currentJunctionState = "LEAVING";
           this.passedJunctionCooldown.set(juncName, now); // 鎖定該路口 45 秒，消滅倒退重唸
           this.lastIntersectionAlertTime = now;
@@ -2792,8 +2805,10 @@ class NmapWebApp {
         else if (juncDist <= 25.0 && juncDist >= 8.0 && !isJunctionLocked) {
           const lastAppTime = this.approachedJunctionCooldown.get(juncName) || 0;
           const globalAppGap = now - (this.lastIntersectionAlertTime || 0);
+          const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
+          const isUserMoving = curSpeed >= 0.35;
 
-          if (this.currentJunctionState !== "APPROACHING" && this.currentJunctionState !== "PASSING" && this.currentJunctionState !== "LEAVING" && (now - lastAppTime > 30000) && globalAppGap >= 6000) {
+          if (this.currentJunctionState !== "APPROACHING" && this.currentJunctionState !== "PASSING" && this.currentJunctionState !== "LEAVING" && (now - lastAppTime > 65000) && globalAppGap >= 6000 && isUserMoving) {
             this.currentJunctionState = "APPROACHING";
             this.activeJunctionTargetName = juncName;
             this.lastIntersectionAlertTime = now;

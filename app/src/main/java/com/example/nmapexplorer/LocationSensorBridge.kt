@@ -1191,9 +1191,10 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut() || stationaryDetector.currentAccVariance > 0.28f
             val isPocketLikely = isProximityNear && isWalking
             
-            // 判斷 GPS 訊號是否微弱 (進入室內商場)
+            // 判斷 GPS 訊號是否微弱 (進入室內商場 / 地下街)
             val timeSinceGps = SystemClock.uptimeMillis() - lastGpsFixTimeMs
-            val isGpsWeak = timeSinceGps > 2000L || lastGpsAccuracyM > 25.0f || satelliteTotalCount == 0 || (satelliteUsedCount < 4 && satelliteAvgSnr < 22f)
+            val isStrongOutdoorGps = satelliteUsedCount >= 5 && satelliteAvgSnr >= 20.0f && lastGpsAccuracyM <= 22.0f && timeSinceGps < 4500L
+            val isGpsWeak = !isStrongOutdoorGps && (timeSinceGps > 4500L || lastGpsAccuracyM > 28.0f || (satelliteUsedCount < 3 && satelliteAvgSnr < 18.0f))
             
             barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
             return

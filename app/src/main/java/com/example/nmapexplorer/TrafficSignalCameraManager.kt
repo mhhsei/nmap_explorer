@@ -69,6 +69,11 @@ class TrafficSignalCameraManager(
     private var lastDirectionPromptTimeMs = 0L
     private val DIRECTION_PROMPT_COOLDOWN_MS = 3500L
 
+    // 方案 C 搜尋階段計時器 (實施階段性狀態語音回饋)
+    private var cameraStartTimeMs = 0L
+    private var lastSearchPromptTimeMs = 0L
+    private val SEARCH_PROMPT_COOLDOWN_MS = 5000L
+
     // 燈號重複播報冷卻
     private var lastAnnouncedState = SignalState.UNKNOWN
     private var lastAnnounceTimeMs = 0L
@@ -139,15 +144,17 @@ class TrafficSignalCameraManager(
         this.targetBearingDeg = bearingDeg
         this.targetClockPosition = clockPosition
         recentStates.clear()
-        lastAnnouncedState = SignalState.UNKNOWN
-        lastAnnounceTimeMs = 0L
+        val now = SystemClock.uptimeMillis()
+        cameraStartTimeMs = now
+        lastSearchPromptTimeMs = now
 
-        // 1. 播放相機開鏡音效 (短促快門聲，不發文字語音)
+        // 1. 播放相機開鏡音效 (短促快門聲) 並語音播報「對街搜尋中」(方案 C)
         try {
             mediaActionSound.play(MediaActionSound.START_VIDEO_RECORDING)
         } catch (e: Exception) {
             Log.e(tag, "Failed to play camera start sound", e)
         }
+        webAppInterface.speakTtsDirect("對街搜尋中", interrupt = false)
 
         // 2. 初始化背景執行緒
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -233,50 +240,35 @@ class TrafficSignalCameraManager(
 
         val now = SystemClock.uptimeMillis()
 
-        // 1. 空間姿態導引檢查 (Spatial Geo-Gating)
-        val currentHeading = LocationSensorBridge.currentHeadingDeg.toDouble()
+        // 1. 空間仰角導引 (俯仰角太低朝向地面 < -35°，提示稍抬起手機)
         val currentPitch = LocationSensorBridge.currentPitchDeg.toDouble()
-
-        // 計算手機朝向與目標號誌方位之角偏差
-        var diffAngle = ((currentHeading - targetBearingDeg + 540) % 360) - 180
-
-        // 若手機仰角太低 (朝向地面 < -25°) 且超過冷卻時間，提示平舉手機
-        if (currentPitch < -25.0) {
+        if (currentPitch < -35.0) {
             if (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS) {
                 lastDirectionPromptTimeMs = now
-                webAppInterface.speakTtsDirect("請平舉手機對準對街", interrupt = false)
+                webAppInterface.speakTtsDirect("手機朝下，請稍抬起", interrupt = false)
             }
             imageProxy.close()
             return
         }
 
-        // 若偏離目標號誌超過 25 度，提示使用者轉動方位
-        if (Math.abs(diffAngle) > 25.0) {
-            if (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS) {
-                lastDirectionPromptTimeMs = now
-                val prompt = if (diffAngle > 0) {
-                    "號誌在左側，請向左轉"
-                } else {
-                    "號誌在右側，請向右轉"
-                }
-                webAppInterface.speakTtsDirect(prompt, interrupt = false)
-            }
-            imageProxy.close()
-            return
+        // 2. 方案 C 階段性搜尋進度提示：若開鏡超過 3.5 秒仍未捕捉到確定號誌，且距離上次提示已超過 5 秒
+        if (lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && now - lastSearchPromptTimeMs > SEARCH_PROMPT_COOLDOWN_MS) {
+            lastSearchPromptTimeMs = now
+            webAppInterface.speakTtsDirect("未見號誌，請左右微調", interrupt = false)
         }
 
-        // 2. 影像轉換為 Bitmap 進行 ROI 檢測
+        // 3. 影像轉換為 Bitmap 進行 ROI 檢測
         val bitmap = imageProxyToBitmap(imageProxy)
         imageProxy.close()
         if (bitmap == null) return
 
-        // 3. 對街空間錐形遮罩 (只截取畫面中央上半部 20%~75% 範圍，排除地面車輛與天空)
+        // 4. 對街超廣角視野 (截取畫面水平中央 10%~90%、垂直 5%~70% 範圍，全幅捕捉對街小綠人)
         val w = bitmap.width
         val h = bitmap.height
-        val roiLeft = (w * 0.20).toInt()
-        val roiTop = (h * 0.10).toInt()
-        val roiWidth = (w * 0.60).toInt()
-        val roiHeight = (h * 0.55).toInt()
+        val roiLeft = (w * 0.10).toInt()
+        val roiTop = (h * 0.05).toInt()
+        val roiWidth = (w * 0.80).toInt()
+        val roiHeight = (h * 0.65).toInt()
 
         val roiBitmap = try {
             Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)

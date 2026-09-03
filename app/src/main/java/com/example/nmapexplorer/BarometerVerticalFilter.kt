@@ -263,9 +263,11 @@ class BarometerVerticalFilter(
                     }
                 }
                 else -> {
-                    // 若在戶外但狀態是室內樓層，自動回歸地面層
-                    if (altM > -1.5f && altM < 1.5f) {
+                    // 若在戶外 (GPS 強) 但先前狀態誤切入室內樓層，無條件回歸地面層並重新校準基準氣壓
+                    if (!isGpsWeak) {
                         rawTargetLevel = VerticalLevel.GROUND
+                        baselinePressureHpa = lastRawPressureHpa
+                        stateAltitudeM = 0.0f
                     }
                 }
             }

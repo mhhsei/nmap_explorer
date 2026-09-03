@@ -16,8 +16,10 @@
    - 若無官方連線，則絕不虛構秒數，誠實回報物理路況！
 """
 
+import os
 import math
 import time
+import sqlite3
 from typing import List, Dict, Any, Optional
 from nmap.spatial.geometry import (
     haversine_distance,
@@ -317,7 +319,28 @@ class TaiwanSignalManager:
         self.signal_database = list(custom_db if custom_db is not None else DEFAULT_TAIWAN_SIGNAL_DATABASE)
         self.spatial_index = GridSpatialIndex(cell_size_deg=0.003)
         self._live_spat_cache: Dict[str, Dict[str, Any]] = {}
+        self._db_conn = None
         self._rebuild_index()
+        self._init_sqlite_db()
+
+    def _init_sqlite_db(self):
+        """尋找並連接全台 56,000 筆號誌離線資料庫 (taiwan_signals.db)"""
+        candidates = [
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "taiwan_signals.db"),
+            os.path.join(os.getcwd(), "data", "taiwan_signals.db"),
+            os.path.join(os.getcwd(), "app", "src", "main", "python", "data", "taiwan_signals.db"),
+            "/sdcard/Android/data/com.example.nmapexplorer/files/data/taiwan_signals.db",
+            "/storage/emulated/0/Android/data/com.example.nmapexplorer/files/data/taiwan_signals.db",
+            "/data/user/0/com.example.nmapexplorer/files/data/taiwan_signals.db",
+            "/data/data/com.example.nmapexplorer/files/data/taiwan_signals.db"
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                try:
+                    self._db_conn = sqlite3.connect(p, check_same_thread=False)
+                    break
+                except Exception:
+                    pass
 
     def _rebuild_index(self):
         """為資料庫建立空間網格索引"""
@@ -341,12 +364,51 @@ class TaiwanSignalManager:
         best_sig = None
         min_dist = max_dist_m
 
+        # 1. 優先查記憶體內 32 筆高品質視障示範有聲號誌 (APS)
         for item in self.spatial_index.intersection(bounds, objects=True):
             sig = item.object
             dist = haversine_distance(lat, lon, sig["lat"], sig["lon"])
             if dist < min_dist:
                 min_dist = dist
                 best_sig = sig
+
+        if best_sig is not None:
+            return best_sig
+
+        # 2. 若記憶體無精細 APS，查詢全台灣 56,000 座號誌離線 SQLite 資料庫
+        if self._db_conn is not None:
+            try:
+                cur = self._db_conn.cursor()
+                cur.execute("""
+                    SELECT id, lat, lon, is_signalized, has_sound, has_button, crossing_type, name, tags
+                    FROM taiwan_signals
+                    WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                """, (lat - r_deg_lat, lat + r_deg_lat, lon - r_deg_lon, lon + r_deg_lon))
+                rows = cur.fetchall()
+                for row in rows:
+                    r_id, r_lat, r_lon, r_is_sig, r_sound, r_btn, r_cross, r_name, r_tags_str = row
+                    dist = haversine_distance(lat, lon, r_lat, r_lon)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_sig = {
+                            "id": r_id,
+                            "intersection_name": r_name or f"交通號誌 ({r_cross or '路口'})",
+                            "lat": r_lat,
+                            "lon": r_lon,
+                            "has_aps": bool(r_sound),
+                            "ew_sound": "鳥鳴聲",
+                            "ns_sound": "布穀鳥聲",
+                            "has_button": bool(r_btn),
+                            "button_pole": "右側號誌桿",
+                            "button_height_cm": 110,
+                            "has_tactile_arrow": False,
+                            "has_refuge_island": False,
+                            "is_signalized": True,
+                            "is_connected_spat": False
+                        }
+            except Exception:
+                pass
+
         return best_sig
 
     def update_live_spat(self, signal_id: str, light_status: str, remaining_seconds: int):

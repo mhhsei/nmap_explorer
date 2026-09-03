@@ -324,6 +324,56 @@ class TestConciseNavigation(unittest.TestCase):
         self.assertIn("通過【北新路182巷】", res_pass["concise_passing_prompt"])
         self.assertIn("【北新路184巷】", res_pass["concise_passing_prompt"])
 
+    def test_taiwan_signals_database_integration(self):
+        """【測試：全台灣號誌資料庫 (taiwan_signals.db) 整合檢索】"""
+        from nmap.spatial.taiwan_signals import TaiwanSignalManager
+        mgr = TaiwanSignalManager()
+        self.assertIsNotNone(mgr._db_conn, "taiwan_signals.db should be connected")
+
+        # 1. 查詢淡水北新路169巷口號誌
+        sig_beixin = mgr.find_signal_near(25.17933, 121.45022, max_dist_m=35.0)
+        self.assertIsNotNone(sig_beixin)
+        self.assertTrue(sig_beixin["is_signalized"])
+
+        # 2. 查詢板橋車站特區官方 APS 示範號誌
+        sig_banciao = mgr.find_signal_near(25.01320, 121.46350, max_dist_m=25.0)
+        self.assertIsNotNone(sig_banciao)
+        self.assertTrue(sig_banciao["has_aps"])
+        self.assertIn("縣民大道", sig_banciao["intersection_name"])
+
+    def test_road_snapping_perpendicular_alley_rejection(self):
+        """【測試：防小巷側吸 - 主幹道行走時拒絕垂直橫向小巷】"""
+        from nmap.spatial.world_model import WorldModel
+        wm = WorldModel()
+
+        # 建立北新路一段 (南北向，走向約 0° / 180°)
+        road_main = {
+            "name": "北新路一段",
+            "type": "secondary",
+            "geometry": [(25.1780, 121.4500), (25.1820, 121.4500)]
+        }
+        # 建立 169 巷 (東西向，走向 90° / 270°)
+        road_alley = {
+            "name": "北新路169巷",
+            "type": "residential",
+            "geometry": [(25.1793, 121.4500), (25.1793, 121.4530)]
+        }
+
+        wm.roads = [road_main, road_alley]
+        wm.road_rtree.insert(1, (121.449, 25.177, 121.451, 25.183), obj=road_main)
+        wm.road_rtree.insert(2, (121.449, 25.179, 121.454, 25.180), obj=road_alley)
+
+        # 行人走在北新路人行道上：緯度 25.17933，經度 121.45006
+        # 距離北新路中心線約 6.5 米；距離 169 巷中心線約 4.0 米（幾何上更靠近小巷）
+        # 行人前進朝向 180°（往南，沿北新路直走）
+        p_lat = 25.179336
+        p_lon = 121.450065
+
+        # 帶入前進朝向與當前道路，應優先選中北新路一段，杜絕被 169 巷側吸
+        best_r, dist = wm.find_nearest_road(p_lat, p_lon, user_heading=180.0, current_road_name="北新路一段")
+        self.assertIsNotNone(best_r)
+        self.assertEqual(best_r["name"], "北新路一段", f"Expected 北新路一段, but got {best_r['name']}")
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestConciseNavigation)
     runner = unittest.TextTestRunner(verbosity=2)
