@@ -949,6 +949,14 @@ class NmapWebApp {
 
 
 
+    const searchResultsClearBtn = document.getElementById("search-results-clear-btn");
+    if (searchResultsClearBtn) {
+        searchResultsClearBtn.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "清空搜尋結果");
+            this.renderSearchResults("尚未搜尋", "可在上方搜尋列輸入地址、地標或路口，搜尋結果將以大字體清晰呈現於此。", []);
+        });
+    }
+
     const uiBtnExportLog = document.getElementById("ui-btn-export-log");
     if (uiBtnExportLog) {
         uiBtnExportLog.addEventListener("click", () => {
@@ -2149,6 +2157,7 @@ class NmapWebApp {
       
       setTimeout(() => {
         this.updateLiveLog(summaryStr + lines.join("\n"), false, true);
+        this.renderSearchResults(`周遭設施探索【${catMeta.label}】`, summaryStr, realtimePois);
       }, (isEarconOn && nearest) ? 180 : 0);
     };
 
@@ -2264,6 +2273,7 @@ class NmapWebApp {
           }
           setTimeout(() => {
             this.updateLiveLog(reportText, false, true);
+            this.renderSearchResults("周遭路口走向與分支", reportText, []);
           }, isEarconOn ? 180 : 0);
 
           // 【手動查詢連動紅綠燈相機】：手動查詢路口時若前方為號誌化路口且在 6~28m 範圍內，同步開鏡
@@ -3255,6 +3265,7 @@ class NmapWebApp {
 
     setTimeout(() => {
       this.updateLiveLog(lines.join("\n"), false, true);
+      this.renderSearchResults("兩側與前方店家掃描", lines.join("\n"), [...frontPois, ...leftPois, ...rightPois]);
       if (this.liveLog && this.liveLog.firstElementChild) this.liveLog.firstElementChild.focus();
     }, isEarconOn ? 180 : 0);
 
@@ -3405,6 +3416,63 @@ class NmapWebApp {
     }
   }
 
+  // 🔍 搜尋內容與結果專用大字體渲染器 (Search Results Dedicated Large-Font Renderer)
+  renderSearchResults(title, contentText, pois = []) {
+    const section = document.getElementById("search-results-section");
+    const titleEl = document.getElementById("search-results-title");
+    const contentEl = document.getElementById("search-results-content");
+    const poiListEl = document.getElementById("search-poi-list");
+    if (!contentEl) return;
+
+    if (section) section.style.display = "block";
+    if (title && titleEl) {
+      titleEl.textContent = `📋 ${title}`;
+    }
+
+    if (contentText) {
+      contentEl.innerHTML = contentText.split("\n").map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return "";
+        if (trimmed.startsWith("•") || trimmed.startsWith("📍") || trimmed.startsWith("【")) {
+          return `<div style="margin-bottom: 8px; font-weight: bold; color: #38bdf8; font-size: 1.05em;">${trimmed}</div>`;
+        }
+        return `<div style="margin-bottom: 6px; color: #cbd5e1;">${trimmed}</div>`;
+      }).join("");
+    } else {
+      contentEl.textContent = "";
+    }
+
+    if (poiListEl) {
+      poiListEl.innerHTML = "";
+      if (pois && pois.length > 0) {
+        pois.slice(0, 20).forEach((poi) => {
+          const li = document.createElement("li");
+          li.style.cssText = "background: #0f172a; border: 2px solid #0284c7; border-radius: 10px; padding: 14px 16px; font-size: 1.25em; display: flex; justify-content: space-between; align-items: center; gap: 12px;";
+          
+          const infoDiv = document.createElement("div");
+          infoDiv.style.flex = "1";
+          const clock = poi.clock_position || poi.clock_direction || "";
+          const dist = poi.distance_m !== undefined ? `${Math.round(poi.distance_m)}米` : "";
+          const door = poi.door_number ? ` (${poi.door_number})` : "";
+          infoDiv.innerHTML = `<span style="font-weight: bold; color: #38bdf8; font-size: 1.15em;">${poi.name}</span>${door}<div style="font-size: 0.95em; color: #94a3b8; margin-top: 4px; font-weight: 500;">🧭 ${clock} ${dist}</div>`;
+
+          const btn = document.createElement("button");
+          btn.className = "btn";
+          btn.style.cssText = "padding: 10px 16px; font-size: 1.05em; width: auto; background: #0284c7; color: #ffffff; border-radius: 8px; font-weight: bold; border: none; cursor: pointer;";
+          btn.textContent = "導引";
+          btn.setAttribute("aria-label", `開啟 3D 空間聲音導引前往 ${poi.name}`);
+          btn.onclick = () => {
+            this.start3DGuidance(poi);
+          };
+
+          li.appendChild(infoDiv);
+          li.appendChild(btn);
+          poiListEl.appendChild(li);
+        });
+      }
+    }
+  }
+
   teleport(locationInput) {
     this.updateSearchDisplayCard(locationInput);
     this.localLat = null;
@@ -3429,6 +3497,7 @@ class NmapWebApp {
     if (this.announcedPoiCooldown) this.announcedPoiCooldown.clear();
     if (this.arrivedPoiCooldown) this.arrivedPoiCooldown.clear();
     this.updateLiveLog(`正在定位移至「${locationInput}」，請稍候...`);
+    this.renderSearchResults(`正在搜尋「${locationInput}」...`, `正在向伺服器查詢「${locationInput}」與周遭設施圖資，請稍候...`, []);
     fetch("/api/teleport", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3440,15 +3509,20 @@ class NmapWebApp {
           this.audio.playArrival();
           if (data.action_message) {
             this.updateLiveLog(data.action_message, false, true);
+            this.renderSearchResults(`路口探測結果`, data.action_message, []);
           } else {
             this.checkStatus(true);
+            const report = data.full_report || data.concise_report || `已成功前往「${locationInput}」。`;
+            this.renderSearchResults(`搜尋目標：${locationInput}`, report, data.pois || []);
           }
         } else {
           this.updateLiveLog(`⚠️ ${data.message}`, true);
+          this.renderSearchResults(`搜尋失敗`, `⚠️ ${data.message}`, []);
         }
       })
       .catch(() => {
         this.updateLiveLog("伺服器連線失敗，請檢查 server.py 是否執行。", true);
+        this.renderSearchResults(`連線失敗`, "伺服器連線失敗，請檢查 server.py 是否執行。", []);
       });
   }
 
