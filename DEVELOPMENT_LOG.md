@@ -47,6 +47,22 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.15.25 - 2026-09-03] - 診斷日誌全生命週期黑盒子重構：旅程大事記時間軸、相機深度紀錄、手勢追蹤與雜訊過濾
+- **🧭 純文字診斷首頁新增「本次行走旅程大事記 (Journey Milestones Timeline)」(`WebAppInterface.kt`)**:
+  - **白話生活痛點**：過去診斷報告只有單純的規格數據（電量、衛星數），缺少時間故事線；視障者或開發者無法一眼看出「這趟路到底何時走到哪裡、何時說了話、何時過了馬路」。
+  - **秒讀大事記**：在 `0_文字版診斷總覽_SUMMARY.txt` 最前方自動合成 30~40 行極簡大事記，涵蓋：旅程起點 $\to$ 接近路口 $\to$ 開相機 $\to$ 辨識出紅綠燈 $\to$ 變燈提示 $\to$ 踏過路口 $\to$ 抵達店家。視障者用 NVDA 開啟 20 秒即可掌握整趟探索故事。
+- **📷 紅綠燈相機辨識黑盒子全時記錄 (`TrafficSignalCameraManager.kt`, `WebAppInterface.kt`)**:
+  - 新增專屬診斷檔 `7_紅綠燈相機辨識紀錄_camera_inference.txt`。
+  - 完整記錄相機何時開鏡（路口距離與方位）、使用者手機俯仰角姿態、光學與 TFLite 辨識狀態、變燈插播與收鏡關閉原因，徹底告別相機運作黑盒子。
+- **👆 使用者手勢操作全鏈路追蹤 (`app.js`, `WebAppInterface.kt`)**:
+  - 新增專屬診斷檔 `5_使用者操作互動紀錄_user_interactions.txt`。
+  - 完整記錄 TalkBack 撥動 Slider 切換分類、雙擊螢幕觸發原地掃描、點選 POI 卡片開啟/關閉詳情等所有使用者主動操作。
+- **🚶‍♂️ 路口狀態機躍遷與道路吸附決策因果連動 (`app.js`)**:
+  - 路口三態（APPROACHING / PASSING / LEAVING / IDLE）每次切換皆即時寫入 `6_決策因果鏈_causality_trace.txt`，並記錄轉折判準與幾何距離；道路吸附變更即刻寫入，徹底杜絕側吸與過路口靜默原因難以追查之痛點。
+- **🧹 消滅 90% 系統雜訊與靜止座標洗版 (`LocationSensorBridge.kt`, `WebAppInterface.kt`)**:
+  - **Logcat 白名單聚焦**：以 App 關鍵標籤（`LocationSensorBridge`, `SignalCameraManager`, `WebAppInterface`, `Python`）精準過濾，剔除 Android 系統幾千行無關之繪圖與電源垃圾日誌。
+  - **靜止軌跡節流**：等紅燈原地停留時，感測器軌跡改以 4 秒心跳記錄，消滅 75% 重複洗版數據。
+
 ### [v1.0.15.24 - 2026-09-03] - 徹底修復雙頻 L5 衛星偵測漏算、卡爾曼雜訊動態收斂 (R x 0.4) 與雙軌觀測量貫通
 - **🛰️ 雙頻 L5 衛星偵測解耦與全時識別 (`LocationSensorBridge.kt`, `GnssRawMeasurementProcessor.kt`)**:
   - **白話生活痛點**：視障者拿著支援雙頻旗艦定位的 Pixel 6a 上街，診斷日誌卻顯示「無雙頻 L5」。追查發現過去程式把 L5 計數包在 `usedInFix` 判斷裡，而 Android 系統底層常把 L5 視為次頻載波，將 `usedInFix` 標記為 false，導致手機天線明明收到 L5 衛星，程式卻視而不見漏算為 0。

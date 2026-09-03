@@ -818,6 +818,9 @@ class NmapWebApp {
             uiBtnAround.setAttribute("aria-valuenow", index);
             uiBtnAround.setAttribute("aria-valuetext", currentCat.label);
             uiBtnAround.setAttribute("aria-label", `周遭探索：${currentCat.label}。單指上下滑動切換分類，點兩下立即掃描`);
+            if (this.recordInteraction) {
+                this.recordInteraction("分類撥動", `切換至【${currentCat.label}】`);
+            }
 
             if (announceSpeech) {
                 if (window.AndroidBridge && window.AndroidBridge.vibrateClick) {
@@ -1739,6 +1742,9 @@ class NmapWebApp {
     this.activePoiTarget = poi;
     this.isDetailModalOpen = true;
     window.isDetailModalOpen = true;
+    if (this.recordInteraction) {
+      this.recordInteraction("地標詳情", `開啟【${poi.name || "地標"}】詳細資訊`);
+    }
 
     const modal = document.getElementById("poi-detail-modal");
     const title = document.getElementById("poi-modal-title");
@@ -1877,6 +1883,9 @@ class NmapWebApp {
   closePoiModal() {
     this.isDetailModalOpen = false;
     window.isDetailModalOpen = false;
+    if (this.recordInteraction) {
+      this.recordInteraction("地標詳情", "關閉地標詳情視窗");
+    }
     this.closeModal("poi-detail-modal");
     this.updateLiveLog("已關閉地標詳情，恢復地圖即時播報。", false, true);
   }
@@ -2479,6 +2488,9 @@ class NmapWebApp {
       if (jDist !== null && jDist >= 6.0 && jDist <= 28.0) {
         if (!this.isSignalCameraActive) {
           this.isSignalCameraActive = true;
+          if (this.recordTrace) {
+            this.recordTrace("CAMERA_TRIGGERED", { action: "START", distance_m: jDist, bearing_deg: data.intersection.bearing_deg });
+          }
           if (window.AndroidBridge && window.AndroidBridge.startTrafficSignalCamera) {
             const bearing = data.intersection.bearing_deg || 0;
             const clock = data.intersection.clock_position || "12點鐘方向";
@@ -2488,6 +2500,9 @@ class NmapWebApp {
       } else if (jDist !== null && (jDist < 6.0 || jDist > 28.0)) {
         if (this.isSignalCameraActive) {
           this.isSignalCameraActive = false;
+          if (this.recordTrace) {
+            this.recordTrace("CAMERA_TRIGGERED", { action: "STOP", distance_m: jDist, reason: jDist < 6.0 ? "CROSSED_JUNCTION" : "OUT_OF_RANGE" });
+          }
           if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
             window.AndroidBridge.stopTrafficSignalCamera();
           }
@@ -2497,6 +2512,9 @@ class NmapWebApp {
       // 若當前沒有路口或非號誌化路口，且相機正在運作，則自動收鏡關閉
       if (this.isSignalCameraActive) {
         this.isSignalCameraActive = false;
+        if (this.recordTrace) {
+          this.recordTrace("CAMERA_TRIGGERED", { action: "STOP", reason: "NO_SIGNALIZED_JUNCTION" });
+        }
         if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
           window.AndroidBridge.stopTrafficSignalCamera();
         }
@@ -2773,8 +2791,18 @@ class NmapWebApp {
         if ((isPassingGeometry || isPassingByInflexion) && !isJunctionLocked) {
           const sinceLastAlert = now - (this.lastIntersectionAlertTime || 0);
           if (this.currentJunctionState !== "PASSING" && sinceLastAlert >= 3000) {
+            const prevState = this.currentJunctionState;
             this.currentJunctionState = "PASSING";
             this.lastIntersectionAlertTime = now;
+            if (this.recordTrace) {
+              this.recordTrace("JUNCTION_STATE_TRANSITION", {
+                from: prevState,
+                to: "PASSING",
+                junction: juncName,
+                distance_m: Math.round(jDist * 10) / 10,
+                trigger: isPassingByInflexion ? "INFLECTION" : "GEOMETRY"
+              });
+            }
             const islandGuide = hasIsland ? "，設庇護島" : "";
             
             let passMsg = "📍 正通過路口";
@@ -2792,9 +2820,19 @@ class NmapWebApp {
         
         // B. 通過完成確認 (LEAVING: 7.0m ~ 20.0m 且前一狀態為 PASSING) - 【優先於 APPROACHING 判定】
         else if (juncDist >= 7.0 && juncDist <= 20.0 && this.currentJunctionState === "PASSING") {
+          const prevState = this.currentJunctionState;
           this.currentJunctionState = "LEAVING";
           this.passedJunctionCooldown.set(juncName, now); // 鎖定該路口 45 秒，消滅倒退重唸
           this.lastIntersectionAlertTime = now;
+          if (this.recordTrace) {
+            this.recordTrace("JUNCTION_STATE_TRANSITION", {
+              from: prevState,
+              to: "LEAVING",
+              junction: juncName,
+              distance_m: Math.round(jDist * 10) / 10,
+              current_road: currentRoad
+            });
+          }
 
           const msg = `📍 沿著【${currentRoad}】繼續前進。`;
           this.announceRoad(msg, false);
@@ -2809,10 +2847,21 @@ class NmapWebApp {
           const isUserMoving = curSpeed >= 0.35;
 
           if (this.currentJunctionState !== "APPROACHING" && this.currentJunctionState !== "PASSING" && this.currentJunctionState !== "LEAVING" && (now - lastAppTime > 65000) && globalAppGap >= 6000 && isUserMoving) {
+            const prevState = this.currentJunctionState;
             this.currentJunctionState = "APPROACHING";
             this.activeJunctionTargetName = juncName;
             this.lastIntersectionAlertTime = now;
             this.approachedJunctionCooldown.set(juncName, now);
+            if (this.recordTrace) {
+              this.recordTrace("JUNCTION_STATE_TRANSITION", {
+                from: prevState,
+                to: "APPROACHING",
+                junction: juncName,
+                distance_m: Math.round(jDist * 10) / 10,
+                has_signal: isSignalized,
+                has_aps: hasAps
+              });
+            }
 
             let branchPart = "";
             if (data.intersection.concise_branches) {
@@ -2840,8 +2889,30 @@ class NmapWebApp {
 
         // D. 離開遠離路口 (> 25.0m) -> 回歸 IDLE
         else if (juncDist > 25.0 && this.currentJunctionState !== "IDLE") {
+          const prevState = this.currentJunctionState;
           this.currentJunctionState = "IDLE";
           this.activeJunctionTargetName = null;
+          if (this.recordTrace) {
+            this.recordTrace("JUNCTION_STATE_TRANSITION", {
+              from: prevState,
+              to: "IDLE",
+              distance_m: Math.round(jDist * 10) / 10
+            });
+          }
+        }
+      }
+    }
+
+    // 紀錄道路吸附因果變化
+    if (data.road_info) {
+      const roadName = data.road_info.street_name || data.road_info.name;
+      if (roadName && (!this._lastLoggedRoadName || this._lastLoggedRoadName !== roadName)) {
+        this._lastLoggedRoadName = roadName;
+        if (this.recordTrace) {
+          this.recordTrace("ROAD_SNAPPED", {
+            road_name: roadName,
+            heading_deg: Math.round(data.heading || 0)
+          });
         }
       }
     }

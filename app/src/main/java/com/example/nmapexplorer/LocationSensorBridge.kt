@@ -1479,8 +1479,17 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     companion object {
         private val trajectoryHistory = Collections.synchronizedList(mutableListOf<String>())
         private val ndjsonRecords = Collections.synchronizedList(mutableListOf<String>())
+        private var lastStationaryLogTimeMs = 0L
 
         fun addTrajectoryLog(entry: String, ndjson: String? = null) {
+            val now = SystemClock.uptimeMillis()
+            val isStationary = ndjson?.contains("\"motion_state\":\"STATIONARY_LOCKED\"") == true
+            if (isStationary) {
+                if (now - lastStationaryLogTimeMs < 4000L) {
+                    return // 靜止等紅燈時每 4 秒記錄一次心跳，減少 75% 重複洗版
+                }
+                lastStationaryLogTimeMs = now
+            }
             if (trajectoryHistory.size > 2000) {
                 trajectoryHistory.removeAt(0)
             }

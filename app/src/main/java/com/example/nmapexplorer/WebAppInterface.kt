@@ -434,8 +434,10 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             val poisArray = json.optJSONArray("detectedPois")
             val speechArray = json.optJSONArray("speechHistory")
             val traceArray = json.optJSONArray("causalityTrace")
+            val interactionsArray = json.optJSONArray("interactions")
             val anomaliesArray = json.optJSONArray("anomalies")
             val lastGpsObj = json.optJSONObject("lastGps")
+            val cameraLogsList = TrafficSignalCameraManager.getCameraEventLogs()
 
             // =========================================================================
             // 檔案 1：0_文字版診斷總覽_SUMMARY.txt (NVDA 螢幕閱讀器與記事本直接秒開的純文字報告)
@@ -450,7 +452,81 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 appendLine("探索時長：${json.optInt("sessionDurationSec", 0)} 秒")
                 appendLine("播報次數：${speechArray?.length() ?: 0} 則")
                 appendLine("發現店家：${poisArray?.length() ?: 0} 處")
+                appendLine("相機事件：${cameraLogsList.size} 筆")
+                appendLine("操作互動：${interactionsArray?.length() ?: 0} 筆")
                 appendLine()
+
+                // =====================================================================
+                // 【核心亮點：本次行走旅程大事記 (Journey Milestones Timeline)】
+                // 依時間序列萃取關鍵事件，讓視障者用 NVDA 在 20 秒內完整掌握整趟旅程
+                // =====================================================================
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("【本次行走旅程大事記 (Journey Milestones Timeline)】")
+                appendLine("（按時間先後排列，讓視障者與工程師 10 秒掌握整趟探索所有核心動態）")
+                appendLine("--------------------------------------------------------------------------------")
+                val milestones = mutableListOf<Pair<String, String>>()
+
+                // 1. 起點事件
+                milestones.add(Pair(displayTimeStr, "[旅程起點] 定位鎖定於【${json.optString("currentRoad", "未知出發地")}】，開始探索"))
+
+                // 2. 語音導引事件精選 (路口、過街、店家抵達、變燈)
+                if (speechArray != null) {
+                    for (i in 0 until speechArray.length()) {
+                        val s = speechArray.optJSONObject(i) ?: continue
+                        val t = s.optString("time", "")
+                        val txt = s.optString("text", "")
+                        if (txt.contains("接近路口") || txt.contains("正通過路口") || txt.contains("沿著") || txt.contains("抵達") || txt.contains("小綠人") || txt.contains("紅燈") || txt.contains("對街搜尋中")) {
+                            milestones.add(Pair(t, "[語音導引] $txt"))
+                        }
+                    }
+                }
+
+                // 3. 相機關鍵狀態變更
+                for (cLog in cameraLogsList) {
+                    if (cLog.contains("CAMERA_START") || cLog.contains("CAMERA_CONFIRMED") || cLog.contains("CAMERA_STOP") || cLog.contains("CAMERA_SEARCH")) {
+                        val clean = cLog.replace("[", "").replace("]", " |")
+                        val parts = clean.split("|", limit = 2)
+                        val t = if (parts.isNotEmpty()) parts[0].trim() else ""
+                        val m = if (parts.size > 1) parts[1].trim() else clean
+                        milestones.add(Pair(t, "[相機號誌] $m"))
+                    }
+                }
+
+                // 4. 使用者觸控與手勢操作
+                if (interactionsArray != null) {
+                    for (i in 0 until interactionsArray.length()) {
+                        val act = interactionsArray.optJSONObject(i) ?: continue
+                        val t = act.optString("time", "")
+                        val a = act.optString("action", "")
+                        val d = act.optString("detail", "")
+                        milestones.add(Pair(t, "[手勢操作] $a: $d"))
+                    }
+                }
+
+                // 5. 異常事件
+                if (anomaliesArray != null) {
+                    for (i in 0 until anomaliesArray.length()) {
+                        val an = anomaliesArray.optJSONObject(i) ?: continue
+                        val t = an.optString("time", "")
+                        val d = an.optString("message").ifEmpty { an.optString("desc", "") }
+                        milestones.add(Pair(t, "[⚠️ 系統異常] $d"))
+                    }
+                }
+
+                // 依時間排序並輸出精華大事
+                val sortedMilestones = milestones.sortedBy { it.first }
+                if (sortedMilestones.isNotEmpty()) {
+                    sortedMilestones.takeLast(40).forEach { (t, desc) ->
+                        val shortTime = if (t.length >= 8 && t.contains(":")) {
+                            t.substringAfterLast("T").substringBefore(".").take(8)
+                        } else t
+                        appendLine("• $shortTime $desc")
+                    }
+                } else {
+                    appendLine("• （探索剛啟動，尚無重大里程碑）")
+                }
+                appendLine()
+
                 appendLine("--------------------------------------------------------------------------------")
                 appendLine("一、 系統電源與運行環境（排查 GPS 凍結核心指標）")
                 appendLine("--------------------------------------------------------------------------------")
@@ -575,6 +651,8 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     put("active_guidance", json.optJSONObject("activeGuidance"))
                 })
                 put("anomalies_detected", anomaliesArray ?: org.json.JSONArray())
+                put("camera_events_count", cameraLogsList.size)
+                put("user_interactions_count", interactionsArray?.length() ?: 0)
             }
             val summaryJsonStr = summaryObj.toString(2)
 
@@ -662,7 +740,24 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             }
 
             // =========================================================================
-            // 檔案 6：5_決策因果鏈_causality_trace.txt (易讀決策事件清單)
+            // 檔案 6：5_使用者操作互動紀錄_user_interactions.txt (易讀手勢與按鈕事件)
+            // =========================================================================
+            val interactionsTxt = buildString {
+                if (interactionsArray != null && interactionsArray.length() > 0) {
+                    for (i in 0 until interactionsArray.length()) {
+                        val obj = interactionsArray.optJSONObject(i) ?: continue
+                        val timeStr = obj.optString("time", "")
+                        val actionStr = obj.optString("action", "")
+                        val detailStr = obj.optString("detail", "")
+                        appendLine("[$timeStr] [$actionStr] $detailStr")
+                    }
+                } else {
+                    appendLine("（尚無使用者操作互動紀錄）")
+                }
+            }
+
+            // =========================================================================
+            // 檔案 7：6_決策因果鏈_causality_trace.txt (易讀決策事件清單)
             // =========================================================================
             val traceTxt = buildString {
                 if (traceArray != null && traceArray.length() > 0) {
@@ -681,20 +776,38 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             }
 
             // =========================================================================
-            // 檔案 7：6_感測器與GPS軌跡_sensor_trajectory.txt (NDJSON 格式附 .txt 記事本直接開)
+            // 檔案 8：7_紅綠燈相機辨識紀錄_camera_inference.txt (開關鏡與深度辨識日誌)
+            // =========================================================================
+            val cameraTxt = buildString {
+                if (cameraLogsList.isNotEmpty()) {
+                    cameraLogsList.forEach { appendLine(it) }
+                } else {
+                    appendLine("（探索期間紅綠燈相機未觸發運作）")
+                }
+            }
+
+            // =========================================================================
+            // 檔案 9：8_感測器與GPS軌跡_sensor_trajectory.txt (NDJSON 格式附 .txt 記事本直接開)
             // =========================================================================
             val sensorNdjson = LocationSensorBridge.getTrajectoryNdjson().ifBlank {
                 "{\"info\": \"No sensor fixes recorded\"}"
             }
 
             // =========================================================================
-            // 檔案 8：7_Android系統Logcat日誌_system_logcat.log (標準 .log 格式)
+            // 檔案 10：9_Android核心Logcat日誌_system_logcat.log (聚焦 App 關鍵標籤，去除 90% 系統雜訊)
             // =========================================================================
             val logText = try {
-                val process = Runtime.getRuntime().exec("logcat -d -v time -t 5000")
-                val txt = process.inputStream.bufferedReader().use { it.readText() }
+                val filterCmd = "logcat -d -v time -s LocationSensorBridge:V SignalCameraManager:V WebAppInterface:V Python:V Chaquopy:V Chromium:I AndroidRuntime:E *:S"
+                val process = Runtime.getRuntime().exec(filterCmd)
+                var txt = process.inputStream.bufferedReader().use { it.readText() }
                 process.waitFor()
                 process.destroy()
+                if (txt.isBlank() || txt.lines().size < 8) {
+                    val fallbackProcess = Runtime.getRuntime().exec("logcat -d -v time -t 2000")
+                    txt = fallbackProcess.inputStream.bufferedReader().use { it.readText() }
+                    fallbackProcess.waitFor()
+                    fallbackProcess.destroy()
+                }
                 txt
             } catch (e: Exception) {
                 "無法擷取 Logcat: ${e.message}"
@@ -719,9 +832,11 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 addEntry("2_行走軌跡_trajectory.geojson.txt", geojsonStr)
                 addEntry("3_周遭店家清單_detected_pois.json", poisJsonStr)
                 addEntry("4_語音播報歷史紀錄_speech_history.txt", speechTxt)
-                addEntry("5_決策因果鏈_causality_trace.txt", traceTxt)
-                addEntry("6_感測器與GPS軌跡_sensor_trajectory.txt", sensorNdjson)
-                addEntry("7_Android系統Logcat日誌_system_logcat.log", logText)
+                addEntry("5_使用者操作互動紀錄_user_interactions.txt", interactionsTxt)
+                addEntry("6_決策因果鏈_causality_trace.txt", traceTxt)
+                addEntry("7_紅綠燈相機辨識紀錄_camera_inference.txt", cameraTxt)
+                addEntry("8_感測器與GPS軌跡_sensor_trajectory.txt", sensorNdjson)
+                addEntry("9_Android系統核心Logcat_system_logcat.log", logText)
             }
 
             // 同步複製一份至外部儲存空間 (/sdcard/Android/data/com.example.nmapexplorer/files/logs/)

@@ -22,6 +22,9 @@ import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,6 +43,26 @@ class TrafficSignalCameraManager(
     private val context: Context,
     private val webAppInterface: WebAppInterface
 ) {
+    companion object {
+        private val cameraEventLogs = ArrayDeque<String>()
+        private const val MAX_CAMERA_LOGS = 250
+
+        fun recordCameraEvent(msg: String) {
+            val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+            synchronized(cameraEventLogs) {
+                cameraEventLogs.addLast("[$timeStr] $msg")
+                if (cameraEventLogs.size > MAX_CAMERA_LOGS) cameraEventLogs.removeFirst()
+            }
+            Log.i("SignalCameraManager", msg)
+        }
+
+        fun getCameraEventLogs(): List<String> {
+            synchronized(cameraEventLogs) {
+                return cameraEventLogs.toList()
+            }
+        }
+    }
+
     private val tag = "SignalCameraManager"
 
     // 相機執行緒與狀態控制
@@ -73,6 +96,9 @@ class TrafficSignalCameraManager(
     private var cameraStartTimeMs = 0L
     private var lastSearchPromptTimeMs = 0L
     private val SEARCH_PROMPT_COOLDOWN_MS = 5000L
+
+    // 幀分析日誌節流 (每 1.5 秒記錄一次以防日誌暴增)
+    private var lastFrameLogTimeMs = 0L
 
     // 燈號重複播報冷卻
     private var lastAnnouncedState = SignalState.UNKNOWN
@@ -155,6 +181,7 @@ class TrafficSignalCameraManager(
             Log.e(tag, "Failed to play camera start sound", e)
         }
         webAppInterface.speakTtsDirect("對街搜尋中", interrupt = false)
+        recordCameraEvent("[CAMERA_START] 啟動紅綠燈相機 | 目標號誌方位: ${String.format(Locale.US, "%.1f", bearingDeg)}° ($clockPosition)")
 
         // 2. 初始化背景執行緒
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -179,6 +206,7 @@ class TrafficSignalCameraManager(
      */
     fun stopCamera() {
         if (!isRunning.getAndSet(false)) return
+        recordCameraEvent("[CAMERA_STOP] 關閉紅綠燈相機並釋放硬體資源")
 
         try {
             // 播放收鏡音效
@@ -246,6 +274,7 @@ class TrafficSignalCameraManager(
             if (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS) {
                 lastDirectionPromptTimeMs = now
                 webAppInterface.speakTtsDirect("手機朝下，請稍抬起", interrupt = false)
+                recordCameraEvent("[CAMERA_GUIDE] 手機俯仰角過低 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，語音提示稍抬起")
             }
             imageProxy.close()
             return
@@ -255,6 +284,7 @@ class TrafficSignalCameraManager(
         if (lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && now - lastSearchPromptTimeMs > SEARCH_PROMPT_COOLDOWN_MS) {
             lastSearchPromptTimeMs = now
             webAppInterface.speakTtsDirect("未見號誌，請左右微調", interrupt = false)
+            recordCameraEvent("[CAMERA_SEARCH] 搜尋號誌逾 3.5 秒仍未定錨，提示左右微調")
         }
 
         // 3. 影像轉換為 Bitmap 進行 ROI 檢測
@@ -281,6 +311,12 @@ class TrafficSignalCameraManager(
             classifyWithTflite(roiBitmap)
         } else {
             classifyWithPhotometricAnalysis(roiBitmap)
+        }
+
+        if (now - lastFrameLogTimeMs > 1500L) {
+            lastFrameLogTimeMs = now
+            val methodStr = if (isTfliteLoaded && tfliteInterpreter != null) "TFLite神經網路" else "光學形態色彩"
+            recordCameraEvent("[CAMERA_FRAME] 姿態 Pitch=${String.format(Locale.US, "%.1f", currentPitch)}° | 核心: $methodStr | 即時辨識: $detectedState")
         }
 
         if (roiBitmap != bitmap) {
@@ -413,6 +449,7 @@ class TrafficSignalCameraManager(
         if (isStateChanged) {
             lastAnnouncedState = confirmedState
             lastAnnounceTimeMs = now
+            recordCameraEvent("[CAMERA_STATE_CHANGE] 燈號時序防抖確認為: $confirmedState (綠:$greenCount, 紅:$redCount, 黃:$yellowCount) -> 觸發語音與震動")
 
             when (confirmedState) {
                 SignalState.GREEN -> {
