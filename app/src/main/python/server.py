@@ -252,11 +252,25 @@ def teleport():
     """
     【瞬移到指定地址或座標 (Teleport)】
     作用：在搜尋列輸入地址（如「台北車站」），地圖立即切換到該地點並下載周遭圖資。
+    支援：若使用者輸入「路口」、「附近的十字路口」等關鍵字，自動轉向為周遭四向路口探測，杜絕回傳「找不到此地址」。
     """
     data = request.json or {}
     location = data.get("location", "").strip()
     if not location:
         return json_response({"success": False, "message": "請提供有效的地址或座標。"}, status=400)
+
+    # 搜尋列意圖自然辨識：若輸入路口相關關鍵字，直接執行周遭四向路口探測
+    is_junction_query = any(k in location for k in ["路口", "交叉口", "岔路", "十字路", "丁字路", "交會"])
+    if is_junction_query:
+        if not agent.is_loaded:
+            return json_response({"success": False, "message": "尚未定位當前座標，請先開啟定位或輸入地名。"}, status=400)
+        surrounding = agent.intersection_analyzer.analyze_surrounding_junctions(
+            agent.lat, agent.lon, agent.heading_deg, agent.world_model
+        )
+        status_data = build_status_dict(include_full_report=False)
+        status_data["action_message"] = surrounding["report"]
+        status_data["surrounding_junctions"] = surrounding["sectors"]
+        return json_response(status_data)
 
     ok, msg = agent.teleport(location)
     if not ok:
@@ -517,10 +531,17 @@ def get_intersection():
     agent.lon = lon_val
 
     analysis = agent.intersection_analyzer.analyze(lat_val, lon_val, h_val, agent.world_model)
-    report = analysis.get("detailed_report") or analysis.get("safety_summary") or "前方路口分析完成。"
+    surrounding = agent.intersection_analyzer.analyze_surrounding_junctions(lat_val, lon_val, h_val, agent.world_model)
+    mode = request.query.get("mode") or (request.json.get("mode") if request.json else "")
+    if mode == "surrounding":
+        report = surrounding.get("report") or "周遭四向路口探測完成。"
+    else:
+        report = analysis.get("detailed_report") or surrounding.get("report") or analysis.get("safety_summary") or "前方路口分析完成。"
     return json_response({
         "success": True,
         "intersection": analysis,
+        "surrounding_junctions": surrounding.get("sectors"),
+        "surrounding_report": surrounding.get("report"),
         "report": report
     })
 

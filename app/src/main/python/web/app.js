@@ -2249,8 +2249,11 @@ class NmapWebApp {
     fetch(`/api/intersection?heading_deg=${curHead}&lat=${curLat}&lon=${curLon}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && data.report) {
-          this.lastSpokenIntersection = data.report;
+        if (data.success) {
+          const reportText = (data.surrounding_report && (!data.intersection || data.intersection.junction_type === "直行道路" || data.intersection.junction_distance_m > 70))
+            ? data.surrounding_report
+            : (data.report || data.surrounding_report || "前方路口分析完成。");
+          this.lastSpokenIntersection = reportText;
           const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
           if (isEarconOn && this.audio) {
             this.audio.playJunctionTone(0, -1);
@@ -2258,7 +2261,7 @@ class NmapWebApp {
             this.audio.playArrival();
           }
           setTimeout(() => {
-            this.updateLiveLog(data.report, false, true);
+            this.updateLiveLog(reportText, false, true);
           }, isEarconOn ? 180 : 0);
 
           // 【手動查詢連動紅綠燈相機】：手動查詢路口時若前方為號誌化路口且在 6~28m 範圍內，同步開鏡
@@ -3408,7 +3411,11 @@ class NmapWebApp {
       .then((data) => {
         if (data.success) {
           this.audio.playArrival();
-          this.checkStatus(true);
+          if (data.action_message) {
+            this.updateLiveLog(data.action_message, false, true);
+          } else {
+            this.checkStatus(true);
+          }
         } else {
           this.updateLiveLog(`⚠️ ${data.message}`, true);
         }

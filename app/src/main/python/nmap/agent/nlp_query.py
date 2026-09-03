@@ -128,15 +128,15 @@ class NLPQueryEngine:
         return "\n".join(lines)
 
     def _query_intersection_safety(self, agent: ExplorerAgent) -> str:
-        """分析前方路口安全性、斑馬線與行人號誌配置"""
-        analysis = agent.intersection_analyzer.analyze(agent.lat, agent.lon, agent.heading_deg, agent.world_model, max_distance_m=60.0)
-        lines = [
-            f"【路口與過馬路安全分析】",
-            f"前方型態：{analysis['junction_type']}" + (f" (約 {analysis['junction_distance_m']} 公尺)" if analysis['junction_distance_m'] else ""),
-            f"安全摘要：{analysis['safety_summary']}"
-        ]
-
-        if analysis["crossings"]:
+        """分析周遭四向路口、前方安全性、斑馬線與行人號誌配置"""
+        surrounding = agent.intersection_analyzer.analyze_surrounding_junctions(
+            agent.lat, agent.lon, agent.heading_deg, agent.world_model
+        )
+        analysis = agent.intersection_analyzer.analyze(
+            agent.lat, agent.lon, agent.heading_deg, agent.world_model
+        )
+        lines = [surrounding["report"]]
+        if analysis.get("crossings"):
             lines.append("【行人穿越道細節】:")
             for c in analysis["crossings"][:2]:
                 sig = "有號誌" if c["crossing_signals"] != "no" else "無號誌"

@@ -374,6 +374,71 @@ class TestConciseNavigation(unittest.TestCase):
         self.assertIsNotNone(best_r)
         self.assertEqual(best_r["name"], "北新路一段", f"Expected 北新路一段, but got {best_r['name']}")
 
+    def test_omnidirectional_surrounding_junctions(self):
+        """【測試：周遭 360 度四向象限路口探測 (Omnidirectional 4-Sector Junction Scan)】"""
+        wm = MockWorldModel()
+        # 建立十字與三向路網拓撲圖
+        # 使用者位於 (25.1800, 121.4500)，朝向正北 0°
+        # 1. 正前方路口：(25.1810, 121.4500)
+        wm.road_graph.add_node("node_f", lat=25.1810, lon=121.4500)
+        wm.road_graph.add_node("f_n", lat=25.1820, lon=121.4500)
+        wm.road_graph.add_node("f_e", lat=25.1810, lon=121.4510)
+        wm.road_graph.add_node("f_s", lat=25.1800, lon=121.4500)
+        wm.road_graph.add_edge("node_f", "f_n", name="北新路一段")
+        wm.road_graph.add_edge("node_f", "f_e", name="大忠街")
+        wm.road_graph.add_edge("node_f", "f_s", name="北新路一段")
+        wm.junction_rtree.insert(1, (121.449, 25.180, 121.451, 25.182), obj=("node_f", 3, 25.1810, 121.4500, {}))
+
+        # 2. 右側路口：(25.1800, 121.4510)
+        wm.road_graph.add_node("node_r", lat=25.1800, lon=121.4510)
+        wm.road_graph.add_node("r_n", lat=25.1810, lon=121.4510)
+        wm.road_graph.add_node("r_e", lat=25.1800, lon=121.4520)
+        wm.road_graph.add_node("r_w", lat=25.1800, lon=121.4500)
+        wm.road_graph.add_edge("node_r", "r_n", name="水源街一段")
+        wm.road_graph.add_edge("node_r", "r_e", name="水源街二段")
+        wm.road_graph.add_edge("node_r", "r_w", name="水源街一段")
+        wm.junction_rtree.insert(2, (121.450, 25.179, 121.452, 25.181), obj=("node_r", 3, 25.1800, 121.4510, {}))
+
+        # 3. 左側路口：(25.1800, 121.4490)
+        wm.road_graph.add_node("node_l", lat=25.1800, lon=121.4490)
+        wm.road_graph.add_node("l_n", lat=25.1810, lon=121.4490)
+        wm.road_graph.add_node("l_w", lat=25.1800, lon=121.4480)
+        wm.road_graph.add_node("l_e", lat=25.1800, lon=121.4500)
+        wm.road_graph.add_edge("node_l", "l_n", name="中正東路")
+        wm.road_graph.add_edge("node_l", "l_w", name="博愛街")
+        wm.road_graph.add_edge("node_l", "l_e", name="中正東路")
+        wm.junction_rtree.insert(3, (121.448, 25.179, 121.450, 25.181), obj=("node_l", 3, 25.1800, 121.4490, {}))
+
+        # 4. 後方路口：(25.1790, 121.4500)
+        wm.road_graph.add_node("node_b", lat=25.1790, lon=121.4500)
+        wm.road_graph.add_node("b_s", lat=25.1780, lon=121.4500)
+        wm.road_graph.add_node("b_e", lat=25.1790, lon=121.4510)
+        wm.road_graph.add_node("b_n", lat=25.1800, lon=121.4500)
+        wm.road_graph.add_edge("node_b", "b_s", name="北新路一段")
+        wm.road_graph.add_edge("node_b", "b_e", name="新春街")
+        wm.road_graph.add_edge("node_b", "b_n", name="北新路一段")
+        wm.junction_rtree.insert(4, (121.449, 25.178, 121.451, 25.180), obj=("node_b", 3, 25.1790, 121.4500, {}))
+
+        analyzer = IntersectionAnalyzer()
+        surrounding = analyzer.analyze_surrounding_junctions(25.1800, 121.4500, 0.0, wm)
+        
+        self.assertTrue(surrounding["found_any"])
+        sectors = surrounding["sectors"]
+        self.assertIsNotNone(sectors["front"])
+        self.assertIsNotNone(sectors["right"])
+        self.assertIsNotNone(sectors["left"])
+        self.assertIsNotNone(sectors["back"])
+
+        self.assertIn("正前方", surrounding["report"])
+        self.assertIn("右側", surrounding["report"])
+        self.assertIn("左側", surrounding["report"])
+        self.assertIn("後方", surrounding["report"])
+
+        # 驗證前方分析 analyze() 也整合了周遭四向路口資訊
+        analysis = analyzer.analyze(25.1800, 121.4500, 0.0, wm)
+        self.assertIn("surrounding_junctions", analysis)
+        self.assertIsNotNone(analysis["surrounding_junctions"])
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestConciseNavigation)
     runner = unittest.TextTestRunner(verbosity=2)

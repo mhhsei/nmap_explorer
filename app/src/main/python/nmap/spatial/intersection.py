@@ -28,6 +28,215 @@ class IntersectionAnalyzer:
     路口與行人穿越安全性分析器
     """
 
+    def extract_node_branches(
+        self,
+        n_id: Any,
+        n_lt: float,
+        n_ln: float,
+        neighbors_set: set,
+        heading_deg: float,
+        world_model: WorldModel,
+        curr_street: str = ""
+    ):
+        """
+        【拓撲節點分支走向提取器】
+        分析該路口節點向外延伸的所有鄰居道路，計算鐘點走向與交會路名。
+        """
+        b_info = []
+        int_roads = set()
+        v_visited = set()
+        for v in neighbors_set:
+            if v in v_visited:
+                continue
+            v_visited.add(v)
+            edge_data = None
+            if world_model.road_graph.has_edge(n_id, v):
+                edge_data = list(world_model.road_graph[n_id][v].values())[0]
+            elif world_model.road_graph.has_edge(v, n_id):
+                edge_data = list(world_model.road_graph[v][n_id].values())[0]
+
+            raw_name = edge_data.get("name", "") if edge_data else ""
+            if not raw_name or raw_name == "未命名道路":
+                highway_type = edge_data.get("road", {}).get("highway", "") if edge_data else ""
+                if highway_type in ["footway", "pedestrian", "path", "steps"]:
+                    road_name = "人行通道"
+                else:
+                    road_name = "無名巷弄"
+            else:
+                road_name = raw_name
+
+            if road_name and road_name != curr_street and not road_name.startswith("無名") and road_name != "人行通道":
+                int_roads.add(road_name)
+
+            v_data = world_model.road_graph.nodes[v]
+            v_lat, v_lon = v_data["lat"], v_data["lon"]
+            out_brng = calculate_bearing(n_lt, n_ln, v_lat, v_lon)
+            out_rel = relative_bearing(heading_deg, out_brng)
+            
+            clock_pos = bearing_to_clock_position(out_rel)
+            rel_dir = bearing_to_relative_direction(out_rel)
+            if abs(out_rel) >= 140:
+                rel_dir = "正後方 (來時路)"
+
+            b_info.append({
+                "road_name": road_name,
+                "relative_direction": rel_dir,
+                "clock_position": clock_pos,
+                "relative_angle": out_rel
+            })
+        b_info.sort(key=lambda b: abs(b.get("relative_angle", 0)))
+        return b_info, int_roads
+
+    def analyze_surrounding_junctions(
+        self,
+        lat: float,
+        lon: float,
+        heading_deg: float,
+        world_model: WorldModel,
+        curr_road_info: Optional[Dict[str, Any]] = None,
+        max_search_radius_m: float = 1200.0
+    ) -> Dict[str, Any]:
+        """
+        【周遭 360 度四向象限路口探測器 (Omnidirectional 4-Sector Junction Scan)】
+        設計理念：
+        視障使用者不論面向哪裡、或前方 60 米內剛好是長直路，都不應被回覆「找不到路口」。
+        本函式打破寫死範圍，以使用者當前朝向為基準，將 360 度劃分為四大象限：
+        - 正前方 (front: 11點～1點鐘)
+        - 右側 (right: 1點～5點鐘)
+        - 後方 (back: 5點～7點鐘)
+        - 左側 (left: 7點～11點鐘)
+        在每個方向中，各自挑選距離最近的「1 個真實路口」，完整建立空間十字心智地圖。
+        """
+        if curr_road_info is None:
+            curr_road_info = world_model.get_road_info(lat, lon, heading_deg)
+        curr_street = curr_road_info.get("street_name", "") if curr_road_info else ""
+
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        radius_deg_lon = max_search_radius_m / (111139.0 * cos_lat)
+        radius_deg_lat = max_search_radius_m / 111139.0
+        bounds = (lon - radius_deg_lon, lat - radius_deg_lat, lon + radius_deg_lon, lat + radius_deg_lat)
+
+        sectors = {
+            "front": {"name": "正前方", "candidate": None},
+            "right": {"name": "右側", "candidate": None},
+            "back": {"name": "後方", "candidate": None},
+            "left": {"name": "左側", "candidate": None}
+        }
+
+        # 遍歷周遭所有路口節點
+        for item in world_model.junction_rtree.intersection(bounds, objects=True):
+            node_id, degree, n_lat, n_lon = item.object[:4]
+            junction_meta = item.object[4] if len(item.object) > 4 else {}
+            dist = haversine_distance(lat, lon, n_lat, n_lon)
+            if dist > max_search_radius_m:
+                continue
+
+            # 驗證實體度數 (degree >= 3)
+            physical_neighbors = (set(world_model.road_graph.predecessors(node_id)) | set(world_model.road_graph.successors(node_id))) - {node_id}
+            real_degree = len(physical_neighbors)
+            if real_degree < 3:
+                continue
+
+            t_brng = calculate_bearing(lat, lon, n_lat, n_lon)
+            rel_brng = relative_bearing(heading_deg, t_brng)
+            clock = bearing_to_clock_position(rel_brng)
+            rel_dir = bearing_to_relative_direction(rel_brng)
+
+            # 分類四向象限 (依據相對朝向角)
+            if abs(rel_brng) <= 45:
+                sec_key = "front"
+            elif 45 < rel_brng <= 135:
+                sec_key = "right"
+            elif abs(rel_brng) > 135:
+                sec_key = "back"
+            else:
+                sec_key = "left"
+
+            # 保持該象限中「距離最近」的路口
+            current_best = sectors[sec_key]["candidate"]
+            if current_best is None or dist < current_best["dist"]:
+                sectors[sec_key]["candidate"] = {
+                    "node_id": node_id,
+                    "degree": real_degree,
+                    "dist": dist,
+                    "lat": n_lat,
+                    "lon": n_lon,
+                    "t_brng": t_brng,
+                    "rel_brng": rel_brng,
+                    "clock": clock,
+                    "rel_dir": rel_dir,
+                    "meta": junction_meta,
+                    "neighbors": physical_neighbors
+                }
+
+        results = {}
+        report_lines = ["【周遭四向路口探測】"]
+        order = ["front", "right", "left", "back"]
+        found_any = False
+
+        for sec_key in order:
+            sec_data = sectors[sec_key]
+            cand = sec_data["candidate"]
+            sec_name = sec_data["name"]
+
+            if cand is not None:
+                found_any = True
+                b_info, int_roads = self.extract_node_branches(
+                    cand["node_id"], cand["lat"], cand["lon"], cand["neighbors"], heading_deg, world_model, curr_street
+                )
+                
+                # 決定路口顯示名稱
+                raw_name = cand["meta"].get("name", "") if cand.get("meta") else ""
+                int_roads_list = sorted(list(int_roads))
+                if int_roads_list:
+                    j_name = f"{'、'.join(int_roads_list)}口"
+                elif raw_name and raw_name not in ["路口", "十字路口", "T字/岔路口"]:
+                    j_name = raw_name
+                elif curr_street:
+                    j_name = f"{curr_street}路口"
+                else:
+                    j_name = "路口"
+
+                # 檢測號誌與有聲設施
+                is_sig = False
+                has_aps = False
+                sig_bounds = (cand["lon"] - 0.0003, cand["lat"] - 0.0003, cand["lon"] + 0.0003, cand["lat"] + 0.0003)
+                for s_item in world_model.traffic_signal_rtree.intersection(sig_bounds, objects=True):
+                    s_obj = s_item.object
+                    if haversine_distance(cand["lat"], cand["lon"], s_obj["lat"], s_obj["lon"]) <= 25.0:
+                        is_sig = True
+                        if s_obj.get("sound") not in ["unknown", "no", None]:
+                            has_aps = True
+
+                sig_tag = "（設有聲號誌）" if has_aps else ("（設紅綠燈）" if is_sig else "（無號誌）")
+                dist_str = f"{round(cand['dist'])}米" if cand['dist'] >= 10 else f"{cand['dist']:.1f}米"
+                
+                item_dict = {
+                    "sector": sec_key,
+                    "sector_name": sec_name,
+                    "distance_m": round(cand["dist"], 1),
+                    "clock_position": cand["clock"],
+                    "relative_bearing_deg": round(cand["rel_brng"], 1),
+                    "junction_name": j_name,
+                    "is_signalized": is_sig,
+                    "has_aps": has_aps,
+                    "branches": b_info
+                }
+                results[sec_key] = item_dict
+                report_lines.append(f"• {sec_name} ({cand['clock']} {dist_str})：【{j_name}】{sig_tag}")
+            else:
+                results[sec_key] = None
+
+        if not found_any:
+            report_lines.append("周遭 1200 公尺內未搜尋到實體交會路口。")
+
+        report_text = "\n".join(report_lines)
+        return {
+            "sectors": results,
+            "report": report_text,
+            "found_any": found_any
+        }
+
     def analyze(self, lat: float, lon: float, heading_deg: float, world_model: WorldModel, max_distance_m: float = 60.0, signal_announce_distance_m: float = 10.0, curr_road_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         【分析前方 60 公尺內的路口結構與過馬路安全性】
@@ -109,51 +318,9 @@ class IntersectionAnalyzer:
         j_bounds = (lon - j_radius_deg_lon, lat - j_radius_deg_lat, lon + j_radius_deg_lon, lat + j_radius_deg_lat)
         closest_junction_meta = {}
 
-        def extract_node_branches(n_id, n_lt, n_ln, neighbors_set):
-            b_info = []
-            int_roads = set()
-            v_visited = set()
-            for v in neighbors_set:
-                if v in v_visited:
-                    continue
-                v_visited.add(v)
-                edge_data = None
-                if world_model.road_graph.has_edge(n_id, v):
-                    edge_data = list(world_model.road_graph[n_id][v].values())[0]
-                elif world_model.road_graph.has_edge(v, n_id):
-                    edge_data = list(world_model.road_graph[v][n_id].values())[0]
-
-                raw_name = edge_data.get("name", "") if edge_data else ""
-                if not raw_name or raw_name == "未命名道路":
-                    highway_type = edge_data.get("road", {}).get("highway", "") if edge_data else ""
-                    if highway_type in ["footway", "pedestrian", "path", "steps"]:
-                        road_name = "人行通道"
-                    else:
-                        road_name = "無名巷弄"
-                else:
-                    road_name = raw_name
-
-                if road_name and road_name != curr_street and not road_name.startswith("無名") and road_name != "人行通道":
-                    int_roads.add(road_name)
-
-                v_data = world_model.road_graph.nodes[v]
-                v_lat, v_lon = v_data["lat"], v_data["lon"]
-                out_brng = calculate_bearing(n_lt, n_ln, v_lat, v_lon)
-                out_rel = relative_bearing(heading_deg, out_brng)
-                
-                clock_pos = bearing_to_clock_position(out_rel)
-                rel_dir = bearing_to_relative_direction(out_rel)
-                if abs(out_rel) >= 140:
-                    rel_dir = "正後方 (來時路)"
-
-                b_info.append({
-                    "road_name": road_name,
-                    "relative_direction": rel_dir,
-                    "clock_position": clock_pos,
-                    "relative_angle": out_rel
-                })
-            b_info.sort(key=lambda b: abs(b.get("relative_angle", 0)))
-            return b_info, int_roads
+        extract_node_branches = lambda n_id, n_lt, n_ln, n_set: self.extract_node_branches(
+            n_id, n_lt, n_ln, n_set, heading_deg, world_model, curr_street
+        )
 
         # 收集前方所有路口候選節點
         front_junction_candidates = []
@@ -406,6 +573,22 @@ class IntersectionAnalyzer:
                 c = nearby_crossings[0]
                 report_lines.append(f"前方 {c['distance_m']} 公尺處設有斑馬線。")
 
+
+        # 執行周遭四向象限路口探測（無死角抓取各方向最近路口）
+        surrounding_result = self.analyze_surrounding_junctions(
+            lat, lon, heading_deg, world_model, curr_road_info=curr_road_info, max_search_radius_m=1200.0
+        )
+        if surrounding_result.get('found_any'):
+            surrounding_sectors = surrounding_result.get('sectors', {})
+            other_branches = []
+            for k in ['left', 'right', 'back']:
+                s = surrounding_sectors.get(k)
+                if s and s['distance_m'] <= 350.0:
+                    sig_info = '（設有聲號誌）' if s.get('has_aps') else ('（設紅綠燈）' if s.get('is_signalized') else '')
+                    other_branches.append(f"• {s['sector_name']} ({s['clock_position']} {round(s['distance_m'])}米)：【{s['junction_name']}】{sig_info}")
+            if other_branches:
+                report_lines.append("周遭其他方向最近路口：\n" + "\n".join(other_branches))
+
         detailed_report_str = "\n".join(report_lines)
 
         return {
@@ -432,5 +615,7 @@ class IntersectionAnalyzer:
             "traffic_signals": nearby_signals,
             "signal_nearby": is_signalized,
             "safety_summary": "；".join(safety_notes),
-            "detailed_report": detailed_report_str
+            "detailed_report": detailed_report_str,
+            "surrounding_junctions": surrounding_result.get("sectors"),
+            "surrounding_report": surrounding_result.get("report")
         }
