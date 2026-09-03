@@ -42,13 +42,13 @@ class GnssRawMeasurementProcessor(
             val constType = m.constellationType
             val key = svid * 100 + constType
 
-            // 1. 信噪比檢核：過濾大樓陰影低於 20 dB-Hz 之折射雜訊
-            if (m.cn0DbHz < 20.0f) continue
+            // 1. 信噪比檢核：過濾極低於 15 dB-Hz 之無效反射雜訊
+            if (m.cn0DbHz < 15.0f) continue
 
-            // 2. 雙頻 L5 頻段識別 (1.17645 GHz)
+            // 2. 雙頻 L5 / E5a / B2a 頻段識別 (1.17645 GHz)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && m.hasCarrierFrequencyHz()) {
                 val freq = m.carrierFrequencyHz
-                if (abs(freq - 1.17645e9f) < 1.5e7f) {
+                if (abs(freq - 1.17645e9f) < 2.0e7f) {
                     l5Count++
                 }
             }

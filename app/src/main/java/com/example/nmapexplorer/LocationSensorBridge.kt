@@ -471,7 +471,7 @@ class PedestrianKalmanFilter {
             DifferentialTier.CARRIER_SMOOTHED_HATCH -> 1.60
             DifferentialTier.OFFLINE_AUTONOMOUS -> max(accuracyMeters.toDouble().pow(1.8) * 0.7, 3.0)
         }
-        if (hasDualFrequencyL5) baseR *= 0.7
+        if (hasDualFrequencyL5) baseR *= 0.4
         if (isMultipath) baseR *= 4.0
 
         // 4. 馬氏距離新息門控 (Mahalanobis Innovation Gating) 與防鎖死連續異常復位
@@ -994,9 +994,15 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                                 if (snr >= 22.0f) {
                                     highCount++
                                 }
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && status.hasCarrierFrequencyHz(i)) {
-                                    val freq = status.getCarrierFrequencyHz(i)
-                                    if (abs(freq - 1.17645e9f) < 1.5e7f) {
+                            }
+
+                            // 雙頻 L5 / E5a / B2a 載波頻率識別 (約 1176.45 MHz)
+                            // 注意：Android 底層驅動常將 L5 視為輔助載波，其 usedInFix 常為 false，因此獨立檢測！
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && status.hasCarrierFrequencyHz(i)) {
+                                val freq = status.getCarrierFrequencyHz(i)
+                                if (abs(freq - 1.17645e9f) < 2.0e7f) {
+                                    // 只要該 L5 頻段具備可用信噪比 (>= 15 dB-Hz) 或為使用中，即計入 L5 鎖定
+                                    if (snr >= 15.0f || status.usedInFix(i)) {
                                         l5Count++
                                     }
                                 }
@@ -1004,7 +1010,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                         }
                         val avgSnr = if (usedCount > 0) totalSnr / usedCount else 0f
                         isUrbanCanyonMultipath = (usedCount >= 3 && avgSnr < 21.0f) || (highCount < 4 && usedCount >= 4)
-                        hasDualFrequencyL5 = (l5Count >= 2 && usedCount >= 5)
+                        hasDualFrequencyL5 = (l5Count >= 1 && usedCount >= 4) || (l5Count >= 2)
 
                         satelliteTotalCount = count
                         satelliteUsedCount = usedCount
@@ -1031,6 +1037,10 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     // 若當前未連上更高階之 NTRIP 差分，採用本地載波平滑等級
                     if (!isNtripDifferentialActive()) {
                         currentDiffTier = localTier
+                    }
+                    if (l5Count > 0) {
+                        satelliteL5Count = max(satelliteL5Count, l5Count)
+                        hasDualFrequencyL5 = true
                     }
                 }
                 rawGnssProcessor = processor
@@ -1193,7 +1203,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             
             // 判斷 GPS 訊號是否微弱 (進入室內商場 / 地下街)
             val timeSinceGps = SystemClock.uptimeMillis() - lastGpsFixTimeMs
-            val isStrongOutdoorGps = satelliteUsedCount >= 5 && satelliteAvgSnr >= 20.0f && lastGpsAccuracyM <= 22.0f && timeSinceGps < 4500L
+            val isStrongOutdoorGps = (hasDualFrequencyL5 || (satelliteUsedCount >= 5 && satelliteAvgSnr >= 20.0f)) && lastGpsAccuracyM <= 22.0f && timeSinceGps < 4500L
             val isGpsWeak = !isStrongOutdoorGps && (timeSinceGps > 4500L || lastGpsAccuracyM > 28.0f || (satelliteUsedCount < 3 && satelliteAvgSnr < 18.0f))
             
             barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
@@ -1378,7 +1388,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         // 記錄人類可讀與結構化 NDJSON 日誌
         val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 等級: ${currentDiffTier.displayName} | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 | 折射: $isUrbanCanyonMultipath"
+        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 等級: ${currentDiffTier.displayName} | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 ($satelliteL5Count 顆) | 折射: $isUrbanCanyonMultipath"
         val ndjson = org.json.JSONObject().apply {
             put("t", timeStr)
             put("evt", "GPS_FIX")
