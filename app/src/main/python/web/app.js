@@ -949,11 +949,14 @@ class NmapWebApp {
 
 
 
-    const searchResultsClearBtn = document.getElementById("search-results-clear-btn");
-    if (searchResultsClearBtn) {
-        searchResultsClearBtn.addEventListener("click", () => {
-            this.recordInteraction("點擊按鈕", "清空搜尋結果");
-            this.renderSearchResults("尚未搜尋", "可在上方搜尋列輸入地址、地標或路口，搜尋結果將以大字體清晰呈現於此。", []);
+    const streamClearBtn = document.getElementById("stream-clear-btn") || document.getElementById("search-results-clear-btn");
+    if (streamClearBtn) {
+        streamClearBtn.addEventListener("click", () => {
+            this.recordInteraction("點擊按鈕", "清空清單");
+            const streamList = document.getElementById("activity-stream-list");
+            if (streamList) streamList.innerHTML = "";
+            const summaryEl = document.getElementById("stream-summary-text");
+            if (summaryEl) summaryEl.textContent = "已清空目前清單。新播報與搜尋設施將持續於此處呈現。";
         });
     }
 
@@ -1417,8 +1420,8 @@ class NmapWebApp {
       }, 20);
     }
 
-    const historyList = document.getElementById("history-list");
-    if (historyList) {
+    const streamList = document.getElementById("activity-stream-list") || document.getElementById("history-list");
+    if (streamList) {
       // Split by spaces or punctuation to separate sentences as requested by the user
       let parts = text.split(/。|\n/).filter(p => p.trim().length > 0);
       const allKnownPois = (this.getRealtimePois && this.getRealtimePois().length > 0) ? this.getRealtimePois() : (this.lastPois || []);
@@ -1427,10 +1430,7 @@ class NmapWebApp {
       
       parts.forEach(part => {
         const cleanPart = part.trim();
-        const li = document.createElement("li");
-        li.className = "history-item";
-        li.tabIndex = 0;
-        li.textContent = cleanPart + "。";
+        if (!cleanPart) return;
 
         // 智慧比對是否包含店家/地標資訊
         let matchedPoi = null;
@@ -1465,35 +1465,33 @@ class NmapWebApp {
           }
         }
 
-        if (matchedPoi) {
-          li.style.cursor = "pointer";
-          li.setAttribute("role", "button");
-          li.setAttribute("aria-label", `${cleanPart}。雙擊或按 Enter 可展開此店家詳細營業資訊`);
-          li.style.borderLeft = "4px solid #38bdf8";
-          li.style.paddingLeft = "8px";
-
-          const triggerOpen = (e) => {
-            if (e) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-            this.lastPoiTriggerElement = li;
-            this.showPoiDetail(matchedPoi, li);
+        if (matchedPoi && this.createActionablePoiCard) {
+          // 🚀 依使用者需求：走路播報之店家設施轉為可上下滑選動作之滑桿卡片 (3D導引 / 查資訊 / Google導航)
+          const card = this.createActionablePoiCard(matchedPoi, cleanPart);
+          streamList.prepend(card);
+        } else if (cleanPart.length > 3 && !cleanPart.includes("歡迎使用")) {
+          // 一般行進/路口提示卡片 (點擊可重聽)
+          const statusCard = document.createElement("li");
+          statusCard.className = "actionable-poi-card";
+          statusCard.setAttribute("tabindex", "0");
+          statusCard.setAttribute("role", "button");
+          statusCard.setAttribute("aria-label", `${cleanPart}。點擊或按 Enter 可重新朗讀`);
+          statusCard.style.cssText = "background: #1e293b; border: 1px solid #475569; border-radius: 10px; padding: 12px 14px; font-size: 1.2em; color: #f8fafc; cursor: pointer;";
+          statusCard.innerHTML = `<span style="color:#38bdf8; font-weight:bold;">📍 </span>${cleanPart} <small style="color:#94a3b8; margin-left:6px;">(點擊重聽)</small>`;
+          statusCard.onclick = () => {
+            this.updateLiveLog(cleanPart, false, true);
           };
-
-          li.onclick = triggerOpen;
-          li.ondblclick = triggerOpen;
-          li.onkeydown = (e) => {
+          statusCard.onkeydown = (e) => {
             if (e.key === "Enter" || e.key === " ") {
-              triggerOpen(e);
+              e.preventDefault();
+              this.updateLiveLog(cleanPart, false, true);
             }
           };
+          streamList.prepend(statusCard);
         }
 
-        historyList.prepend(li);
-        
-        while (historyList.children.length > 50) {
-          historyList.removeChild(historyList.lastChild);
+        while (streamList.children.length > 25) {
+          streamList.removeChild(streamList.lastChild);
         }
       });
     }
@@ -3416,60 +3414,198 @@ class NmapWebApp {
     }
   }
 
-  // 🔍 搜尋內容與結果專用大字體渲染器 (Search Results Dedicated Large-Font Renderer)
-  renderSearchResults(title, contentText, pois = []) {
-    const section = document.getElementById("search-results-section");
-    const titleEl = document.getElementById("search-results-title");
-    const contentEl = document.getElementById("search-results-content");
-    const poiListEl = document.getElementById("search-poi-list");
-    if (!contentEl) return;
+  // 🎯 執行設施動作 (3D 導引 / 查詳情 / Google 導航 / 朗讀方位)
+  executePoiAction(poi, actionId, cardElement = null) {
+    if (!poi) return;
+    const poiName = poi.name || "目標地標";
+    if (this.audio) this.audio.playArrival();
 
-    if (section) section.style.display = "block";
+    switch (actionId) {
+      case "guide": // 🎯 開啟 3D 空間聲音導引
+        this.recordInteraction("執行滑桿動作", `開啟 3D 空間導引：${poiName}`);
+        this.startBeaconToTarget(poi);
+        break;
+
+      case "detail": // ℹ️ 查詢詳細資訊
+        this.recordInteraction("執行滑桿動作", `查詢詳細資訊：${poiName}`);
+        this.showPoiDetail(poi, cardElement);
+        break;
+
+      case "gmaps": // 🗺️ Google 地圖步行導航
+        this.recordInteraction("執行滑桿動作", `Google 地圖步行導航：${poiName}`);
+        const pLat = poi.lat || (this.localLat || 25.1764);
+        const pLon = poi.lon || (this.localLon || 121.4468);
+        this.updateLiveLog(`正在開啟 Google 地圖步行導航至【${poiName}】...`, false, true);
+        if (window.AndroidBridge && window.AndroidBridge.openGoogleMaps) {
+          window.AndroidBridge.openGoogleMaps(pLat, pLon, poiName);
+        } else {
+          window.open(`https://www.google.com/maps/dir/?api=1&destination=${pLat},${pLon}&travelmode=walking`, "_blank");
+        }
+        break;
+
+      case "speak": // 📢 重新朗讀方位與門牌
+        this.recordInteraction("執行滑桿動作", `重新朗讀方位門牌：${poiName}`);
+        const clock = poi.clock_position || poi.clock_direction || "前方";
+        const dist = poi.distance_m !== undefined ? `${Math.round(poi.distance_m)}米` : "";
+        const door = poi.door_number ? `，門牌 ${poi.door_number}` : "";
+        this.updateLiveLog(`【${poiName}】距離您 ${dist}，位於 ${clock}${door}。`, false, true);
+        break;
+    }
+  }
+
+  // 🎛️ 建立可上下滑動切換動作之無障礙滑桿卡片 (Actionable Slider POI Card)
+  // 依使用者規範：每一項都是滑桿，可用單指上下滑動選不同動作 (3D導引 / 查資訊 / Google導航 / 朗讀方位)
+  createActionablePoiCard(poi, customDescription = null) {
+    const actions = [
+      { id: "guide", icon: "🎯", label: "開啟 3D 導引" },
+      { id: "detail", icon: "ℹ️", label: "查詢詳細資訊" },
+      { id: "gmaps", icon: "🗺️", label: "Google 導航" },
+      { id: "speak", icon: "📢", label: "朗讀方位門牌" }
+    ];
+
+    let currentActionIdx = 0;
+
+    const li = document.createElement("li");
+    li.className = "actionable-poi-card";
+    li.setAttribute("role", "slider");
+    li.setAttribute("tabindex", "0");
+    li.setAttribute("aria-orientation", "vertical");
+    li.setAttribute("aria-valuemin", "0");
+    li.setAttribute("aria-valuemax", (actions.length - 1).toString());
+    li.setAttribute("aria-valuenow", "0");
+    li.setAttribute("aria-valuetext", actions[0].label);
+
+    li.style.cssText = "background: #0f172a; border: 2px solid #0284c7; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; user-select: none;";
+
+    const poiName = poi.name || "設施";
+    const clock = poi.clock_position || poi.clock_direction || "前方";
+    const distStr = poi.distance_m !== undefined ? `${Math.round(poi.distance_m)}米` : "";
+    const door = poi.door_number ? ` (${poi.door_number})` : "";
+    const cat = poi.category ? this.translateCategory(poi.category) : "";
+    const fullDesc = customDescription || `${poiName}${door}，${clock} ${distStr}${cat ? ` (${cat})` : ''}`;
+
+    const updateActionDisplay = (announceSpeech = false) => {
+      const act = actions[currentActionIdx];
+      li.setAttribute("aria-valuenow", currentActionIdx.toString());
+      li.setAttribute("aria-valuetext", act.label);
+      li.setAttribute("aria-label", `${fullDesc}。動作：${act.label}。單指上下滑動可切換動作，雙擊或按 Enter 立即執行`);
+
+      const badge = li.querySelector(".poi-action-badge");
+      if (badge) {
+        badge.innerHTML = `<span>${act.icon}</span> <strong>${act.label}</strong> <small style="font-size:0.82em; color:#93c5fd; margin-left:4px;">(⬍ 上下滑選)</small>`;
+      }
+
+      if (announceSpeech) {
+        if (navigator.vibrate) navigator.vibrate(25);
+        this.updateLiveLog(`【${poiName}】動作切換為：${act.label}`, false, true);
+      }
+    };
+
+    const row = document.createElement("div");
+    row.style.cssText = "display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;";
+
+    const info = document.createElement("div");
+    info.style.flex = "1";
+    info.style.minWidth = "160px";
+    info.innerHTML = `
+      <div style="font-size: 1.35em; font-weight: bold; color: #38bdf8; line-height: 1.3;">${poiName}${door}</div>
+      <div style="font-size: 1.15em; color: #cbd5e1; margin-top: 4px; font-weight: 500;">🧭 ${clock} ${distStr} ${cat ? `· ${cat}` : ''}</div>
+    `;
+
+    const badge = document.createElement("div");
+    badge.className = "poi-action-badge";
+    badge.style.cssText = "background: #0369a1; border: 2px solid #38bdf8; color: #ffffff; padding: 10px 14px; border-radius: 8px; font-size: 1.15em; font-weight: bold; display: flex; align-items: center; gap: 6px;";
+    badge.innerHTML = `<span>${actions[0].icon}</span> <strong>${actions[0].label}</strong> <small style="font-size:0.82em; color:#93c5fd; margin-left:4px;">(⬍ 上下滑選)</small>`;
+
+    row.appendChild(info);
+    row.appendChild(badge);
+    li.appendChild(row);
+
+    // Gestures: Touch swipe up / down (比照 ui-btn-around 的滑輪手勢)
+    let touchStartY = 0;
+    let isTouching = false;
+    let hasMoved = false;
+
+    li.addEventListener("touchstart", (e) => {
+      touchStartY = e.touches[0].clientY;
+      isTouching = true;
+      hasMoved = false;
+    }, { passive: true });
+
+    li.addEventListener("touchmove", (e) => {
+      if (!isTouching) return;
+      const dy = e.touches[0].clientY - touchStartY;
+      if (Math.abs(dy) > 28) {
+        hasMoved = true;
+        if (dy < 0) {
+          currentActionIdx = (currentActionIdx + 1) % actions.length;
+        } else {
+          currentActionIdx = (currentActionIdx - 1 + actions.length) % actions.length;
+        }
+        touchStartY = e.touches[0].clientY;
+        updateActionDisplay(true);
+      }
+    }, { passive: true });
+
+    li.addEventListener("touchend", () => {
+      isTouching = false;
+    });
+
+    // Keyboard ArrowUp / ArrowDown (NVDA 與外接鍵盤支援)
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowUp" || e.key === "PageUp") {
+        e.preventDefault();
+        currentActionIdx = (currentActionIdx + 1) % actions.length;
+        updateActionDisplay(true);
+      } else if (e.key === "ArrowDown" || e.key === "PageDown") {
+        e.preventDefault();
+        currentActionIdx = (currentActionIdx - 1 + actions.length) % actions.length;
+        updateActionDisplay(true);
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.executePoiAction(poi, actions[currentActionIdx].id, li);
+      }
+    });
+
+    li.addEventListener("click", (e) => {
+      if (hasMoved) {
+        hasMoved = false;
+        return;
+      }
+      this.executePoiAction(poi, actions[currentActionIdx].id, li);
+    });
+
+    updateActionDisplay(false);
+    return li;
+  }
+
+  // 🔍 搜尋內容與分類設施大字體渲染器
+  renderSearchResults(title, contentText, pois = []) {
+    const titleEl = document.getElementById("stream-title");
+    const summaryEl = document.getElementById("stream-summary-text");
+    const streamList = document.getElementById("activity-stream-list");
+
     if (title && titleEl) {
-      titleEl.textContent = `📋 ${title}`;
+      titleEl.textContent = `📋 ${title} (上下滑選動作)`;
     }
 
-    if (contentText) {
-      contentEl.innerHTML = contentText.split("\n").map(line => {
+    if (contentText && summaryEl) {
+      summaryEl.innerHTML = contentText.split("\n").map(line => {
         const trimmed = line.trim();
         if (!trimmed) return "";
         if (trimmed.startsWith("•") || trimmed.startsWith("📍") || trimmed.startsWith("【")) {
-          return `<div style="margin-bottom: 8px; font-weight: bold; color: #38bdf8; font-size: 1.05em;">${trimmed}</div>`;
+          return `<div style="margin-bottom: 6px; font-weight: bold; color: #38bdf8; font-size: 1.05em;">${trimmed}</div>`;
         }
-        return `<div style="margin-bottom: 6px; color: #cbd5e1;">${trimmed}</div>`;
+        return `<div style="margin-bottom: 4px; color: #cbd5e1;">${trimmed}</div>`;
       }).join("");
-    } else {
-      contentEl.textContent = "";
     }
 
-    if (poiListEl) {
-      poiListEl.innerHTML = "";
-      if (pois && pois.length > 0) {
-        pois.slice(0, 20).forEach((poi) => {
-          const li = document.createElement("li");
-          li.style.cssText = "background: #0f172a; border: 2px solid #0284c7; border-radius: 10px; padding: 14px 16px; font-size: 1.25em; display: flex; justify-content: space-between; align-items: center; gap: 12px;";
-          
-          const infoDiv = document.createElement("div");
-          infoDiv.style.flex = "1";
-          const clock = poi.clock_position || poi.clock_direction || "";
-          const dist = poi.distance_m !== undefined ? `${Math.round(poi.distance_m)}米` : "";
-          const door = poi.door_number ? ` (${poi.door_number})` : "";
-          infoDiv.innerHTML = `<span style="font-weight: bold; color: #38bdf8; font-size: 1.15em;">${poi.name}</span>${door}<div style="font-size: 0.95em; color: #94a3b8; margin-top: 4px; font-weight: 500;">🧭 ${clock} ${dist}</div>`;
-
-          const btn = document.createElement("button");
-          btn.className = "btn";
-          btn.style.cssText = "padding: 10px 16px; font-size: 1.05em; width: auto; background: #0284c7; color: #ffffff; border-radius: 8px; font-weight: bold; border: none; cursor: pointer;";
-          btn.textContent = "導引";
-          btn.setAttribute("aria-label", `開啟 3D 空間聲音導引前往 ${poi.name}`);
-          btn.onclick = () => {
-            this.start3DGuidance(poi);
-          };
-
-          li.appendChild(infoDiv);
-          li.appendChild(btn);
-          poiListEl.appendChild(li);
-        });
-      }
+    if (streamList && pois && Array.isArray(pois) && pois.length > 0) {
+      streamList.innerHTML = "";
+      pois.slice(0, 30).forEach((poi) => {
+        const card = this.createActionablePoiCard(poi);
+        streamList.appendChild(card);
+      });
     }
   }
 

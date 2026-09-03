@@ -82,25 +82,26 @@
       <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold; min-height: 52px; border-radius: 8px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌</button>
     </div>
 
-    <!-- 🔍 搜尋內容與結果大字展示區 (搜尋內容正常顯示且字體夠大；行走朗讀不在此干擾) -->
-    <section id="search-results-section" class="search-results-section" aria-label="搜尋內容與結果展示區" style="flex: 1; overflow-y: auto; background: #1e293b; border-radius: 12px; padding: 14px; border: 2px solid #0284c7; min-height: 180px; margin-bottom: 10px;">
-      <div id="search-results-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 8px; margin-bottom: 10px;">
-        <span id="search-results-title" style="font-size: 1.35em; font-weight: bold; color: #38bdf8;">📋 搜尋內容與結果</span>
-        <button id="search-results-clear-btn" style="background: #334155; color: #cbd5e1; border: 1px solid #475569; padding: 6px 14px; border-radius: 6px; font-size: 1.05em; font-weight: bold; cursor: pointer;" aria-label="清空目前搜尋結果">清空結果</button>
+    <!-- 📋 即時播報與設施探索清單 (行進播報與搜尋設施皆顯示，每項皆為可上下滑動切換動作之無障礙滑桿卡片) -->
+    <section id="activity-stream-section" class="activity-stream-section" aria-label="即時播報與設施探索清單" style="flex: 1; overflow-y: auto; background: #1e293b; border-radius: 12px; padding: 14px; border: 2px solid #0284c7; min-height: 220px; margin-bottom: 10px;">
+      <div id="stream-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 8px; margin-bottom: 12px;">
+        <span id="stream-title" style="font-size: 1.35em; font-weight: bold; color: #38bdf8;">📋 設施清單與行進播報 (上下滑選動作)</span>
+        <button id="stream-clear-btn" style="background: #334155; color: #cbd5e1; border: 1px solid #475569; padding: 6px 14px; border-radius: 6px; font-size: 1.05em; font-weight: bold; cursor: pointer;" aria-label="清空目前清單">清空清單</button>
       </div>
-      <div id="search-results-content" style="font-size: 1.35em; line-height: 1.6; color: #f8fafc;" tabindex="0">
-        可在上方搜尋列輸入地址、地標或路口，搜尋結果將以大字體清晰呈現於此。
+      <div id="stream-summary-text" style="font-size: 1.3em; line-height: 1.6; color: #f8fafc; margin-bottom: 12px;" tabindex="0">
+        歡迎使用 nmap！行進播報、搜尋結果與周遭設施皆呈現於此清單，每項皆可單指上下滑動切換動作。
       </div>
-      <ul id="search-poi-list" style="list-style: none; padding: 0; margin: 12px 0 0 0; display: flex; flex-direction: column; gap: 10px;">
-        <!-- 搜尋到的地點店家卡片將動態呈現於此 -->
+      <ul id="activity-stream-list" class="activity-stream-list" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px;">
+        <!-- 行進地標與搜尋結果皆轉為帶有滑桿動作之大字卡片 -->
       </ul>
     </section>
 
-    <!-- 歷史朗讀記錄容器 (依使用者需求：視覺上不佔據螢幕版面，但底層日誌完整記錄，杜絕 TalkBack 滑動干擾) -->
-    <div class="history-container" style="display: none;" aria-hidden="true">
-      <ul id="history-list" class="history-list">
-        <li class="history-item">歡迎使用 nmap！定位系統啟動中...</li>
-      </ul>
+    <!-- 隱藏的傳統列表與相容容器 -->
+    <div style="display:none;" aria-hidden="true">
+      <ul id="history-list"></ul>
+      <ul id="search-poi-list"></ul>
+      <div id="search-results-content"></div>
+      <div id="search-results-section"></div>
     </div>
   </main>
 

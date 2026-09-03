@@ -456,3 +456,19 @@ body {
   from { transform: scale(0.85); opacity: 0; }
   to { transform: scale(1.0); opacity: 1; }
 }
+
+/* 無障礙滑桿卡片 (Actionable Slider POI Card) */
+.actionable-poi-card {
+  transition: transform 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.actionable-poi-card:hover {
+  border-color: #38bdf8 !important;
+  background-color: #1e293b !important;
+}
+.actionable-poi-card:focus,
+.actionable-poi-card:focus-visible {
+  outline: 4px solid #38bdf8 !important;
+  outline-offset: 3px !important;
+  background-color: #1e293b !important;
+  border-color: #38bdf8 !important;
+}
