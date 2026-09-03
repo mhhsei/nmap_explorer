@@ -42,10 +42,20 @@
       </div>
     </div>
 
-    <!-- 手動地址/地標搜尋列 -->
-    <div id="search-section" style="display: flex; gap: 8px; margin-bottom: 10px;">
-      <input id="location-input-visible" type="text" placeholder="輸入地址、地標或座標 (例: 淡水老街)..." style="flex: 1; padding: 12px; font-size: 1.1em; border-radius: 8px; border: 1px solid #38bdf8; background: #1e293b; color: #f8fafc;" aria-label="輸入探索起點地址或地標">
-      <button id="search-go-btn" class="btn" style="width: auto; padding: 12px 18px;" aria-label="立即前往此地點開始探索">前往</button>
+    <!-- 手動地址/地標搜尋列 (大字體、高對比，支援低視能與視障快速觸達) -->
+    <div id="search-section" style="display: flex; gap: 10px; margin-bottom: 12px;">
+      <input id="location-input-visible" type="text" placeholder="輸入地址、地標或路口..." style="flex: 1; padding: 14px 16px; font-size: 1.45em; font-weight: bold; border-radius: 10px; border: 2px solid #38bdf8; background: #0f172a; color: #ffffff; min-height: 58px;" aria-label="輸入探索起點地址、地標或路口">
+      <button id="search-go-btn" class="btn" style="width: auto; padding: 14px 22px; font-size: 1.35em; font-weight: bold; background: #38bdf8; color: #0f172a; border-radius: 10px; min-height: 58px;" aria-label="立即前往此地點開始探索">前往</button>
+    </div>
+
+    <!-- 搜尋目標與當前位置大字看板 (大字體高對比卡片，TalkBack / NVDA 第一時間觸達) -->
+    <div id="search-display-card" role="region" aria-label="搜尋目標與當前位置資訊" style="background: #1e293b; border: 2px solid #0284c7; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px;">
+      <div id="search-target-text" style="font-size: 1.45em; font-weight: 900; color: #38bdf8; line-height: 1.35;" tabindex="0">
+        🔍 尚未設定搜尋目標
+      </div>
+      <div id="search-location-subtext" style="font-size: 1.25em; font-weight: bold; color: #f8fafc; margin-top: 6px; line-height: 1.4;">
+        🧭 目前位置：正在取得定位...
+      </div>
     </div>
 
     <!-- 3D 空間聲音導引首頁常駐控制條 (Active 3D Guidance Banner) -->
@@ -58,23 +68,24 @@
       <button id="home-stop-guidance-btn" class="btn" style="background: #ef4444; color: #ffffff; width: 100%; padding: 12px; font-size: 1.1em; font-weight: bold; border-radius: 8px;" aria-label="停止目前 3D 空間聲音導引">🛑 停止導引</button>
     </div>
 
-    <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-      <button id="ui-btn-scan" class="btn" aria-label="掃描前方店家">掃描前方 (L)</button>
-      <div id="ui-btn-around" class="btn" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0" aria-valuetext="全部設施" aria-label="周遭探索" style="background: #0284c7; color: #f8fafc; font-weight: bold; border: 2px solid #38bdf8; display: flex; align-items: center; justify-content: center; user-select: none; cursor: pointer;">🌐 全部設施 (P)</div>
-      <button id="ui-btn-intersection" class="btn" aria-label="查詢前方路口走向與分支">前方路口 (I)</button>
-      <button id="ui-btn-loc" class="btn" aria-label="播報當前定位">目前位置 (R)</button>
-      <button id="ui-btn-settings" class="btn" style="grid-column: span 2; background: #6366f1; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold;" aria-label="開啟偏好設定，可設定轉動播報方位、音效與觸覺回饋">⚙️ 偏好設定</button>
+    <div class="controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+      <button id="ui-btn-scan" class="btn" style="min-height: 64px; font-size: 1.25em; padding: 12px; border-radius: 10px; font-weight: bold;" aria-label="掃描前方店家">掃描前方 (L)</button>
+      <div id="ui-btn-around" class="btn" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0" aria-valuetext="全部設施" aria-label="周遭探索" style="min-height: 64px; font-size: 1.25em; background: #0284c7; color: #f8fafc; font-weight: bold; border: 2px solid #38bdf8; border-radius: 10px; display: flex; align-items: center; justify-content: center; user-select: none; cursor: pointer;">🌐 全部設施 (P)</div>
+      <button id="ui-btn-intersection" class="btn" style="min-height: 64px; font-size: 1.25em; padding: 12px; border-radius: 10px; font-weight: bold;" aria-label="查詢周遭四向路口走向與分支">周遭路口 (I)</button>
+      <button id="ui-btn-loc" class="btn" style="min-height: 64px; font-size: 1.25em; padding: 12px; border-radius: 10px; font-weight: bold;" aria-label="播報當前定位與門牌">目前位置 (R)</button>
+      <button id="ui-btn-settings" class="btn" style="grid-column: span 2; min-height: 58px; background: #6366f1; color: #f8fafc; font-size: 1.2em; padding: 12px; font-weight: bold; border-radius: 10px;" aria-label="開啟偏好設定，可設定轉動播報方位、音效與觸覺回饋">⚙️ 偏好設定</button>
     </div>
 
-    <div class="sub-controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-      <button id="ui-btn-map-db" class="btn" style="background: #0d9488; color: #f8fafc; font-size: 1em; padding: 10px; font-weight: bold;" aria-label="管理離線地圖資料庫，涵蓋全台灣193萬店家與171萬營業稅籍資料">📥 離線圖資管理</button>
-      <button id="ui-btn-check-update" class="btn" style="background: #0369a1; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="檢查 GitHub 最新發布版本">檢查更新</button>
-      <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1em; padding: 10px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌</button>
+    <div class="sub-controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+      <button id="ui-btn-map-db" class="btn" style="background: #0d9488; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold; min-height: 52px; border-radius: 8px;" aria-label="管理離線地圖資料庫，涵蓋全台灣193萬店家與171萬營業稅籍資料">📥 離線圖資管理</button>
+      <button id="ui-btn-check-update" class="btn" style="background: #0369a1; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold; min-height: 52px; border-radius: 8px;" aria-label="檢查 GitHub 最新發布版本">檢查更新</button>
+      <button id="ui-btn-export-log" class="btn" style="grid-column: span 2; background: #334155; color: #f8fafc; font-size: 1.1em; padding: 12px; font-weight: bold; min-height: 52px; border-radius: 8px;" aria-label="匯出並分享手機診斷日誌">匯出診斷日誌</button>
     </div>
 
-    <div class="history-container" aria-label="歷史訊息與店家列表，可上下滑動逐條讀取或點擊地標查看詳情">
+    <!-- 歷史朗讀記錄容器 (依使用者需求：視覺上不佔據螢幕版面，但底層日誌完整記錄，杜絕 TalkBack 滑動干擾) -->
+    <div class="history-container" style="display: none;" aria-hidden="true">
       <ul id="history-list" class="history-list">
-        <li class="history-item" tabindex="0">歡迎使用 nmap！定位系統啟動中...</li>
+        <li class="history-item">歡迎使用 nmap！定位系統啟動中...</li>
       </ul>
     </div>
   </main>

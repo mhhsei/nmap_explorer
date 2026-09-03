@@ -1329,7 +1329,9 @@ class NmapWebApp {
     .then(data => {
         if (data.success) {
             this.updateLiveLog(data.narration || data.result || '', false, true);
-            if (this.liveLog && this.liveLog.firstElementChild) this.historyList.firstElementChild.focus();
+            if (this.liveLog && this.liveLog.firstElementChild && this.historyList && this.historyList.offsetParent !== null && this.historyList.firstElementChild) {
+                this.historyList.firstElementChild.focus();
+            }
         }
     });
   }
@@ -3361,6 +3363,7 @@ class NmapWebApp {
           }
           this.updatePOIs(data.pois);
           this.renderRadarCanvas(data);
+          this.updateSearchDisplayCard(null, data);
         } else {
           this.updateLiveLog("正在等待 GPS 衛星定位中...", false, forceFocus);
         }
@@ -3372,6 +3375,7 @@ class NmapWebApp {
             this.updateLiveLog(`⚡ [離線圖資模式 (IndexedDB)] ${cachedData.concise_report || cachedData.full_report}`);
             this.updatePOIs(cachedData.pois);
             this.renderRadarCanvas(cachedData);
+            this.updateSearchDisplayCard(null, cachedData);
           } else {
             this.updateLiveLog("伺服器連線中斷，且本機尚無離線地圖快取。", true);
           }
@@ -3379,7 +3383,30 @@ class NmapWebApp {
       });
   }
 
+  updateSearchDisplayCard(searchQuery = null, statusData = null) {
+    const targetEl = document.getElementById("search-target-text");
+    const locEl = document.getElementById("search-location-subtext");
+    if (!targetEl || !locEl) return;
+
+    if (searchQuery) {
+      targetEl.textContent = `🔍 搜尋目標：${searchQuery}`;
+    }
+
+    const data = statusData || this.lastData;
+    if (data && data.is_loaded) {
+      const road = data.road_info ? data.road_info.street_name : "";
+      const door = (data.road_info && data.road_info.door_numbers) ? `，${data.road_info.door_numbers}` : "";
+      const head = (data.heading_deg !== undefined && data.heading_deg !== null) ? ` (朝向 ${Math.round(data.heading_deg)}°)` : "";
+      if (road && road !== "未知道路") {
+        locEl.textContent = `🧭 目前位置：${road}${door}${head}`;
+      } else if (data.location_label && !data.location_label.includes("未初始化")) {
+        locEl.textContent = `🧭 目前位置：${data.location_label}${head}`;
+      }
+    }
+  }
+
   teleport(locationInput) {
+    this.updateSearchDisplayCard(locationInput);
     this.localLat = null;
     this.localLon = null;
     this.localHeading = 0;
@@ -4964,6 +4991,7 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
                 window.app.lastData = data;
                 if (window.app.renderRadarCanvas) window.app.renderRadarCanvas(data);
                 if (window.app.updatePOIs) window.app.updatePOIs(data.pois || []);
+                if (window.app.updateSearchDisplayCard) window.app.updateSearchDisplayCard(null, data);
                 
                 if (data.ground_elevation_m !== undefined && window.nmapAndroid && typeof window.nmapAndroid.setGroundElevation === 'function') {
                     window.nmapAndroid.setGroundElevation(data.ground_elevation_m);
