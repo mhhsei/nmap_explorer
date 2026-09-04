@@ -58,6 +58,9 @@ class OverpassClient:
           node["public_transport"](around:{r},{lat},{lon});
           node["railway"](around:{r},{lat},{lon});
           way["building"](around:{r},{lat},{lon});
+          node["barrier"](around:{r},{lat},{lon});
+          way["barrier"](around:{r},{lat},{lon});
+          node["entrance"](around:{r},{lat},{lon});
         );
         out body;
         >;
@@ -171,8 +174,11 @@ class OverpassClient:
         traffic_signals = []
         transit_stops = []
         buildings = []
-
         house_numbers = []
+        barriers = []
+        entrances = []
+        steps = []
+        micro_amenities = []
 
         # Parse nodes for standalone POIs, crossings, transit, and house numbers
         for node_id, (lat, lon, tags) in nodes_dict.items():
@@ -222,6 +228,68 @@ class OverpassClient:
                     "lon": lon,
                     "transit_type": transit_type,
                     "ref": tags.get("ref", ""),
+                    "tags": tags
+                })
+
+            # 【微型無障礙設施 1】：車擋柱、柵欄與閘門等實體路障 (Node Barriers)
+            if "barrier" in tags:
+                b_type = tags.get("barrier", "")
+                b_name = self._translate_barrier(b_type)
+                barriers.append({
+                    "id": node_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "barrier_type": b_type,
+                    "name": b_name,
+                    "access": tags.get("access", ""),
+                    "wheelchair": tags.get("wheelchair", ""),
+                    "tags": tags
+                })
+
+            # 【微型無障礙設施 2】：建築物與店家實體出入口 (Node Entrances)
+            if "entrance" in tags:
+                e_type = tags.get("entrance", "yes")
+                e_name = self._translate_entrance(e_type)
+                entrances.append({
+                    "id": node_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "entrance_type": e_type,
+                    "name": e_name,
+                    "door": tags.get("door", ""),
+                    "wheelchair": tags.get("wheelchair", ""),
+                    "tags": tags
+                })
+
+            # 【微型無障礙設施 3】：公眾飲水機、長椅、公廁、郵筒、噴泉 (Micro Amenities)
+            micro_type = self._check_micro_amenity(tags)
+            if micro_type:
+                m_name = tags.get("name") or tags.get("name:zh") or self._translate_micro_amenity(micro_type, tags)
+                micro_amenities.append({
+                    "id": node_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "amenity_type": micro_type,
+                    "name": m_name,
+                    "wheelchair": tags.get("wheelchair", ""),
+                    "fee": tags.get("fee", ""),
+                    "tags": tags
+                })
+
+            # 【微型無障礙設施 4】：獨立階梯/單階台階節點 (Node Steps)
+            if hw in ("steps", "step"):
+                steps.append({
+                    "id": node_id,
+                    "name": tags.get("name") or "台階/階梯",
+                    "step_count": tags.get("step_count", ""),
+                    "handrail": tags.get("handrail", "unknown"),
+                    "ramp": tags.get("ramp") or tags.get("ramp:wheelchair", "unknown"),
+                    "surface": tags.get("surface", "石階/水泥"),
+                    "tactile_paving": tags.get("tactile_paving", "unknown"),
+                    "incline": tags.get("incline", ""),
+                    "center_lat": lat,
+                    "center_lon": lon,
+                    "geometry": [(lat, lon)],
                     "tags": tags
                 })
 
@@ -277,6 +345,37 @@ class OverpassClient:
                         "lanes": tags.get("lanes", "1"),
                         "oneway": tags.get("oneway", "no"),
                         "surface": tags.get("surface", "unknown"),
+                        "tags": tags
+                    })
+
+                    # 【微型無障礙設施 4】：路網階梯結構 (Way Steps)
+                    if tags["highway"] == "steps":
+                        steps.append({
+                            "id": way_id,
+                            "name": tags.get("name") or "人行階梯",
+                            "step_count": tags.get("step_count", ""),
+                            "handrail": tags.get("handrail", "unknown"),
+                            "ramp": tags.get("ramp") or tags.get("ramp:wheelchair", "unknown"),
+                            "surface": tags.get("surface", "石階/水泥"),
+                            "tactile_paving": tags.get("tactile_paving", "unknown"),
+                            "incline": tags.get("incline", ""),
+                            "center_lat": avg_lat,
+                            "center_lon": avg_lon,
+                            "geometry": geom,
+                            "tags": tags
+                        })
+
+                if "barrier" in tags:
+                    b_type = tags.get("barrier", "")
+                    barriers.append({
+                        "id": way_id,
+                        "lat": avg_lat,
+                        "lon": avg_lon,
+                        "barrier_type": b_type,
+                        "name": self._translate_barrier(b_type),
+                        "access": tags.get("access", ""),
+                        "wheelchair": tags.get("wheelchair", ""),
+                        "geometry": geom,
                         "tags": tags
                     })
 
@@ -364,7 +463,11 @@ class OverpassClient:
             "traffic_signals": traffic_signals,
             "transit_stops": transit_stops,
             "buildings": buildings,
-            "house_numbers": house_numbers
+            "house_numbers": house_numbers,
+            "barriers": barriers,
+            "entrances": entrances,
+            "steps": steps,
+            "micro_amenities": micro_amenities
         }
 
     def _extract_poi_category(self, tags: Dict[str, str]) -> Optional[str]:
@@ -408,3 +511,77 @@ class OverpassClient:
         }
         raw_key = (category or "").split(":")[-1].lower()
         return translations.get(raw_key, raw_key.replace("_", " "))
+
+    def _translate_barrier(self, barrier_type: str) -> str:
+        """
+        【路障設施白話中文對照 (Barrier Dictionary)】
+        生活化比喻：人行道上的「路障」就像防守球員，
+        車擋柱防機車但也容易絆倒視障者，清楚報讀名稱才能提早做出繞行反應。
+        """
+        b_map = {
+            "bollard": "車擋柱",
+            "cycle_barrier": "自行車阻擋欄",
+            "block": "水泥路阻",
+            "fence": "防護圍欄",
+            "gate": "出入通道門",
+            "wall": "矮牆/圍牆",
+            "turnstile": "旋轉閘門",
+            "lift_gate": "升降擋桿",
+            "retaining_wall": "擋土牆",
+            "stile": "階梯式過欄",
+            "chain": "防護阻隔鍊條"
+        }
+        return b_map.get((barrier_type or "").lower(), f"{barrier_type}路障")
+
+    def _translate_entrance(self, entrance_type: str) -> str:
+        """
+        【建築出入口類型對照 (Entrance Dictionary)】
+        生活化比喻：找到建築物就像找到大西瓜，但「瓜蒂門口在哪裡」才是視障者最渴望知道的！
+        """
+        e_map = {
+            "main": "大樓正門入口",
+            "yes": "建築出入口",
+            "wheelchair": "無障礙專用入口",
+            "staircase": "樓梯間出入口",
+            "service": "後門/服務出入口",
+            "emergency": "緊急逃生出口",
+            "exit": "專用出口",
+            "entrance": "專用入口"
+        }
+        return e_map.get((entrance_type or "").lower(), f"{entrance_type}出入口")
+
+    def _check_micro_amenity(self, tags: Dict[str, str]) -> Optional[str]:
+        """檢查是否為公共微型設施（飲水機、長椅、公廁、郵筒、野餐桌等）"""
+        amenity = tags.get("amenity")
+        if amenity in ("drinking_water", "bench", "toilets", "waste_basket", "fountain", "post_box", "shelter"):
+            return amenity
+        leisure = tags.get("leisure")
+        if leisure in ("picnic_table", "fitness_station"):
+            return leisure
+        return None
+
+    def _translate_micro_amenity(self, micro_type: str, tags: Dict[str, str]) -> str:
+        """
+        【微型公眾設施生活化名稱轉換】
+        """
+        if micro_type == "drinking_water":
+            return "公眾飲水機"
+        elif micro_type == "bench":
+            return "休息長椅"
+        elif micro_type == "toilets":
+            is_wheelchair = tags.get("wheelchair") in ("yes", "designated")
+            return "無障礙公共廁所" if is_wheelchair else "公共廁所"
+        elif micro_type == "waste_basket":
+            return "公用垃圾桶"
+        elif micro_type == "fountain":
+            return "景觀噴水池"
+        elif micro_type == "post_box":
+            return "中華郵政郵筒"
+        elif micro_type == "shelter":
+            return "遮雨涼亭/候車亭"
+        elif micro_type == "picnic_table":
+            return "戶外野餐桌椅"
+        elif micro_type == "fitness_station":
+            return "公園體健運動設施"
+        return micro_type.replace("_", " ")
+

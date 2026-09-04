@@ -82,7 +82,46 @@ class SidewalkHazardScanner:
     """
 
     def __init__(self, custom_hazards: Optional[List[Dict[str, Any]]] = None):
-        self.hazards_database = custom_hazards if custom_hazards is not None else DEFAULT_SIDEWALK_HAZARDS
+        self.base_hazards = list(custom_hazards if custom_hazards is not None else DEFAULT_SIDEWALK_HAZARDS)
+        self.dynamic_hazards: List[Dict[str, Any]] = []
+        self.hazards_database = list(self.base_hazards)
+
+    def set_dynamic_hazards(self, barriers: List[Dict[str, Any]]):
+        """
+        【動態注入 OSM 現場人行道障礙物 (車擋柱、防護欄、路阻)】
+        作用：將 Overpass 現場抓到的真實實體障礙物注入生命安全避障雷達，
+        與台電變電箱、消防栓合併進行前向碰撞預警。
+        """
+        self.dynamic_hazards = []
+        seen_coords = {(round(h["lat"], 5), round(h["lon"], 5)) for h in self.base_hazards}
+
+        for b in barriers:
+            b_lat = b.get("lat")
+            b_lon = b.get("lon")
+            if b_lat is None or b_lon is None:
+                continue
+
+            coord_key = (round(b_lat, 5), round(b_lon, 5))
+            if coord_key in seen_coords:
+                continue
+            seen_coords.add(coord_key)
+
+            b_type = (b.get("barrier_type") or "").lower()
+            # 優先對車擋柱、自行車阻擋欄、水泥路阻、矮牆等具有碰撞絆倒危險的設施進行防護
+            hazard_level = "WARNING" if b_type in ("bollard", "cycle_barrier", "block", "turnstile") else "CAUTION"
+            b_name = b.get("name") or "路面障礙物"
+
+            self.dynamic_hazards.append({
+                "id": f"OSM_HAZ_{b.get('id', len(self.dynamic_hazards))}",
+                "name": b_name,
+                "hazard_type": f"BARRIER_{b_type.upper()}" if b_type else "BARRIER",
+                "hazard_level": hazard_level,
+                "lat": b_lat,
+                "lon": b_lon,
+                "description": f"OSM 標註之現場設施：{b_name}"
+            })
+
+        self.hazards_database = self.base_hazards + self.dynamic_hazards
 
     def scan_forward_corridor(
         self,

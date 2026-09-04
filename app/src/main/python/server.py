@@ -116,6 +116,14 @@ def build_status_dict(
     sidewalk_hazards = agent.world_model.get_sidewalk_hazards(cur_lat, cur_lon, cur_head)
     mrt_exits = agent.world_model.get_mrt_accessible_exits(cur_lat, cur_lon, cur_head)
 
+    # 查詢微型無障礙設施 (車擋柱/建物真實出入口/人行階梯/公眾微設施)
+    micro_facilities = {
+        "barriers": agent.world_model.get_nearby_barriers(cur_lat, cur_lon, cur_head, radius_m=25.0),
+        "entrances": agent.world_model.get_nearby_entrances(cur_lat, cur_lon, cur_head, radius_m=35.0),
+        "steps": agent.world_model.get_nearby_steps(cur_lat, cur_lon, cur_head, radius_m=40.0),
+        "micro_amenities": agent.world_model.get_nearby_micro_amenities(cur_lat, cur_lon, cur_head, radius_m=50.0)
+    }
+
     if include_full_report:
         full_report = reporter.generate_full_report(
             agent,
@@ -153,6 +161,7 @@ def build_status_dict(
         "traffic_signal": traffic_signal,
         "sidewalk_hazards": sidewalk_hazards,
         "mrt_exits": mrt_exits,
+        "micro_facilities": micro_facilities,
         "full_report": full_report,
         "ground_elevation_m": getattr(agent, "current_ground_elevation", 0.0),
         "concise_report": concise_report,
@@ -571,6 +580,41 @@ def get_intersection():
         "surrounding_junctions": surrounding.get("sectors"),
         "surrounding_report": surrounding.get("report"),
         "report": report
+    })
+
+
+@app.route("/api/micro_facilities", method=["GET", "POST"])
+def get_micro_facilities():
+    """
+    【微型無障礙設施精準查詢 (Micro-Accessibility Facilities)】
+    作用：隨時查詢身邊周遭之車擋柱 (barriers)、真實建築出入口 (entrances)、行人階梯扶手 (steps)、公眾微設施 (micro_amenities)。
+    支援即時 GPS 朝向與經緯度覆蓋。
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+
+    h = request.query.get("heading_deg") or (request.json.get("heading_deg") if request.json else None)
+    lat = request.query.get("lat") or (request.json.get("lat") if request.json else None)
+    lon = request.query.get("lon") or (request.json.get("lon") if request.json else None)
+
+    cur_head = float(h) if (h is not None and str(h).strip() != "") else agent.heading_deg
+    cur_lat = float(lat) if (lat is not None and str(lat).strip() != "") else agent.lat
+    cur_lon = float(lon) if (lon is not None and str(lon).strip() != "") else agent.lon
+
+    barriers = agent.world_model.get_nearby_barriers(cur_lat, cur_lon, cur_head, radius_m=30.0)
+    entrances = agent.world_model.get_nearby_entrances(cur_lat, cur_lon, cur_head, radius_m=35.0)
+    steps = agent.world_model.get_nearby_steps(cur_lat, cur_lon, cur_head, radius_m=40.0)
+    micro_amenities = agent.world_model.get_nearby_micro_amenities(cur_lat, cur_lon, cur_head, radius_m=50.0)
+
+    return json_response({
+        "success": True,
+        "lat": cur_lat,
+        "lon": cur_lon,
+        "heading_deg": cur_head,
+        "barriers": barriers,
+        "entrances": entrances,
+        "steps": steps,
+        "micro_amenities": micro_amenities
     })
 
 

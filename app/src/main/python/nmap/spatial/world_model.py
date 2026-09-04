@@ -176,6 +176,17 @@ class WorldModel:
         self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
         self.house_number_rtree = GridSpatialIndex(cell_size_deg=0.001)
         
+        # 微型無障礙設施空間索引 (車擋柱/出入口/階梯/公眾微設施)
+        self.barrier_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.entrance_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.steps_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.micro_amenity_rtree = GridSpatialIndex(cell_size_deg=0.001)
+
+        self.barriers: List[Dict[str, Any]] = []
+        self.entrances: List[Dict[str, Any]] = []
+        self.steps: List[Dict[str, Any]] = []
+        self.micro_amenities: List[Dict[str, Any]] = []
+        
         self.poi_fetcher = RealPoiFetcher()
         self.next_external_poi_id = 1000000
         self.rtree_lock = threading.Lock()
@@ -238,6 +249,10 @@ class WorldModel:
             self.traffic_signal_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.house_number_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.barrier_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.entrance_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.steps_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.micro_amenity_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.next_external_poi_id = 1000000
             self.hmm_matcher.reset()
 
@@ -247,6 +262,10 @@ class WorldModel:
         self.transit_stops = parsed_data.get("transit_stops", [])
         self.buildings = parsed_data.get("buildings", [])
         self.house_numbers = parsed_data.get("house_numbers", [])
+        self.barriers = parsed_data.get("barriers", [])
+        self.entrances = parsed_data.get("entrances", [])
+        self.steps = parsed_data.get("steps", [])
+        self.micro_amenities = parsed_data.get("micro_amenities", [])
 
         # 構建 POI 列表與空間網格索引
         raw_pois = parsed_data.get("pois", [])
@@ -457,6 +476,43 @@ class WorldModel:
         for hn in self.house_numbers:
             self.house_number_rtree.insert(hn_idx, (hn["lon"], hn["lat"], hn["lon"], hn["lat"]), obj=hn)
             hn_idx += 1
+
+        # 6. 構建車擋路障空間索引與動態注入避障雷達
+        b_idx = 0
+        for b in self.barriers:
+            b_lat = b.get("lat")
+            b_lon = b.get("lon")
+            if b_lat is not None and b_lon is not None:
+                self.barrier_rtree.insert(b_idx, (b_lon, b_lat, b_lon, b_lat), obj=b)
+                b_idx += 1
+        self.hazard_scanner.set_dynamic_hazards(self.barriers)
+
+        # 7. 構建建物大門與出入口空間索引
+        e_idx = 0
+        for ent in self.entrances:
+            e_lat = ent.get("lat")
+            e_lon = ent.get("lon")
+            if e_lat is not None and e_lon is not None:
+                self.entrance_rtree.insert(e_idx, (e_lon, e_lat, e_lon, e_lat), obj=ent)
+                e_idx += 1
+
+        # 8. 構建階梯與台階空間索引
+        st_idx = 0
+        for st in self.steps:
+            c_lat = st.get("center_lat") or (st["geometry"][0][0] if st.get("geometry") else None)
+            c_lon = st.get("center_lon") or (st["geometry"][0][1] if st.get("geometry") else None)
+            if c_lat is not None and c_lon is not None:
+                self.steps_rtree.insert(st_idx, (c_lon, c_lat, c_lon, c_lat), obj=st)
+                st_idx += 1
+
+        # 9. 構建公共微型設施 (飲水機/長椅/公廁/郵筒) 空間索引
+        ma_idx = 0
+        for ma in self.micro_amenities:
+            ma_lat = ma.get("lat")
+            ma_lon = ma.get("lon")
+            if ma_lat is not None and ma_lon is not None:
+                self.micro_amenity_rtree.insert(ma_idx, (ma_lon, ma_lat, ma_lon, ma_lat), obj=ma)
+                ma_idx += 1
 
         # 1. 瞬間從本地離線資料庫（Overture + Gov）載入地標（~2ms 零延遲注入）
         target_ref_lat = ref_lat
@@ -951,6 +1007,189 @@ class WorldModel:
                     "distance_m": round(dist, 1),
                     "clock_position": clock,
                     "relative_direction": rel_dir
+                })
+
+        results.sort(key=lambda x: x["distance_m"])
+        return results
+
+    def get_nearby_barriers(self, lat: float, lon: float, heading_deg: float, radius_m: float = 30.0) -> List[Dict[str, Any]]:
+        """
+        【查詢周遭車擋柱、柵欄與閘門】
+        作用：偵測人行道、公園、廣場入口處的各類車擋柱與路障，提供距離與鐘點方位。
+        """
+        results = []
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_lon = radius_m / (111139.0 * cos_lat)
+        r_lat = radius_m / 111139.0
+        bounds = (lon - r_lon, lat - r_lat, lon + r_lon, lat + r_lat)
+
+        for item in self.barrier_rtree.intersection(bounds, objects=True):
+            b = item.object
+            b_lat, b_lon = b["lat"], b["lon"]
+            dist = haversine_distance(lat, lon, b_lat, b_lon)
+            if dist <= radius_m:
+                t_brng = calculate_bearing(lat, lon, b_lat, b_lon)
+                rel_brng = relative_bearing(heading_deg, t_brng)
+                clock = bearing_to_clock_position(rel_brng)
+                rel_dir = bearing_to_relative_direction(rel_brng)
+
+                b_name = b.get("name") or "路障"
+                results.append({
+                    "id": b.get("id"),
+                    "name": b_name,
+                    "barrier_type": b.get("barrier_type", ""),
+                    "access": b.get("access", ""),
+                    "wheelchair": b.get("wheelchair", ""),
+                    "lat": b_lat,
+                    "lon": b_lon,
+                    "distance_m": round(dist, 1),
+                    "clock_position": clock,
+                    "relative_direction": rel_dir,
+                    "speech_prompt": f"{rel_dir} {clock} {round(dist)}米：【{b_name}】"
+                })
+
+        results.sort(key=lambda x: x["distance_m"])
+        return results
+
+    def get_nearby_entrances(self, lat: float, lon: float, heading_deg: float, radius_m: float = 30.0) -> List[Dict[str, Any]]:
+        """
+        【查詢周遭大樓與店家真實大門出入口】
+        作用：指引視障者直接找到實體門口（正門、無障礙入口、側門），消除在建築物外牆徘徊摸索的痛點。
+        """
+        results = []
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_lon = radius_m / (111139.0 * cos_lat)
+        r_lat = radius_m / 111139.0
+        bounds = (lon - r_lon, lat - r_lat, lon + r_lon, lat + r_lat)
+
+        for item in self.entrance_rtree.intersection(bounds, objects=True):
+            e = item.object
+            e_lat, e_lon = e["lat"], e["lon"]
+            dist = haversine_distance(lat, lon, e_lat, e_lon)
+            if dist <= radius_m:
+                t_brng = calculate_bearing(lat, lon, e_lat, e_lon)
+                rel_brng = relative_bearing(heading_deg, t_brng)
+                clock = bearing_to_clock_position(rel_brng)
+                rel_dir = bearing_to_relative_direction(rel_brng)
+
+                e_name = e.get("name") or "建築出入口"
+                door_type = e.get("door", "")
+                wheelchair = e.get("wheelchair", "")
+                detail_note = ""
+                if wheelchair in ("yes", "designated"):
+                    detail_note += " (無障礙入口)"
+                if door_type in ("automatic", "sliding"):
+                    detail_note += " 自動門"
+
+                results.append({
+                    "id": e.get("id"),
+                    "name": f"{e_name}{detail_note}".strip(),
+                    "entrance_type": e.get("entrance_type", "yes"),
+                    "door": door_type,
+                    "wheelchair": wheelchair,
+                    "lat": e_lat,
+                    "lon": e_lon,
+                    "distance_m": round(dist, 1),
+                    "clock_position": clock,
+                    "relative_direction": rel_dir,
+                    "speech_prompt": f"{rel_dir} {clock} {round(dist)}米：【{e_name}{detail_note}】"
+                })
+
+        results.sort(key=lambda x: x["distance_m"])
+        return results
+
+    def get_nearby_steps(self, lat: float, lon: float, heading_deg: float, radius_m: float = 40.0) -> List[Dict[str, Any]]:
+        """
+        【查詢周遭行人階梯、階數與扶手資訊】
+        作用：提前告知即將面對的樓梯、階數多寡、是否有斜坡或扶手，讓視障者做好白杖與腳步心理準備。
+        """
+        results = []
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_lon = radius_m / (111139.0 * cos_lat)
+        r_lat = radius_m / 111139.0
+        bounds = (lon - r_lon, lat - r_lat, lon + r_lon, lat + r_lat)
+
+        for item in self.steps_rtree.intersection(bounds, objects=True):
+            st = item.object
+            c_lat = st.get("center_lat") or (st["geometry"][0][0] if st.get("geometry") else lat)
+            c_lon = st.get("center_lon") or (st["geometry"][0][1] if st.get("geometry") else lon)
+            dist = haversine_distance(lat, lon, c_lat, c_lon)
+            if dist <= radius_m:
+                t_brng = calculate_bearing(lat, lon, c_lat, c_lon)
+                rel_brng = relative_bearing(heading_deg, t_brng)
+                clock = bearing_to_clock_position(rel_brng)
+                rel_dir = bearing_to_relative_direction(rel_brng)
+
+                st_name = st.get("name") or "人行階梯"
+                step_cnt = st.get("step_count", "")
+                handrail = st.get("handrail", "")
+                ramp = st.get("ramp", "")
+
+                features = []
+                if step_cnt:
+                    features.append(f"共{step_cnt}階")
+                if handrail == "yes":
+                    features.append("有扶手")
+                elif handrail == "no":
+                    features.append("無扶手")
+                if ramp in ("yes", "separate"):
+                    features.append("附設斜坡")
+
+                feature_str = f" ({'、'.join(features)})" if features else ""
+
+                results.append({
+                    "id": st.get("id"),
+                    "name": f"{st_name}{feature_str}",
+                    "step_count": step_cnt,
+                    "handrail": handrail,
+                    "ramp": ramp,
+                    "surface": st.get("surface", ""),
+                    "tactile_paving": st.get("tactile_paving", "unknown"),
+                    "lat": c_lat,
+                    "lon": c_lon,
+                    "distance_m": round(dist, 1),
+                    "clock_position": clock,
+                    "relative_direction": rel_dir,
+                    "speech_prompt": f"{rel_dir} {clock} {round(dist)}米：【{st_name}{feature_str}】"
+                })
+
+        results.sort(key=lambda x: x["distance_m"])
+        return results
+
+    def get_nearby_micro_amenities(self, lat: float, lon: float, heading_deg: float, radius_m: float = 50.0) -> List[Dict[str, Any]]:
+        """
+        【查詢周遭公眾微型設施（飲水機、長椅、公廁、郵筒、涼亭）】
+        作用：精準標註公園或路側最貼近民生需求的休憩設施，即使 OSM 未標註店名亦能完整掌握。
+        """
+        results = []
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_lon = radius_m / (111139.0 * cos_lat)
+        r_lat = radius_m / 111139.0
+        bounds = (lon - r_lon, lat - r_lat, lon + r_lon, lat + r_lat)
+
+        for item in self.micro_amenity_rtree.intersection(bounds, objects=True):
+            ma = item.object
+            ma_lat, ma_lon = ma["lat"], ma["lon"]
+            dist = haversine_distance(lat, lon, ma_lat, ma_lon)
+            if dist <= radius_m:
+                t_brng = calculate_bearing(lat, lon, ma_lat, ma_lon)
+                rel_brng = relative_bearing(heading_deg, t_brng)
+                clock = bearing_to_clock_position(rel_brng)
+                rel_dir = bearing_to_relative_direction(rel_brng)
+
+                ma_name = ma.get("name") or "公眾設施"
+                results.append({
+                    "id": ma.get("id"),
+                    "name": ma_name,
+                    "amenity_type": ma.get("amenity_type", ""),
+                    "wheelchair": ma.get("wheelchair", ""),
+                    "fee": ma.get("fee", ""),
+                    "lat": ma_lat,
+                    "lon": ma_lon,
+                    "distance_m": round(dist, 1),
+                    "clock_position": clock,
+                    "relative_direction": rel_dir,
+                    "speech_prompt": f"{rel_dir} {clock} {round(dist)}米：【{ma_name}】"
                 })
 
         results.sort(key=lambda x: x["distance_m"])

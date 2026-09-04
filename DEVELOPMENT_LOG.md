@@ -47,6 +47,29 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.0 - 2026-09-04] - 實裝 OSM 全維度微型無障礙設施提煉、純 Python 四向空間網格索引與前向車擋防撞雷達連動
+- **♿ 1. OSM 微型無障礙設施多維提煉引擎 (`overpass.py`)**:
+  - **白話視障痛點**：過去 OSM Overpass 查詢忽略了 `barrier` 與 `entrance`，且在解析 `amenity` 時若沒有店名 (`name`) 就整筆丟棄。然而公園飲水機、休息長椅、公廁、路口車擋柱在 OSM 中絕大多數都沒有專屬名字，導致視障者「明明身處公園，卻完全聽不到身邊有飲水機或長椅可以休息」。
+  - **4 大無障礙實體全面捕捉**：
+    1. `barriers` (實體路障)：車擋柱 (`bollard`)、自行車阻擋欄 (`cycle_barrier`)、水泥路阻 (`block`)、防護圍欄 (`fence`)、通道門 (`gate`)、旋轉閘門 (`turnstile`)。
+    2. `entrances` (真實建築大門)：大樓店家正門 (`entrance=main`)、建築出入口 (`yes`)、無障礙專用入口 (`wheelchair`)、樓梯間出入口 (`staircase`)、自動門/推拉門型態 (`door`)。
+    3. `steps` (人行階梯與台階)：階數 (`step_count`)、扶手有無 (`handrail`)、斜坡 (`ramp`)、路面材質 (`surface`)、導盲磚鋪設 (`tactile_paving`)。
+    4. `micro_amenities` (微型公眾設施)：公眾飲水機 (`drinking_water`)、休息長椅 (`bench`)、無障礙公共廁所 (`toilets`)、公用垃圾桶 (`waste_basket`)、景觀噴水池 (`fountain`)、中華郵政郵筒 (`post_box`)、遮雨涼亭 (`shelter`)、公園體健設施 (`fitness_station`)。
+  - **自動白話翻譯機制**：無店名標籤時，自動依據標籤屬性轉換為最親切的中文名稱（例如：`wheelchair=yes` 的 `amenity=toilets` 自動轉換為「無障礙公共廁所」）。
+- **🗂️ 2. WorldModel 四組獨立空間網格索引 (`world_model.py`)**:
+  - **極速網格檢索**：新增 `barrier_rtree`, `entrance_rtree`, `steps_rtree`, `micro_amenity_rtree` 純 Python 網格索引 (`GridSpatialIndex(cell_size_deg=0.001)`)，杜絕大範圍查詢的遍歷延遲。
+  - **專屬查詢 API 與語音提示**：
+    - `get_nearby_barriers()`: 回傳車擋柱與路障的鐘點方位、距離與繞行提示。
+    - `get_nearby_entrances()`: 回傳建築物實體大門（正門、無障礙入口、自動門），終結盲人在水泥外牆摸索門把的困境。
+    - `get_nearby_steps()`: 提前預告階數與扶手（例如：「人行階梯 (共10階、有扶手、附設斜坡)」），讓盲杖行進提前做好心理準備。
+    - `get_nearby_micro_amenities()`: 回傳身邊休憩設施與飲水廁所。
+  - **新端點與綜合狀態連動 (`server.py`)**：在 `build_status_dict` 注入 `micro_facilities` 節點，並提供 `/api/micro_facilities` 獨立端點。
+- **🛡️ 3. 車擋柱自動注入 SidewalkHazardScanner 生命安全避障雷達 (`sidewalk_hazards.py`)**:
+  - **白話避障需求**：人行道與斑馬線交界的車擋柱高約 70~90 公分，剛好在視障者膝蓋骨與大腿高度，且盲杖尖端容易穿過兩柱之間而未察覺，導致視障者直接撞擊膝蓋受傷。
+  - **動態雷達注入 (`set_dynamic_hazards`)**：地圖建置時自動將 OSM 車擋柱轉換為 `WARNING` 等級之實體碰撞障礙物，納入行進前方 12 公尺掃描走廊，發出「⚠️ 注意：前方 X公尺有【車擋柱】，請減速並向左側繞開」親切指示。
+- **🧪 4. 25 項端到端自動化測試 100% 通過 (`test_osm_micro_facilities.py`)**:
+  - 涵蓋 Overpass 標籤語法、無店名解析、WorldModel 網格索引與鐘點方位推算、以及動態避障雷達碰撞防護全流程。
+
 ### [v1.0.16.2 - 2026-09-04] - 實裝 HMM 拓撲地圖匹配、Chaquopy 原生 IPC 記憶體直通、白手杖揮杖抗抖與 Wi-Fi RTT 奈秒測距定錨
 - **🧭 1. 隱馬爾可夫拓撲地圖匹配演算法 (`hmm_matcher.py`, `world_model.py`, `explorer.py`)**:
   - **白話生活痛點**：走在北新路 169 巷時，隔壁 15 公尺是 182 巷。GPS 雜訊往右飄個 6 公尺，傳統單步貪婪吸附就會誤以為行人學會穿牆術跳到 182 巷，引發語音瘋狂左右橫跳。
