@@ -93,6 +93,9 @@ class BeaconAnchorManager(
         /** 同一 Beacon 最小重複定錨冷卻時間 (毫秒)：15 秒內不重複洗版 */
         const val ANCHOR_COOLDOWN_MS = 15_000L
 
+        /** Wi-Fi RTT 802.11mc 奈秒測距週期 (毫秒)：每 6 秒探測一次 */
+        const val RTT_RANGING_INTERVAL_MS = 6_000L
+
         /** 台灣關鍵公眾交通樞紐與視障導引 Beacon 資料庫 */
         val TAIWAN_PUBLIC_BEACONS = listOf(
             // 1. 台北車站站前地下街 (Z 區)
@@ -213,35 +216,147 @@ class BeaconAnchorManager(
         )
     }
 
+    private val wifiRttRunnable = object : Runnable {
+        override fun run() {
+            if (!isScanning) return
+            performWifiRttRanging()
+            handler.postDelayed(this, RTT_RANGING_INTERVAL_MS)
+        }
+    }
+
     /**
-     * 啟動藍牙 BLE 與 Wi-Fi 掃描監聽
+     * 啟動藍牙 BLE 與 Wi-Fi RTT 802.11mc 雙重室內定錨掃描
      */
     @SuppressLint("MissingPermission")
     fun start() {
         if (isScanning) return
+        isScanning = true
+
+        // 1. 啟動藍牙 BLE 掃描
         val hasBtScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         }
 
-        if (!hasBtScan || bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
-            Log.w(tag, "Bluetooth scan permission missing or Bluetooth disabled. Beacon engine standby.")
-            return
+        if (hasBtScan && bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
+            try {
+                bleScanner = bluetoothAdapter.bluetoothLeScanner
+                val settings = ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+                    .setReportDelay(0)
+                    .build()
+
+                bleScanner?.startScan(null, settings, bleScanCallback)
+                Log.i(tag, "Bluetooth LE Scanner successfully started for indoor public beacon re-anchoring.")
+            } catch (e: Throwable) {
+                Log.e(tag, "Failed to start BLE scanner: ${e.message}")
+            }
+        } else {
+            Log.w(tag, "Bluetooth scan standby (permission missing or Bluetooth disabled).")
         }
 
-        try {
-            bleScanner = bluetoothAdapter.bluetoothLeScanner
-            val settings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
-                .setReportDelay(0)
-                .build()
+        // 2. 啟動 Wi-Fi RTT (IEEE 802.11mc) 奈秒測距定錨排程
+        startWifiRttScanning()
+    }
 
-            bleScanner?.startScan(null, settings, bleScanCallback)
-            isScanning = true
-            Log.i(tag, "Bluetooth LE Scanner successfully started for indoor public beacon re-anchoring.")
+    /**
+     * 啟動 Wi-Fi RTT 奈秒測距定錨排程
+     */
+    private fun startWifiRttScanning() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && wifiRttManager != null) {
+            if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_RTT)) {
+                Log.i(tag, "Starting periodic Wi-Fi RTT 802.11mc ranging scheduler.")
+                handler.removeCallbacks(wifiRttRunnable)
+                handler.post(wifiRttRunnable)
+            } else {
+                Log.i(tag, "Hardware does not support FEATURE_WIFI_RTT. Wi-Fi RTT standby.")
+            }
+        }
+    }
+
+    /**
+     * 執行 Wi-Fi RTT 802.11mc 微秒級飛行時間測距
+     */
+    @SuppressLint("MissingPermission")
+    private fun performWifiRttRanging() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || wifiRttManager == null) return
+        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_RTT)) return
+        if (!wifiRttManager.isAvailable) return
+
+        val hasFine = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine) return
+
+        try {
+            val scanResults: List<WifiScanResult>? = wifiManager?.scanResults
+            if (scanResults.isNullOrEmpty()) return
+
+            // 挑選支援 802.11mc (RTT Responder) 的 AP 或匹配已知的公眾 BSSID
+            val targetAps = scanResults.filter { ap ->
+                ap.is80211mcResponder || TAIWAN_PUBLIC_BEACONS.any { it.bssid != null && it.bssid.equals(ap.BSSID, ignoreCase = true) }
+            }.take(RangingRequest.getMaxPeers())
+
+            if (targetAps.isEmpty()) return
+
+            val request = RangingRequest.Builder().addAccessPoints(targetAps).build()
+            wifiRttManager.startRanging(request, context.mainExecutor, object : RangingResultCallback() {
+                override fun onRangingResults(results: List<RangingResult>) {
+                    handleWifiRttResults(results)
+                }
+
+                override fun onRangingFailure(code: Int) {
+                    Log.w(tag, "Wi-Fi RTT ranging callback failed: code=$code")
+                }
+            })
         } catch (e: Throwable) {
-            Log.e(tag, "Failed to start BLE scanner: ${e.message}")
+            Log.w(tag, "Failed to initiate Wi-Fi RTT ranging: ${e.message}")
+        }
+    }
+
+    /**
+     * 處理 Wi-Fi RTT 奈秒測距結果並比對公眾地下街燈塔
+     */
+    private fun handleWifiRttResults(results: List<RangingResult>) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+
+        for (res in results) {
+            if (res.status == RangingResult.STATUS_SUCCESS) {
+                val mac = res.macAddress?.toString() ?: continue
+                val distM = res.distanceMm / 1000.0f
+                val stdDevM = res.distanceStdDevMm / 1000.0f
+
+                val matched = TAIWAN_PUBLIC_BEACONS.find {
+                    it.bssid != null && it.bssid.equals(mac, ignoreCase = true)
+                }
+
+                val scanObj = org.json.JSONObject().apply {
+                    put("type", "WIFI_RTT")
+                    put("bssid", mac)
+                    put("dist_m", distM)
+                    put("std_dev_m", stdDevM)
+                    put("matched_name", matched?.name ?: "802.11mc AP")
+                    put("t", System.currentTimeMillis())
+                }
+                synchronized(recentScannedBeacons) {
+                    if (recentScannedBeacons.size > 30) recentScannedBeacons.removeAt(0)
+                    recentScannedBeacons.add(scanObj)
+                }
+
+                if (matched != null && distM <= MAX_ANCHOR_DISTANCE_M) {
+                    lastMatchedBeacon = matched
+                    lastMatchedDistanceM = distM
+                    val now = SystemClock.uptimeMillis()
+                    val lastEmitted = anchorCooldownMap[matched.id] ?: 0L
+
+                    if (now - lastEmitted >= ANCHOR_COOLDOWN_MS) {
+                        anchorCooldownMap[matched.id] = now
+                        Log.i(tag, "[WIFI_RTT_ANCHOR_MATCH] Hit: ${matched.name} (Dist: ${String.format(Locale.US, "%.1f", distM)}m, StdDev: ${stdDevM}m)")
+                        handler.post {
+                            onAnchorMatched(matched, distM)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -251,11 +366,12 @@ class BeaconAnchorManager(
     @SuppressLint("MissingPermission")
     fun stop() {
         if (!isScanning) return
+        handler.removeCallbacks(wifiRttRunnable)
         try {
             bleScanner?.stopScan(bleScanCallback)
         } catch (e: Exception) {}
         isScanning = false
-        Log.i(tag, "Bluetooth LE Scanner stopped.")
+        Log.i(tag, "Bluetooth LE and Wi-Fi RTT Scanner stopped.")
     }
 
     /**

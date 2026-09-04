@@ -18,6 +18,7 @@ from nmap.spatial.real_poi_fetcher import RealPoiFetcher
 from nmap.spatial.taiwan_signals import TaiwanSignalManager
 from nmap.spatial.sidewalk_hazards import SidewalkHazardScanner
 from nmap.spatial.mrt_accessibility import MrtAccessibilityDirectory
+from nmap.spatial.hmm_matcher import HmmMapMatcher
 
 
 """
@@ -179,10 +180,34 @@ class WorldModel:
         self.next_external_poi_id = 1000000
         self.rtree_lock = threading.Lock()
 
-        # 台灣專屬公共服務與無障礙導引管理器 (SPaT號誌/變電箱雷達/捷運專屬電梯)
+        # 台灣專屬公共服務與無障礙導引管理器 (SPaT號誌/變電箱雷達/捷運專屬電梯/HMM地圖匹配)
         self.signal_manager = TaiwanSignalManager()
         self.hazard_scanner = SidewalkHazardScanner()
         self.mrt_directory = MrtAccessibilityDirectory()
+        self.hmm_matcher = HmmMapMatcher()
+
+    def match_road_hmm(
+        self,
+        lat: float,
+        lon: float,
+        user_heading: Optional[float] = None,
+        radius_m: float = 35.0
+    ) -> Tuple[Optional[Dict[str, Any]], float, float, str]:
+        """
+        【隱馬爾可夫拓撲地圖匹配 (HMM Map Matching)】
+        利用維特比動態規劃綜合發射機率與路網拓撲轉移機率，
+        在巷弄密集區徹底消除平行道路左右橫跳的乒乓效應！
+        """
+        if not self.roads:
+            return None, lat, lon, "center"
+
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_deg_lon = radius_m / (111139.0 * cos_lat)
+        r_deg_lat = radius_m / 111139.0
+        bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
+
+        candidates = [item.object for item in self.road_rtree.intersection(bounds, objects=True)]
+        return self.hmm_matcher.match(lat, lon, user_heading, candidates, road_graph=self.road_graph)
 
     def get_signal_safety(self, lat: float, lon: float, heading_deg: float, radius_m: float = 28.0) -> Optional[Dict[str, Any]]:
         """取得前方路口交通號誌時制 (SPaT) 與有聲號誌 (APS)"""
@@ -214,6 +239,7 @@ class WorldModel:
             self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.house_number_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.next_external_poi_id = 1000000
+            self.hmm_matcher.reset()
 
         self.roads = parsed_data.get("roads", [])
         self.crossings = parsed_data.get("crossings", [])

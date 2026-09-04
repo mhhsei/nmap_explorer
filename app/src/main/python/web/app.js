@@ -5167,21 +5167,7 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
             });
         }
 
-        fetch("/api/gps", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                lat: lat,
-                lon: lon,
-                heading_deg: heading,
-                accuracy: accuracy || 10.0,
-                vertical_level: window.currentVerticalLevel || "GROUND",
-                altitude_m: window.currentAltitudeM || 0.0,
-                beacon_anchor: window.currentBeaconAnchor || null
-            })
-        })
-        .then(res => res.json())
-        .then(data => {
+        const handleGpsData = (data) => {
             window.isGpsSyncPending = false;
             if (data && data.is_loaded) {
                 if (window.app.recordTrace) {
@@ -5240,7 +5226,43 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
                 window.pendingGpsUpdate = null;
                 window.onLocationUpdate(next.lat, next.lon, next.accuracy, next.bearing, next.speed);
             }
+        };
+
+        // 🚀 【IPC 零延遲記憶體直通通道】：Android 原生環境優先走直接 JNI 調用，跳過 TCP 網路棧
+        if (window.AndroidBridge && typeof window.AndroidBridge.updateGpsDirect === "function") {
+            try {
+                const jsonStr = window.AndroidBridge.updateGpsDirect(
+                    lat, lon, heading, accuracy || 10.0,
+                    window.currentVerticalLevel || "GROUND",
+                    window.currentAltitudeM || 0.0,
+                    JSON.stringify(window.currentBeaconAnchor || null)
+                );
+                if (jsonStr && jsonStr.length > 10) {
+                    const data = JSON.parse(jsonStr);
+                    handleGpsData(data);
+                    return;
+                }
+            } catch (ipcErr) {
+                console.warn("[IPC_FALLBACK] Direct memory call fallback to HTTP fetch:", ipcErr);
+            }
+        }
+
+        // 🌐 瀏覽器除錯環境 Fallback: 走 HTTP fetch
+        fetch("/api/gps", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                lat: lat,
+                lon: lon,
+                heading_deg: heading,
+                accuracy: accuracy || 10.0,
+                vertical_level: window.currentVerticalLevel || "GROUND",
+                altitude_m: window.currentAltitudeM || 0.0,
+                beacon_anchor: window.currentBeaconAnchor || null
+            })
         })
+        .then(res => res.json())
+        .then(data => handleGpsData(data))
         .catch(err => {
             window.isGpsSyncPending = false;
             console.error("GPS sync error:", err);

@@ -277,16 +277,12 @@ class ExplorerAgent:
                 self.heading_deg = heading_deg
             return ok, f"已移至新區域：{msg}"
 
-        # 自適應道路吸附（具備防橫向小巷側吸與同名主幹道慣性維持）
+        # 隱馬爾可夫拓撲地圖匹配 (HMM Map Matching，維特比轉移機率徹底消除平行巷弄橫跳)
         cur_h = heading_deg if (heading_deg is not None and heading_deg >= 0) else self.heading_deg
-        cur_r = getattr(self, "_current_road_name", "")
-        best_road, dist_to_road = self.world_model.find_nearest_road(lat, lon, user_heading=cur_h, current_road_name=cur_r)
-        if best_road and dist_to_road > 1.5 and dist_to_road <= 22.0:
-            from nmap.spatial.pure_geometry import snap_pedestrian_to_road
-            geom = best_road.get("geometry", [])
-            if geom and len(geom) >= 2:
-                last_side = getattr(self, "_current_road_side", None)
-                _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side, user_heading=cur_h)
+        best_road, snap_lat, snap_lon, side = self.world_model.match_road_hmm(lat, lon, user_heading=cur_h)
+        if best_road:
+            dist_to_snap = haversine_distance(lat, lon, snap_lat, snap_lon)
+            if 1.5 < dist_to_snap <= 24.0:
                 self._current_road_side = side
                 lat = snap_lat
                 lon = snap_lon
@@ -319,15 +315,11 @@ class ExplorerAgent:
         if tile_dist > 100.0:
             return self.teleport(f"{lat},{lon}")
 
-        # 自適應道路吸附（具備防橫向小巷側吸與同名主幹道慣性維持）
-        cur_r = getattr(self, "_current_road_name", "")
-        best_road, dist_to_road = self.world_model.find_nearest_road(lat, lon, user_heading=heading_deg, current_road_name=cur_r)
-        if best_road and dist_to_road > 1.5 and dist_to_road <= 22.0:
-            from nmap.spatial.pure_geometry import snap_pedestrian_to_road
-            geom = best_road.get("geometry", [])
-            if geom and len(geom) >= 2:
-                last_side = getattr(self, "_current_road_side", None)
-                _, snap_lat, snap_lon, side = snap_pedestrian_to_road(lat, lon, geom, best_road, last_side, user_heading=heading_deg)
+        # 隱馬爾可夫拓撲地圖匹配 (HMM Map Matching，維特比轉移機率徹底消除平行巷弄橫跳)
+        best_road, snap_lat, snap_lon, side = self.world_model.match_road_hmm(lat, lon, user_heading=heading_deg)
+        if best_road:
+            dist_to_snap = haversine_distance(lat, lon, snap_lat, snap_lon)
+            if 1.5 < dist_to_snap <= 24.0:
                 self._current_road_side = side
                 lat = snap_lat
                 lon = snap_lon

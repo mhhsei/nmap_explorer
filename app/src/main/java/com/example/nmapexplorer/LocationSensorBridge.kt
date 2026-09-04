@@ -719,6 +719,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }
     }
 
+    // 【白手杖擺動對稱陷波抗抖濾波器】
+    val caneSwingFilter = CaneSwingHeadingFilter()
+
     private var isRunning = false
     private var lastEmittedLocation: Location? = null
 
@@ -1109,6 +1112,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         sensorManager.unregisterListener(this)
         kalmanFilter.reset()
         stationaryDetector.reset()
+        caneSwingFilter.reset()
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
             locationManager?.removeUpdates(this)
@@ -1294,25 +1298,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         // 地磁偏角真北補正
         val trueDegrees = ((rawDegrees + geomagneticDeclination + 360.0f) % 360.0f)
 
-        if (smoothedHeading < 0f) {
-            smoothedHeading = trueDegrees
-            lastEmittedHeading = trueDegrees
-        } else {
-            var diff = trueDegrees - smoothedHeading
-            while (diff < -180f) diff += 360f
-            while (diff > 180f) diff -= 360f
-
-            val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut()
-            val absDiff = Math.abs(diff)
-            // 步態低通濾波：步行手持擺臂時 (diff <= 35°)，採用 alpha=0.22 消化 ±15° 晃動；
-            // 明顯轉向或原地轉向時 (diff > 35°)，提升至 alpha=0.75 靈敏跟隨！
-            val alpha = if (isWalking) {
-                if (absDiff > 35.0f) 0.75f else 0.22f
-            } else {
-                if (absDiff > 2.0f) 0.65f else 0.25f
-            }
-            smoothedHeading = (smoothedHeading + alpha * diff + 360f) % 360f
-        }
+        val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut()
+        smoothedHeading = caneSwingFilter.filterHeading(trueDegrees, isWalking, now)
 
         // 節流與瞬時傳送：每 25ms 或角度有轉動 (> 2.0°) 時立即發送至前端 WebView
         var angleDelta = Math.abs(smoothedHeading - lastEmittedHeading)

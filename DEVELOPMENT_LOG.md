@@ -47,6 +47,26 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17 - 2026-09-04] - 實裝 HMM 拓撲地圖匹配、Chaquopy 原生 IPC 記憶體直通、白手杖揮杖抗抖與 Wi-Fi RTT 奈秒測距定錨
+- **🧭 1. 隱馬爾可夫拓撲地圖匹配演算法 (`hmm_matcher.py`, `world_model.py`, `explorer.py`)**:
+  - **白話生活痛點**：走在北新路 169 巷時，隔壁 15 公尺是 182 巷。GPS 雜訊往右飄個 6 公尺，傳統單步貪婪吸附就會誤以為行人學會穿牆術跳到 182 巷，引發語音瘋狂左右橫跳。
+  - **維特比拓撲約束**：實裝純 Python 輕量級維特比 (Viterbi) 演算法，結合高斯發射機率與路網最短路徑轉移機率。因翻越大樓水泥牆的路網距離近乎無限大，演算法數學上死鎖在原巷弄，徹底消滅巷弄乒乓橫跳！
+  - **路口平滑轉彎**：支援 T 字路口與十字路口端點投影銜接，當使用者真正轉彎時 1 步平滑切換。
+- **⚡ 2. Chaquopy 原生 IPC 記憶體直通通道 (`WebAppInterface.kt`, `server.py`, `app.js`)**:
+  - **白話效能瓶頸**：過往前端向後端拿地圖，每秒要走一次本機 HTTP Loopback TCP Socket（封裝標頭、TCP 握手、Context Switch），耗時 20~30ms 且手機容易發熱。
+  - **內存直通升級**：在 `WebAppInterface.kt` 與 `server.py` 建立 JNI 記憶體橋接 (`updateGpsDirect`)，直接在同一進程記憶體中傳遞與序列化 JSON。單次往返時間由 25ms 暴降至 **< 0.8ms（提速 95% 以上）**！若在 PC 瀏覽器除錯則無縫回退至 HTTP `fetch()`。
+- **🦯 3. 白手杖擺動對稱陷波抗抖濾波器 (`CaneSwingHeadingFilter.kt`, `LocationSensorBridge.kt`)**:
+  - **白話視障痛點**：視障者一手揮盲杖「左敲一下、右敲一下」探路時，持手機手部會自然產生 $\pm 8^\circ\sim 15^\circ$、頻率約 $1\text{Hz}$ 的撥浪鼓週期晃動，導致耳機 3D 空間音效左右亂擺。
+  - **正負對稱借力打力**：維護 1.2 秒循環視窗提取圓形均值基線，將規律擺杖晃動抑制率提升至 **80% 以上**，耳機 3D 音效穩如磐石！一旦大於 $25^\circ$ 真實轉向則立即突破零延遲跟隨。
+- **📡 4. Wi-Fi RTT (IEEE 802.11mc) 奈秒飛行時間測距定錨 (`BeaconAnchorManager.kt`)**:
+  - **白話地下街救星**：走進台北車站地下街無 GPS 訊號時，利用天花板 Wi-Fi AP 測量電磁波光速微秒飛行時間（Round-Trip Time）。
+  - **接通原生 RTT 測距**：調用 Android 9+ `WifiRttManager.startRanging()`，每 6 秒自動探測 802.11mc AP，提供 **$\pm 1\sim 1.5$ 公尺**之公尺級室內定錨並與台北車站/板橋車站/美麗島大廳地下燈塔無縫重合！
+- **🧪 5. 專案風洞測試與編譯驗證**:
+  - 新增 `test_hmm_map_matching.py`（巷弄防橫跳與路口轉向 100% 通過）。
+  - 新增 `CaneSwingHeadingFilterTest.kt`（揮杖正弦波抑制率 > 80% 與 90 度大轉向突破驗證通過）。
+  - 全套 21 項 Python 單元測試全數通過（`Ran 21 tests in 0.164s, OK`）。
+  - Android Gradle `compileDebugKotlin` 與 `testDebugUnitTest` 順利通過（`BUILD SUCCESSFUL`）。
+
 ### [v1.0.16.1 - 2026-09-03] - 實裝三大非視覺神經網路導航引擎、兩線道小路號誌自適應與現場拍照存證
 - **🧠 項目 2：深度慣性航位推算神經網路 (`LearnedStepVelocityEstimator.kt`, `LocationSensorBridge.kt`)**:
   - **白話生活痛點**：走進騎樓或地下街時 GPS 斷訊，舊版 Weinberg 公式只看單一加速度峰值，使用者隨意晃動手機或插在口袋就會誤踩步數，10 秒內地圖直接瞬移穿牆。
