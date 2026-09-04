@@ -133,10 +133,10 @@ class MockVerticalMotionNeuralClassifier:
         floor_idx = 1 + int(alt_delta_m / 3.2)
         floor_str = f"{floor_idx}F" if floor_idx > 0 else f"B{abs(floor_idx - 1)}"
 
-        if dp_dt < -0.035 and is_walking and acc_var > 0.25:
+        if -0.18 <= dp_dt < -0.035 and is_walking and acc_var > 0.25:
             self.current_motion = "WALKING_STAIRS_UP"
             self.current_floor = floor_str
-        elif dp_dt > 0.035 and is_walking and acc_var > 0.25:
+        elif 0.035 < dp_dt <= 0.18 and is_walking and acc_var > 0.25:
             self.current_motion = "WALKING_STAIRS_DOWN"
             self.current_floor = floor_str
         elif abs(dp_dt) > 0.22 and acc_var < 0.18:
@@ -144,6 +144,7 @@ class MockVerticalMotionNeuralClassifier:
             self.current_floor = floor_str
         else:
             self.current_motion = "HORIZONTAL_CORRIDOR"
+            # 核心鐵律：在水平走廊狀態下，樓層嚴格鎖定，禁止因風壓/空調氣壓突波亂跳樓層！
 
         return self.current_motion, self.current_floor
 
@@ -222,6 +223,31 @@ class TestNeuralNavigationSuite(unittest.TestCase):
 
         self.assertEqual(motion, "HORIZONTAL_CORRIDOR")
         self.assertEqual(floor, "2F")
+
+    def test_wind_gust_rejection_in_horizontal_corridor(self):
+        """測試在 1F 水平行走時遭遇 2.5 hPa 強烈風壓突波，樓層依然牢牢鎖定在 1F 不會誤判為地下室或高樓"""
+        classifier = MockVerticalMotionNeuralClassifier(baseline_hpa=1013.25)
+        now = 80000
+        cur_p = 1013.25
+
+        # 1. 正常在 1F 走廊行走 (具有人類正常步行 1.8 m/s^2 踩踏加速度)
+        for i in range(15):
+            now += 200
+            motion, floor = classifier.feed_sample(now, cur_p + 0.02 * math.sin(i), 9.8 + 1.8 * math.sin(i), is_walking=True)
+        self.assertEqual(motion, "HORIZONTAL_CORRIDOR")
+        self.assertEqual(floor, "1F")
+
+        # 2. 遭遇突發風壓突波 (氣壓瞬間狂飆 +2.5 hPa，若無鎖定相當於瞬間掉入地下 20 米 B7)
+        # 但由於氣壓變化率 dP/dt 高達 12.5 hPa/s，遠超人體走樓梯物理極限 (0.18 hPa/s)，
+        # 且步態震動活躍 (非電梯)，神經分類器精準判定為水平風壓干擾 (HORIZONTAL_CORRIDOR)，
+        # 樓層牢牢鎖定在 1F，徹底消滅幽靈地下室！
+        now += 200
+        wind_p = 1013.25 + 2.5 # 瞬間遭遇強烈風切 +2.5 hPa
+        for i in range(10):
+            now += 200
+            motion, floor = classifier.feed_sample(now, wind_p + 0.1 * math.sin(i), 9.8 + 1.8 * math.sin(i), is_walking=True)
+            self.assertEqual(motion, "HORIZONTAL_CORRIDOR", "風壓突波必須被識別為水平平地/走廊")
+            self.assertEqual(floor, "1F", "遭遇強風氣壓突波時，水平走廊樓層必須保持鎖定，禁止跳針到地下室！")
 
     def test_item4_world_model_floor_filter(self):
         """測試世界模型 POI 查詢加入 target_floor='2F' 時，成功隔離 1F 店家"""

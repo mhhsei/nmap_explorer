@@ -5300,7 +5300,7 @@ window.onVerticalLevelUpdate = function(levelName, displayName, altitudeM, descr
     if (levelName && levelName.startsWith("INDOOR_")) {
         window.currentNeuralFloor = levelName.replace("INDOOR_", "");
     } else if (levelName === "GROUND") {
-        if (!window.currentNeuralFloor || window.currentNeuralFloor.startsWith("INDOOR_")) {
+        if (!window.currentNeuralFloor || window.currentNeuralFloor.startsWith("INDOOR_") || window.currentNeuralFloor === "2F" || window.currentNeuralFloor === "B1") {
             window.currentNeuralFloor = "1F";
         }
     } else if (levelName === "OVERPASS") {
@@ -5327,8 +5327,9 @@ window.onVerticalLevelUpdate = function(levelName, displayName, altitudeM, descr
         if (window.app && window.app.audio) {
             window.app.audio.playVerticalTransitionTone(isUp);
         }
+        // 降低優先級 (isForce = false)，嚴禁搶蓋 Priority 1/2/3 生命安全與路口播報
         if (description && window.app && window.app.updateLiveLog) {
-            window.app.updateLiveLog(description, false, true);
+            window.app.updateLiveLog(description, false, false);
         }
     }
 };
@@ -5398,6 +5399,9 @@ window.onGaitIntentUpdate = function(intentName, displayName, reason) {
  */
 window.currentNeuralFloor = "1F";
 window.currentVerticalMotionType = "HORIZONTAL_CORRIDOR";
+window.lastVerticalFloorSpeechTime = 0;
+window.lastAnnouncedFloor = "1F";
+
 window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
     window.currentVerticalMotionType = motionType;
     const oldFloor = window.currentNeuralFloor;
@@ -5413,14 +5417,22 @@ window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
         vertElem.setAttribute("aria-label", `所在樓層: ${floorStr}，距地表 ${(window.currentAltitudeM || 0).toFixed(1)}公尺`);
     }
 
-    if (oldFloor !== floorStr && window.app && window.app.updateLiveLog) {
+    const now = Date.now();
+    const cooldownMs = (motionType === "HORIZONTAL_CORRIDOR") ? 45000 : 15000;
+    const isFloorChanged = (floorStr !== window.lastAnnouncedFloor);
+
+    if (isFloorChanged && (now - window.lastVerticalFloorSpeechTime > cooldownMs) && window.app && window.app.updateLiveLog) {
+        window.lastVerticalFloorSpeechTime = now;
+        window.lastAnnouncedFloor = floorStr;
+
         let actionDesc = "目前位於";
         if (motionType === "WALKING_STAIRS_UP") actionDesc = "走樓梯抵達";
         else if (motionType === "WALKING_STAIRS_DOWN") actionDesc = "走樓梯抵達";
         else if (motionType === "ELEVATOR_MOVING") actionDesc = "搭電梯抵達";
 
         const msg = `🏢 垂直樓層：${actionDesc}【${floorStr}】(距地表 ${altM.toFixed(1)}公尺)`;
-        window.app.updateLiveLog(msg, false, true);
+        // 使用一般優先級 (isForce = false)，杜絕強行插播腰斬防撞與號誌語音！
+        window.app.updateLiveLog(msg, false, false);
 
         if (window.app.audio) {
             window.app.audio.playVerticalTransitionTone(altM > 0);

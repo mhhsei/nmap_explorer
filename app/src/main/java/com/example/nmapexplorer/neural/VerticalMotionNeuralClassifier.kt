@@ -65,8 +65,15 @@ class VerticalMotionNeuralClassifier(
      * @param pressureHpa 當前氣壓 (hPa)
      * @param verticalAcc 垂直加速度 (m/s^2)
      * @param isStepRecently 是否近期有踩出步伐
+     * @param filteredAltM 卡爾曼濾波平滑相對高度 (公尺，可選)，若提供則優先採用，杜絕未濾波氣壓毛刺
      */
-    fun feedSample(nowMs: Long, pressureHpa: Float, verticalAcc: Float, isStepRecently: Boolean) {
+    fun feedSample(
+        nowMs: Long,
+        pressureHpa: Float,
+        verticalAcc: Float,
+        isStepRecently: Boolean,
+        filteredAltM: Float? = null
+    ) {
         if (!isBaselineCalibrated) {
             baselinePressureHpa = pressureHpa
             isBaselineCalibrated = true
@@ -91,7 +98,12 @@ class VerticalMotionNeuralClassifier(
         // 換算等效垂直高度變化 (台灣海平面 1 hPa 約等於 8.43 公尺高度差)
         // 氣壓下降 (dP < 0) 代表往上爬升；氣壓上升 (dP > 0) 代表往下下降
         val altitudeDelta = -(dP * 8.43f)
-        accumulatedRelativeAltitudeM = -(pressureHpa - baselinePressureHpa) * 8.43f
+        if (filteredAltM != null) {
+            accumulatedRelativeAltitudeM = filteredAltM
+        } else {
+            val rawAlt = -(pressureHpa - baselinePressureHpa) * 8.43f
+            accumulatedRelativeAltitudeM = 0.80f * accumulatedRelativeAltitudeM + 0.20f * rawAlt
+        }
 
         // 2. 垂直震動能量 (Vertical Energy Spectrum)
         var accSum = 0f
@@ -108,28 +120,51 @@ class VerticalMotionNeuralClassifier(
         val newMotion: VerticalMotionType
         val floorStepHeightM = 3.2f // 台灣標準建築一樓層約 3.0 ~ 3.5 米
 
-        // A. 爬樓梯特徵：氣壓有持續變化 (|dPdt| in 0.035..0.18 hPa/s) 且 垂直震動能量活躍 (accVar > 0.35) 且 伴隨步伐
-        if (dPdt < -0.035f && isStepRecently && verticalEnergy > 0.25f) {
+        // A. 爬樓梯特徵：氣壓有持續人體生理合理變化 (0.035 <= |dPdt| <= 0.18 hPa/s) 且 垂直震動能量活躍 (accVar > 0.25) 且 伴隨步伐
+        // 超過 0.18 hPa/s (約 > 1.5 m/s 垂直速度) 超越人類肉身爬梯極限，判定為空調風切或電梯
+        if (dPdt in -0.18f..-0.035f && isStepRecently && verticalEnergy > 0.25f) {
             newMotion = VerticalMotionType.WALKING_STAIRS_UP
-        } else if (dPdt > 0.035f && isStepRecently && verticalEnergy > 0.25f) {
+        } else if (dPdt in 0.035f..0.18f && isStepRecently && verticalEnergy > 0.25f) {
             newMotion = VerticalMotionType.WALKING_STAIRS_DOWN
         }
-        // B. 搭電梯特徵：氣壓劇烈變化 (|dPdt| > 0.22 hPa/s) 但身體幾乎無步伐震動 (verticalEnergy < 0.15)
+        // B. 搭電梯特徵：氣壓劇烈變化 (|dPdt| > 0.22 hPa/s) 但身體幾乎無步伐震動 (verticalEnergy < 0.18)
         else if (abs(dPdt) > 0.22f && verticalEnergy < 0.18f) {
             newMotion = VerticalMotionType.ELEVATOR_MOVING
         }
-        // C. 平地走廊特徵：氣壓變化小，或純粹是空調風切
+        // C. 平地走廊特徵：氣壓變化小，或純粹是空調風切/側風擾動
         else {
             newMotion = VerticalMotionType.HORIZONTAL_CORRIDOR
         }
 
-        // 4. 樓層推算與防抖
-        val rawFloorOffset = (accumulatedRelativeAltitudeM / floorStepHeightM).toInt()
-        val calculatedFloor = 1 + rawFloorOffset
+        // 4. 樓層推算與防抖鎖定
+        // 【核心無障礙鐵律】：在 HORIZONTAL_CORRIDOR 狀態下，樓層強制鎖定，嚴禁因氣壓風切亂跳樓層！
+        var targetFloor = currentFloorIndex
+        val currentFloorBaseAlt = (currentFloorIndex - 1) * floorStepHeightM
+        val diffFromFloorBase = accumulatedRelativeAltitudeM - currentFloorBaseAlt
 
-        if ((newMotion != currentMotionType || calculatedFloor != currentFloorIndex) && (nowMs - lastStateChangeTimeMs > 2000L)) {
+        if (newMotion == VerticalMotionType.WALKING_STAIRS_UP) {
+            // 樓梯爬升：相對當前樓層基準上升超過 2.4 米才晉升一層
+            if (diffFromFloorBase > 2.4f) {
+                targetFloor = currentFloorIndex + 1
+            }
+        } else if (newMotion == VerticalMotionType.WALKING_STAIRS_DOWN) {
+            // 樓梯下降：相對當前樓層基準下降超過 2.4 米才降落一層
+            if (diffFromFloorBase < -2.4f) {
+                targetFloor = currentFloorIndex - 1
+            }
+        } else if (newMotion == VerticalMotionType.ELEVATOR_MOVING) {
+            // 搭電梯平滑連續移動：依據高度差換算
+            val rawFloorOffset = (accumulatedRelativeAltitudeM / floorStepHeightM).toInt()
+            targetFloor = 1 + rawFloorOffset
+        }
+        // 若為 HORIZONTAL_CORRIDOR，targetFloor 嚴格鎖定維持 currentFloorIndex
+
+        val isMotionChanged = newMotion != currentMotionType
+        val isFloorChanged = targetFloor != currentFloorIndex
+
+        if ((isMotionChanged || isFloorChanged) && (nowMs - lastStateChangeTimeMs > 2500L)) {
             currentMotionType = newMotion
-            currentFloorIndex = calculatedFloor
+            currentFloorIndex = targetFloor
             lastStateChangeTimeMs = nowMs
 
             val floorString = when {

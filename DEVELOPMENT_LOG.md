@@ -47,6 +47,49 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.3 - 2026-09-04] - 實測診斷日誌深度修復：根除 70 米假高程陷阱、消滅 500 次語音轟炸死迴圈、實裝走廊樓層鎖定與物理極限抗風切
+
+#### 🎯 Pixel 6a 實機街測診斷日誌深度覆盤 (Diagnostic Root Causes)
+依據視障測試者於新北市淡水區學府路一帶實測 435 秒匯出的診斷日誌封包（`20260904_121021`），全面剖析並攻克三大致命問題：
+1. **70 米假高程陷阱 (70m False Elevation Overpass Trap)**：
+   - **問題現象**：使用者在淡水地面步行，系統卻狂跳「已位於室內 10 樓」、「正通過人行天橋（高度 +70.2 米）」。
+   - **根本原因**：`LocationSensorBridge.kt` 每次收到 GPS 更新時，無差別調用 `barometerFilter?.calibrateBaselineFromDem(demGroundElev, alt.toFloat())`。Android 原生 `Location.altitude` 為 WGS-84 橢球高（HAE，台灣比正高大約高 20 米），且消費級手機衛星垂直跳動達 $\pm 30\sim 50$ 米。當淡水地面 DEM 為 53.7m、GPS 橢球高回報 124m 時，相減得到 70.3m！這項計算每秒強制將氣壓卡爾曼狀態直接覆寫為 `stateAltitudeM = 70.3m`，並將基準大氣壓 $P_0$ 洗成 1008 hPa，徹底摧毀硬體氣壓計（999.6 hPa）原本精準的相對高程追蹤。
+   - **解決方案**：落實硬體氣壓計為垂直高度的 Single Source of Truth，**嚴禁在 GPS 定位循環中覆寫氣壓基準**。DEM 校準僅限於無基準且 GPS 精度 $\le 6.0\text{m}$ 的冷啟動初次定錨（扣除 20m 橢球起伏），並設定合理門檻 $[-15\text{m}, 45\text{m}]$ 拒絕一切暴衝雜訊；無氣壓計手機全面實施 EMA 平滑濾波。
+2. **500 次語音轟炸死迴圈 (The 500-Speech Flooding Loop)**：
+   - **問題現象**：435 秒的測試中，系統瘋狂播報 500 次語音（每 0.87 秒一次），90% 為垂直樓層與天橋提示，完全覆蓋了路口與店家生命線。
+   - **根本原因**：`LocationSensorBridge.kt` 在 `onLocationChanged` 中同時注入 `onVerticalLevelUpdate` 與 `onVerticalFloorUpdate('HORIZONTAL_CORRIDOR', ...)`。前端 `app.js` 的 `onVerticalLevelUpdate` 將 `currentNeuralFloor` 設為 `"10F"`，下一毫秒 `onVerticalFloorUpdate` 收到 `"1F"`，發現 `oldFloor !== floorStr`，立即調用 `window.app.updateLiveLog(msg, false, true)` 插播發聲；下一秒 GPS 抵達又重複觸發，形成死迴圈。
+   - **解決方案**：
+     - 自 `onLocationChanged` 移除冗餘的 `onVerticalFloorUpdate` 廣播。
+     - 在 `app.js` 實裝 **45 秒樓層播報冷卻計時器** 與 **同樓層去重機制**。
+     - 將垂直樓層廣播調降為一般優先級 (`isForce = false`)，納入正規聽覺佇列，絕不搶播蓋台 Priority 1 生命安全防撞與 Priority 3 路口狀態機。
+3. **平地走廊風切誤判地下室 (Floor Oscillation from B1 to B8)**：
+   - **問題現象**：神經分類器在水平行走時，常因進出騎樓冷氣房或口袋擠壓出現 1.5~3 hPa 氣壓擾動，換算後瞬間跳針至 B4~B8 樓層。
+   - **根本原因**：舊版代碼在 `newMotion == HORIZONTAL_CORRIDOR` 時未鎖定樓層，只要氣壓微波計算出的樓層不同就變更狀態；且走樓梯判定缺乏上限，將 1.5 hPa/s 的強風切誤判為下樓梯。
+   - **解決方案**：
+     - 於 `VerticalMotionNeuralClassifier.kt` 嚴格實裝 **平地走廊樓層鎖定 (Floor Locking)**：在 `HORIZONTAL_CORRIDOR` 狀態下，樓層強制鎖定維持不變，任何氣壓跳動均不得更改樓層。
+     - 走樓梯判定加上人體生理爬梯極限約束（$0.035 \le |dP/dt| \le 0.18\text{ hPa/s}$），超過 0.18 hPa/s 的氣壓變化自動判定為風切或電梯，杜絕風壓誤判爬樓梯。
+     - 垂直神經分類器直接採用卡爾曼濾波後的平滑高度，徹底平抑原始感測器毛刺。
+
+#### 🛠️ 實體程式碼修改清單 (Modified Files)
+1. [`app/src/main/java/com/example/nmapexplorer/BarometerVerticalFilter.kt`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/java/com/example/nmapexplorer/BarometerVerticalFilter.kt):
+   - 新增 `isInitialized()` 查詢方法。
+   - `calibrateBaselineFromDem`: 加上 `[-15m, 45m]` 安全門檻拒絕異常 GPS 高程，且僅在冷啟動未初始化時賦予初值，運動中嚴禁強制覆寫卡爾曼濾波高程。
+2. [`app/src/main/java/com/example/nmapexplorer/LocationSensorBridge.kt`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/java/com/example/nmapexplorer/LocationSensorBridge.kt):
+   - `onSensorChanged`: 將 `barometerFilter.updatePressure` 濾波後的平滑高度傳入 `verticalMotionClassifier`。
+   - `onLocationChanged`: 拔除每秒無差別 DEM 校準；無氣壓計手機加入 20m 橢球起伏補正與 EMA 平滑；移除 `evaluateJavascript` 中多餘的 `onVerticalFloorUpdate` 調用。
+3. [`app/src/main/java/com/example/nmapexplorer/neural/VerticalMotionNeuralClassifier.kt`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/java/com/example/nmapexplorer/neural/VerticalMotionNeuralClassifier.kt):
+   - 實作平地走廊樓層鎖定（`HORIZONTAL_CORRIDOR` 狀態下禁止變更樓層）。
+   - 爬樓梯 $dP/dt$ 加入人體極限上限 $0.18\text{ hPa/s}$。
+   - 整合卡爾曼平滑高度，樓梯每爬滿 2.4 米才晉升/降落一層。
+4. [`app/src/main/python/web/app.js`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/web/app.js):
+   - `onVerticalFloorUpdate`: 增加 45 秒冷卻防抖，改為 `isForce = false` 杜絕搶播蓋台。
+   - `onVerticalLevelUpdate`: 保持與 `currentNeuralFloor` 的一致性，語音回退為正常優先級。
+5. [`app/src/main/python/test_neural_navigation_suite.py`](file:///H:/我的雲端硬碟/ai%20pro/nmap_apk/app/src/main/python/test_neural_navigation_suite.py):
+   - 同步 `MockVerticalMotionNeuralClassifier` 實作。
+   - 新增 `test_wind_gust_rejection_in_horizontal_corridor` 風洞測試，驗證 2.5 hPa 氣壓突波下樓層維持 1F 鎖定。
+
+---
+
 ### [v1.0.17.2 - 2026-09-04] - 徹底修復樓層辨識失真：NASA SRTM/GPS雙軌高程定錨、無氣壓計全面備援、跨語言樓層契約貫通與NVDA人話報讀
 
 #### 🎯 問題根因診斷與生活化情境剖析 (Root Causes)

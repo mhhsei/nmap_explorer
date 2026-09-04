@@ -1244,10 +1244,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val isStrongOutdoorGps = (hasDualFrequencyL5 || (satelliteUsedCount >= 5 && satelliteAvgSnr >= 20.0f)) && lastGpsAccuracyM <= 22.0f && timeSinceGps < 4500L
             val isGpsWeak = !isStrongOutdoorGps && (timeSinceGps > 4500L || lastGpsAccuracyM > 28.0f || (satelliteUsedCount < 3 && satelliteAvgSnr < 18.0f))
             
-            barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
+            val filterRes = barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
+            val filteredAltM = filterRes?.second
 
-            // 【項目 4：垂直運動神經分類器】即時更新
-            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, accelerometerReading[2], isWalking)
+            // 【項目 4：垂直運動神經分類器】即時更新，並傳入卡爾曼平滑高度
+            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, accelerometerReading[2], isWalking, filteredAltM)
             return
         }
 
@@ -1448,17 +1449,25 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         // 5. NASA SRTM 裸地高程定錨與無氣壓計雙軌備援
         val demGroundElev = queryGroundDemElevation(filteredLat, filteredLon)
+        barometerFilter?.setDemGroundElevation(demGroundElev)
         if (pressureSensor != null) {
-            // 有硬體氣壓計：以 NASA SRTM 裸地高程校準氣壓基準海平面 P0，徹底解決高樓層冷啟動誤判為 1 樓之問題
-            if (location.hasAltitude() && alt != 0.0) {
-                barometerFilter?.calibrateBaselineFromDem(demGroundElev, alt.toFloat())
+            // 有硬體氣壓計：以氣壓計一維卡爾曼濾波為主導 (Single Source of Truth)
+            // 嚴禁在每次 GPS 更新時用粗糙的衛星高度強行覆寫氣壓基準！
+            // 僅在冷啟動尚未初始化基準且具備高精度衛星定位時進行初次校準
+            if (barometerFilter?.isInitialized() == false && location.hasAltitude() && alt != 0.0 && acc <= 6.0f) {
+                val geoidCorrectionM = 20.0f // 台灣地區 WGS-84 橢球高至大地水準面正高之起伏量
+                val orthometricAlt = (alt - geoidCorrectionM).toFloat()
+                barometerFilter?.calibrateBaselineFromDem(demGroundElev, orthometricAlt)
             }
         } else {
             // 無硬體氣壓計（70% 平價手機）：全面啟動 GPS + NASA SRTM 雙軌推算樓層
             if (location.hasAltitude() && alt != 0.0) {
-                val relAltM = (alt - demGroundElev).toFloat()
-                currentAltitudeM = relAltM
-                val floorIdx = 1 + (relAltM / 3.2f).toInt()
+                val geoidCorrectionM = 20.0f
+                val orthometricAlt = (alt - geoidCorrectionM).toFloat()
+                val rawRelAltM = orthometricAlt - demGroundElev
+                // EMA 平滑以抑制 GPS 垂直瞬時抖動
+                currentAltitudeM = 0.85f * currentAltitudeM + 0.15f * rawRelAltM
+                val floorIdx = 1 + (currentAltitudeM / 3.2f).toInt()
                 val targetLevel = when {
                     floorIdx >= 10 -> VerticalLevel.INDOOR_10F
                     floorIdx == 9 -> VerticalLevel.INDOOR_9F
@@ -1477,10 +1486,10 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     else -> VerticalLevel.INDOOR_B5
                 }
                 currentVerticalLevel = targetLevel
-                verticalMotionClassifier.setRelativeAltitudeAndFloor(relAltM, floorIdx)
-                val altSign = if (relAltM >= 0) "+" else ""
-                val desc = "📍 衛星/SRTM 偵測${targetLevel.spokenPrefix}（高度 ${altSign}${String.format(Locale.US, "%.1f", relAltM)} 公尺），已切換為${targetLevel.displayName}圖資。"
-                barometerFilter?.setAltitudeAndLevelDirect(relAltM, targetLevel, desc)
+                verticalMotionClassifier.setRelativeAltitudeAndFloor(currentAltitudeM, floorIdx)
+                val altSign = if (currentAltitudeM >= 0) "+" else ""
+                val desc = "📍 衛星/SRTM 偵測${targetLevel.spokenPrefix}（高度 ${altSign}${String.format(Locale.US, "%.1f", currentAltitudeM)} 公尺），已切換為${targetLevel.displayName}圖資。"
+                barometerFilter?.setAltitudeAndLevelDirect(currentAltitudeM, targetLevel, desc)
             }
         }
 
@@ -1543,8 +1552,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed}, '${motionState.name}');" +
                 "if (window.onMotionStateUpdate) window.onMotionStateUpdate('${motionState.name}');" +
                 "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});" +
-                "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');" +
-                "if (window.onVerticalFloorUpdate) window.onVerticalFloorUpdate('HORIZONTAL_CORRIDOR', '${currentFloorString}', ${currentAltitudeM});",
+                "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
                 null
             )
         }

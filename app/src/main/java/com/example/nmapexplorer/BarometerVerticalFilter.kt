@@ -76,6 +76,7 @@ class BarometerVerticalFilter(
     fun getBaselinePressure(): Float = baselinePressureHpa
     fun getAltitude(): Float = stateAltitudeM
     fun getVelocity(): Float = stateVelocityMps
+    fun isInitialized(): Boolean = isBaselineInitialized
 
     // 當前樓層狀態
     var currentLevel: VerticalLevel = VerticalLevel.GROUND
@@ -333,19 +334,26 @@ class BarometerVerticalFilter(
 
     /**
      * 【依據 NASA SRTM 當地地表真實裸地海拔與 GPS 橢球高反推標準地面大氣壓】
-     * 作用：徹底解決使用者在 5 樓開機時，將 5 樓氣壓誤認作地面基準 0 米的致命 Bug！
+     * 作用：徹底解決使用者在 5 樓開機時，將 5 樓氣壓誤認作地面基準 0 米之問題。
+     * 防護：嚴格限定相對高度在 [-15m, 45m] 合理範圍內，杜絕都會峽谷 GPS 垂直幾十米巨大跳針毀滅氣壓基準。
      */
-    fun calibrateBaselineFromDem(groundDemElevationM: Float, currentGpsAltitudeM: Float) {
+     fun calibrateBaselineFromDem(groundDemElevationM: Float, currentGpsAltitudeM: Float) {
         lastKnownDemGroundElevation = groundDemElevationM
         val relAltM = currentGpsAltitudeM - groundDemElevationM
-        if (lastRawPressureHpa in 300f..1100f) {
+        // 安全門檻：若反推的高度差在合理範圍 (-15m ~ 45m) 內才進行基準校準，杜絕 70m 假高程摧毀氣壓計
+        if (relAltM in -15f..45f && lastRawPressureHpa in 300f..1100f) {
             val ratio = (1.0f - (relAltM / 44330.0f)).coerceIn(0.1f, 1.5f)
             val p0 = (lastRawPressureHpa / ratio.pow(5.255f)).coerceIn(800f, 1150f)
             baselinePressureHpa = p0
-            isBaselineInitialized = true
-            stateAltitudeM = relAltM
-            evaluateLevelTransition(stateAltitudeM, false)
+            // 僅在尚未初始化時賦予初始高度，避免在運動中強行覆寫卡爾曼平滑高度
+            if (!isBaselineInitialized) {
+                stateAltitudeM = relAltM
+                isBaselineInitialized = true
+                evaluateLevelTransition(stateAltitudeM, false)
+            }
             Log.i(tag, "[CALIBRATE_DEM] Ground baseline calibrated from DEM ($groundDemElevationM m) & GPS Alt ($currentGpsAltitudeM m): P0=${String.format(Locale.US, "%.2f", p0)} hPa, relAlt=${String.format(Locale.US, "%.1f", relAltM)}m")
+        } else {
+            Log.w(tag, "[CALIBRATE_DEM_REJECTED] Ignored outlier GPS vertical elevation: GPS Alt=$currentGpsAltitudeM m, DEM=$groundDemElevationM m, relAlt=$relAltM m")
         }
     }
 
