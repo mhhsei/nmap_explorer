@@ -64,6 +64,7 @@ def build_status_dict(
     lon: float = None,
     vertical_level: str = "GROUND",
     altitude_m: float = 0.0,
+    floor: str = "1F",
     beacon_anchor: dict = None
 ) -> dict:
     """
@@ -71,7 +72,7 @@ def build_status_dict(
     作用：
     1. 在單一運算週期中只計算一次 road_info、pois、buildings、intersection。
     2. 將計算好的 Context 同時共享給 reporter 與 street_analyzer，徹底消滅 3~5 次的重複 GIS 運算。
-    3. 整合 3D 垂直樓層 (氣壓計) 與室內公眾 Beacon 定錨狀態。
+    3. 整合 3D 垂直樓層 (氣壓計/GPS/SRTM) 與室內公眾 Beacon 定錨狀態。
     4. 直接產出原生 Python 字典，消除 json.dumps -> json.loads 的無效序列化開銷。
     """
     if not agent.is_loaded:
@@ -94,7 +95,7 @@ def build_status_dict(
     agent.current_ground_elevation = ground_elev if ground_elev is not None else 0.0
 
     road_info = agent.world_model.get_road_info(cur_lat, cur_lon, cur_head)
-    pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=150.0)
+    pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=150.0, target_floor=floor)
     buildings = agent.world_model.get_nearby_buildings(cur_lat, cur_lon, cur_head, radius_m=50.0)
     intersection = agent.intersection_analyzer.analyze(cur_lat, cur_lon, cur_head, agent.world_model, curr_road_info=road_info)
     door_estimates = agent.world_model.get_interpolated_door_numbers(cur_lat, cur_lon, cur_head)
@@ -107,6 +108,7 @@ def build_status_dict(
         intersection=intersection,
         vertical_level=vertical_level,
         altitude_m=altitude_m,
+        floor=floor,
         beacon_anchor=beacon_anchor
     )
     street_scene = street_analyzer.analyze_scene(cur_lat, cur_lon, cur_head, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
@@ -136,6 +138,7 @@ def build_status_dict(
             scene=street_scene,
             vertical_level=vertical_level,
             altitude_m=altitude_m,
+            floor=floor,
             beacon_anchor=beacon_anchor,
             ground_elevation_m=ground_elev if ground_elev is not None else 0.0
         )
@@ -152,6 +155,7 @@ def build_status_dict(
         "heading_deg": cur_head,
         "vertical_level": vertical_level,
         "altitude_m": altitude_m,
+        "floor": floor,
         "beacon_anchor": beacon_anchor,
         "step_count": agent.step_count,
         "road_info": road_info,
@@ -183,6 +187,7 @@ def get_status():
     lon = request.query.get("lon") or (request.json.get("lon") if request.json else None)
     vert = request.query.get("vertical_level") or (request.json.get("vertical_level") if request.json else "GROUND")
     alt = request.query.get("altitude_m") or (request.json.get("altitude_m") if request.json else 0.0)
+    floor = request.query.get("floor") or (request.json.get("floor") if request.json else "1F")
     beacon = request.json.get("beacon_anchor") if request.json else None
 
     h_val = float(h) if (h is not None and str(h).strip() != "") else None
@@ -197,6 +202,7 @@ def get_status():
         lon=lon_val,
         vertical_level=str(vert),
         altitude_m=alt_val,
+        floor=str(floor or "1F"),
         beacon_anchor=beacon
     ))
 
@@ -382,6 +388,7 @@ def update_gps_direct(
     accuracy: float = 10.0,
     vertical_level: str = "GROUND",
     altitude_m: float = 0.0,
+    floor: str = "1F",
     beacon_anchor: Optional[dict] = None
 ) -> str:
     """
@@ -395,6 +402,7 @@ def update_gps_direct(
         include_full_report=True,
         vertical_level=vertical_level,
         altitude_m=altitude_m,
+        floor=floor or "1F",
         beacon_anchor=beacon_anchor
     )
     status_data["action_message"] = msg
@@ -422,12 +430,14 @@ def update_gps():
 
     vert = data.get("vertical_level", "GROUND")
     alt = float(data.get("altitude_m", 0.0))
+    floor = data.get("floor", "1F")
     beacon = data.get("beacon_anchor")
 
     status_data = build_status_dict(
         include_full_report=True,
         vertical_level=vert,
         altitude_m=alt,
+        floor=floor,
         beacon_anchor=beacon
     )
     status_data["action_message"] = msg

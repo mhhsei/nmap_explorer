@@ -702,6 +702,11 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var lastGpsAccuracyM: Float = 10.0f
     private var currentVerticalLevel: VerticalLevel = VerticalLevel.GROUND
     private var currentAltitudeM: Float = 0.0f
+    private var currentFloorString: String = "1F"
+    private var lastDemLat: Double = 0.0
+    private var lastDemLon: Double = 0.0
+    private var cachedDemGroundElev: Float = 0.0f
+    private var hasCachedDem: Boolean = false
 
     // 【三大非視覺神經網路導航引擎】
     val learnedStepEstimator = LearnedStepVelocityEstimator()
@@ -713,6 +718,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }
     }
     val verticalMotionClassifier = VerticalMotionNeuralClassifier { motionType, floorStr, altM ->
+        currentFloorString = floorStr
         Log.i(tag, "[VERTICAL_MOTION_NEURAL] 垂直運動神經分類: ${motionType.description} | 樓層: $floorStr | 高度差: ${altM}m")
         webView.post {
             webView.evaluateJavascript("if (window.onVerticalFloorUpdate) window.onVerticalFloorUpdate('${motionType.name}', '${floorStr}', ${altM});", null)
@@ -747,6 +753,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         barometerFilter = BarometerVerticalFilter { level, altM, desc ->
             currentVerticalLevel = level
             currentAltitudeM = altM
+            val floorOffset = (altM / 3.2f).toInt()
+            val fIdx = 1 + floorOffset
+            currentFloorString = if (fIdx <= 0) "B${abs(fIdx - 1)}" else "${fIdx}F"
             val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
             val humanLog = "[$timeStr] [垂直樓層切換] 樓層: ${level.displayName} | 高度: ${String.format(Locale.US, "%.1f", altM)}m | 提示: $desc"
             val ndjson = org.json.JSONObject().apply {
@@ -1320,6 +1329,39 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     /**
+     * 【依據經緯度查詢 NASA SRTM 裸地真實高程 (公尺)】
+     * 具備 15 公尺局部快取，直接調用 Python 端的 NASA SRTM3 90m 解析度網格
+     */
+    private fun queryGroundDemElevation(lat: Double, lon: Double): Float {
+        if (hasCachedDem) {
+            val dLat = (lat - lastDemLat) * 111000.0
+            val dLon = (lon - lastDemLon) * 111000.0 * cos(Math.toRadians(lat))
+            val dist = sqrt(dLat * dLat + dLon * dLon)
+            if (dist < 15.0) {
+                return cachedDemGroundElev
+            }
+        }
+        try {
+            if (com.chaquo.python.Python.isStarted()) {
+                val py = com.chaquo.python.Python.getInstance()
+                val srtmMod = py.getModule("nmap.spatial.srtm_reader")
+                val res = srtmMod.callAttr("get_elevation", lat, lon)
+                if (res != null && res.toString() != "None") {
+                    val elev = res.toDouble().toFloat()
+                    cachedDemGroundElev = elev
+                    lastDemLat = lat
+                    lastDemLon = lon
+                    hasCachedDem = true
+                    return elev
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "queryGroundDemElevation failed: ${e.message}")
+        }
+        return cachedDemGroundElev
+    }
+
+    /**
      * GPS 定位回調
      */
     override fun onLocationChanged(location: Location) {
@@ -1404,11 +1446,49 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         // 定期將最新平滑位置提供給 NTRIP 客戶端以維持 VRS 基準站鎖定
         ntripClient?.updateCurrentLocation(filteredLat, filteredLon, alt)
 
+        // 5. NASA SRTM 裸地高程定錨與無氣壓計雙軌備援
+        val demGroundElev = queryGroundDemElevation(filteredLat, filteredLon)
+        if (pressureSensor != null) {
+            // 有硬體氣壓計：以 NASA SRTM 裸地高程校準氣壓基準海平面 P0，徹底解決高樓層冷啟動誤判為 1 樓之問題
+            if (location.hasAltitude() && alt != 0.0) {
+                barometerFilter?.calibrateBaselineFromDem(demGroundElev, alt.toFloat())
+            }
+        } else {
+            // 無硬體氣壓計（70% 平價手機）：全面啟動 GPS + NASA SRTM 雙軌推算樓層
+            if (location.hasAltitude() && alt != 0.0) {
+                val relAltM = (alt - demGroundElev).toFloat()
+                currentAltitudeM = relAltM
+                val floorIdx = 1 + (relAltM / 3.2f).toInt()
+                val targetLevel = when {
+                    floorIdx >= 10 -> VerticalLevel.INDOOR_10F
+                    floorIdx == 9 -> VerticalLevel.INDOOR_9F
+                    floorIdx == 8 -> VerticalLevel.INDOOR_8F
+                    floorIdx == 7 -> VerticalLevel.INDOOR_7F
+                    floorIdx == 6 -> VerticalLevel.INDOOR_6F
+                    floorIdx == 5 -> VerticalLevel.INDOOR_5F
+                    floorIdx == 4 -> VerticalLevel.INDOOR_4F
+                    floorIdx == 3 -> VerticalLevel.INDOOR_3F
+                    floorIdx == 2 -> VerticalLevel.INDOOR_2F
+                    floorIdx == 1 -> VerticalLevel.GROUND
+                    floorIdx == 0 -> VerticalLevel.INDOOR_B1
+                    floorIdx == -1 -> VerticalLevel.INDOOR_B2
+                    floorIdx == -2 -> VerticalLevel.INDOOR_B3
+                    floorIdx == -3 -> VerticalLevel.INDOOR_B4
+                    else -> VerticalLevel.INDOOR_B5
+                }
+                currentVerticalLevel = targetLevel
+                verticalMotionClassifier.setRelativeAltitudeAndFloor(relAltM, floorIdx)
+                val altSign = if (relAltM >= 0) "+" else ""
+                val desc = "📍 衛星/SRTM 偵測${targetLevel.spokenPrefix}（高度 ${altSign}${String.format(Locale.US, "%.1f", relAltM)} 公尺），已切換為${targetLevel.displayName}圖資。"
+                barometerFilter?.setAltitudeAndLevelDirect(relAltM, targetLevel, desc)
+            }
+        }
+
         val provider = location.provider ?: "fused"
 
         // 記錄人類可讀與結構化 NDJSON 日誌
         val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 等級: ${currentDiffTier.displayName} | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 ($satelliteL5Count 顆) | 折射: $isUrbanCanyonMultipath"
+        val humanLog = "[$timeStr] [GPS] 來源: $provider | 原始: ($rawLat, $rawLon) | 濾波: ($filteredLat, $filteredLon) | 樓層: $currentFloorString (${currentVerticalLevel.displayName}) | 等級: ${currentDiffTier.displayName} | 狀態: $motionState | 精度: ${acc}m | 速度: ${String.format(Locale.US, "%.1f", speed)}m/s | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}° | L5: $hasDualFrequencyL5 ($satelliteL5Count 顆) | 折射: $isUrbanCanyonMultipath"
         val ndjson = org.json.JSONObject().apply {
             put("t", timeStr)
             put("evt", "GPS_FIX")
@@ -1435,6 +1515,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             put("sw_steps", softwareStepCount)
             put("stride_m", userStepLengthM)
             put("vertical_level", currentVerticalLevel.name)
+            put("floor", currentFloorString)
             put("altitude_m", currentAltitudeM)
             put("raw_pressure_hpa", barometerFilter?.getRawPressure() ?: 1013.25f)
             put("baseline_p0_hpa", barometerFilter?.getBaselinePressure() ?: 1013.25f)
@@ -1443,7 +1524,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         }.toString()
         addTrajectoryLog(humanLog, ndjson)
 
-        Log.i(tag, "[GPS_FIX] provider=$provider, diff=${currentDiffTier.displayName}, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°, level=${currentVerticalLevel.name}")
+        Log.i(tag, "[GPS_FIX] provider=$provider, diff=${currentDiffTier.displayName}, raw=($rawLat, $rawLon) -> kalman=($filteredLat, $filteredLon), floor=$currentFloorString, state=$motionState, acc=${acc}m, speed=${String.format(Locale.US, "%.1f", speed)}m/s, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°, level=${currentVerticalLevel.name}")
 
         // 呼叫前端 JavaScript onLocationUpdate 與 onDifferentialTierUpdate 函式
         val effectiveSpeed = if (motionState == MotionState.STATIONARY_LOCKED) 0f else speed
@@ -1462,7 +1543,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                 "if (window.onLocationUpdate) window.onLocationUpdate(${filteredLat}, ${filteredLon}, ${effectiveAcc}, ${bearing}, ${effectiveSpeed}, '${motionState.name}');" +
                 "if (window.onMotionStateUpdate) window.onMotionStateUpdate('${motionState.name}');" +
                 "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});" +
-                "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
+                "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');" +
+                "if (window.onVerticalFloorUpdate) window.onVerticalFloorUpdate('HORIZONTAL_CORRIDOR', '${currentFloorString}', ${currentAltitudeM});",
                 null
             )
         }
@@ -1481,7 +1563,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                     "if (window.onLocationUpdate) window.onLocationUpdate(${lastDispatchedLat}, ${lastDispatchedLon}, ${lastDispatchedAcc}, ${lastDispatchedBearing}, ${lastDispatchedSpeed}, '${lastDispatchedMotionState.name}');" +
                     "if (window.onMotionStateUpdate) window.onMotionStateUpdate('${lastDispatchedMotionState.name}');" +
                     "if (window.onDifferentialTierUpdate) window.onDifferentialTierUpdate('${currentDiffTier.name}', '${currentDiffTier.displayName}', ${currentDiffTier.expectedAccuracyMeters});" +
-                    "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
+                    "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');" +
+                    "if (window.onVerticalFloorUpdate) window.onVerticalFloorUpdate('HORIZONTAL_CORRIDOR', '${currentFloorString}', ${currentAltitudeM});",
                     null
                 )
             }
@@ -1547,12 +1630,16 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         val currentPitchDeg: Float
             get() = activeInstance?.phonePitchDeg ?: 0f
 
+        val currentFloor: String
+            get() = activeInstance?.currentFloorString ?: "1F"
+
         fun getDiagnosticsSnapshot(): org.json.JSONObject {
             val inst = activeInstance
             return org.json.JSONObject().apply {
                 if (inst != null) {
                     put("vertical_level", inst.currentVerticalLevel.name)
                     put("vertical_level_display", inst.currentVerticalLevel.displayName)
+                    put("floor", inst.currentFloorString)
                     put("altitude_m", inst.currentAltitudeM)
                     put("raw_pressure_hpa", inst.barometerFilter?.getRawPressure() ?: 0.0)
                     put("baseline_pressure_hpa", inst.barometerFilter?.getBaselinePressure() ?: 0.0)

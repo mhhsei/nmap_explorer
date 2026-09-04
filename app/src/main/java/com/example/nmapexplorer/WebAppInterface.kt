@@ -82,6 +82,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         accuracy: Double,
         verticalLevel: String,
         altitudeM: Double,
+        floor: String?,
         beaconAnchorJson: String?
     ): String {
         return try {
@@ -92,15 +93,29 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 pyJson.callAttr("loads", beaconAnchorJson)
             } else null
 
+            val safeFloor = if (floor.isNullOrEmpty()) "1F" else floor
             val result = serverMod.callAttr(
                 "update_gps_direct",
-                lat, lon, heading, accuracy, verticalLevel, altitudeM, beaconDict
+                lat, lon, heading, accuracy, verticalLevel, altitudeM, safeFloor, beaconDict
             )
             result.toString()
         } catch (e: Throwable) {
             Log.e(tag, "Direct IPC updateGpsDirect error: ${e.message}")
             ""
         }
+    }
+
+    @JavascriptInterface
+    fun updateGpsDirect(
+        lat: Double,
+        lon: Double,
+        heading: Double,
+        accuracy: Double,
+        verticalLevel: String,
+        altitudeM: Double,
+        beaconAnchorJson: String?
+    ): String {
+        return updateGpsDirect(lat, lon, heading, accuracy, verticalLevel, altitudeM, "1F", beaconAnchorJson)
     }
 
     /**

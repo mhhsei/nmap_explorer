@@ -127,7 +127,7 @@ class VerticalMotionNeuralClassifier(
         val rawFloorOffset = (accumulatedRelativeAltitudeM / floorStepHeightM).toInt()
         val calculatedFloor = 1 + rawFloorOffset
 
-        if (newMotion != currentMotionType && (nowMs - lastStateChangeTimeMs > 2000L)) {
+        if ((newMotion != currentMotionType || calculatedFloor != currentFloorIndex) && (nowMs - lastStateChangeTimeMs > 2000L)) {
             currentMotionType = newMotion
             currentFloorIndex = calculatedFloor
             lastStateChangeTimeMs = nowMs
@@ -138,5 +138,19 @@ class VerticalMotionNeuralClassifier(
             }
             onMotionStateChanged(newMotion, floorString, accumulatedRelativeAltitudeM)
         }
+    }
+
+    /**
+     * 【GPS / SRTM 雙軌高程直接定錨 (無氣壓計備援)】
+     */
+    fun setRelativeAltitudeAndFloor(relAltitudeM: Float, floorIdx: Int? = null) {
+        accumulatedRelativeAltitudeM = relAltitudeM
+        val floorStepHeightM = 3.2f
+        currentFloorIndex = floorIdx ?: (1 + (relAltitudeM / floorStepHeightM).toInt())
+        val floorString = when {
+            currentFloorIndex <= 0 -> "B${abs(currentFloorIndex - 1)}"
+            else -> "${currentFloorIndex}F"
+        }
+        onMotionStateChanged(currentMotionType, floorString, accumulatedRelativeAltitudeM)
     }
 }

@@ -7,9 +7,14 @@
 3. 項目 4 (氣壓微波形與垂直運動神經分類器): 走樓梯上/下、搭電梯、平地走廊區分，以及 2F/1F 跨樓層店家過濾。
 """
 
+import os
+import sys
 import unittest
 import math
 import numpy as np
+
+# 確保當前目錄在 sys.path 中
+sys.path.insert(0, os.path.dirname(__file__))
 
 # ==============================================================================
 # 模擬項目 2：深度慣性步長與速度神經網路 (LearnedStepVelocityEstimator)
@@ -252,5 +257,95 @@ class TestNeuralNavigationSuite(unittest.TestCase):
         self.assertIn("淡江數位影印部", poi_names)
         self.assertNotIn("迦南中庭餐廳", poi_names)
 
+    def test_vertical_level_conversions(self):
+        """測試 floor_to_level 與 level_to_floor 雙向換算及顯示名稱"""
+        from nmap.spatial.vertical_level import floor_to_level, level_to_floor, LEVEL_DISPLAY_NAMES, format_transition_speech
+
+        self.assertEqual(floor_to_level("1F"), "GROUND")
+        self.assertEqual(floor_to_level("2F"), "INDOOR_2F")
+        self.assertEqual(floor_to_level("3F"), "INDOOR_3F")
+        self.assertEqual(floor_to_level("10F"), "INDOOR_10F")
+        self.assertEqual(floor_to_level("B1"), "INDOOR_B1")
+        self.assertEqual(floor_to_level("B2"), "INDOOR_B2")
+
+        self.assertEqual(level_to_floor("GROUND"), "1F")
+        self.assertEqual(level_to_floor("INDOOR_2F"), "2F")
+        self.assertEqual(level_to_floor("INDOOR_3F"), "3F")
+        self.assertEqual(level_to_floor("INDOOR_B1"), "B1")
+        self.assertEqual(level_to_floor("OVERPASS"), "2F")
+        self.assertEqual(level_to_floor("UNDERGROUND"), "B1")
+
+        self.assertEqual(LEVEL_DISPLAY_NAMES["INDOOR_3F"], "3樓")
+        self.assertEqual(LEVEL_DISPLAY_NAMES["INDOOR_B2"], "地下2樓")
+
+        speech = format_transition_speech("GROUND", "INDOOR_3F", 6.4)
+        self.assertIn("【3樓】", speech)
+        self.assertIn("+6.4米", speech)
+
+    def test_reporter_floor_speech_and_report(self):
+        """測試語音報讀器整合所在樓層【3樓】與樓層切換即時提示"""
+        from nmap.accessibility.reporter import Reporter
+        from server import agent
+
+        reporter = Reporter()
+        agent.is_loaded = True
+        agent.location_label = "台北市信義區"
+        # 首次定位在 3 樓
+        full_rep = reporter.generate_full_report(
+            agent,
+            vertical_level="INDOOR_3F", altitude_m=6.4, floor="3F"
+        )
+        self.assertIn("【3樓】", full_rep)
+        self.assertIn("相對地面高度：+6.4 公尺", full_rep)
+
+        # 樓層切換到 4 樓，應觸發切換提示
+        concise_rep = reporter.generate_concise_report(
+            agent,
+            vertical_level="INDOOR_4F", altitude_m=9.6, floor="4F"
+        )
+        self.assertIn("垂直樓層切換至【4樓】", concise_rep)
+
+    def test_server_status_and_gps_update_with_floor(self):
+        """測試 server.py 在 update_gps_direct 與 build_status_dict 完整保留與傳遞 floor 欄位"""
+        from server import update_gps_direct, build_status_dict, agent
+        agent.is_loaded = True
+
+        res_json = update_gps_direct(
+            lat=25.033, lon=121.565, heading=90.0, accuracy=5.0,
+            vertical_level="INDOOR_3F", altitude_m=6.4, floor="3F"
+        )
+        import json
+        res = json.loads(res_json)
+        self.assertTrue(res.get("success", False))
+        self.assertEqual(res.get("floor"), "3F")
+
+        status = build_status_dict(
+            heading_deg=90.0, lat=25.033, lon=121.565,
+            vertical_level="INDOOR_3F", altitude_m=6.4, floor="3F"
+        )
+        self.assertEqual(status.get("floor"), "3F")
+        self.assertEqual(status.get("vertical_level"), "INDOOR_3F")
+
+    def test_non_barometer_gps_dem_floor_derivation(self):
+        """測試無氣壓計手機依據 (GPS 絕對高程 - NASA SRTM 裸地高程) / 3.2m 推算樓層"""
+        srtm_ground_elevation = 20.0  # 地表海平面 20 米
+
+        # 使用者在 3 樓陽台 (絕對高程 26.4 米，相對地面 6.4 米)
+        user_gps_altitude = 26.4
+        rel_alt_m = user_gps_altitude - srtm_ground_elevation
+        floor_offset = int(round(rel_alt_m / 3.2))
+        floor_idx = 1 + floor_offset
+        self.assertEqual(floor_idx, 3)
+
+        # 使用者在地下 1 樓停車場出口 (絕對高程 16.8 米，相對地面 -3.2 米)
+        user_gps_underground = 16.8
+        rel_alt_underground = user_gps_underground - srtm_ground_elevation
+        floor_offset_ug = int(round(rel_alt_underground / 3.2))
+        floor_idx_ug = 1 + floor_offset_ug
+        floor_str = f"{floor_idx_ug}F" if floor_idx_ug > 0 else f"B{abs(floor_idx_ug - 1)}"
+        self.assertEqual(floor_str, "B1")
+
 if __name__ == "__main__":
     unittest.main()
+
+

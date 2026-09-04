@@ -5229,12 +5229,14 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
         };
 
         // 🚀 【IPC 零延遲記憶體直通通道】：Android 原生環境優先走直接 JNI 調用，跳過 TCP 網路棧
+        const curFloor = window.currentNeuralFloor || "1F";
         if (window.AndroidBridge && typeof window.AndroidBridge.updateGpsDirect === "function") {
             try {
                 const jsonStr = window.AndroidBridge.updateGpsDirect(
                     lat, lon, heading, accuracy || 10.0,
                     window.currentVerticalLevel || "GROUND",
                     window.currentAltitudeM || 0.0,
+                    curFloor,
                     JSON.stringify(window.currentBeaconAnchor || null)
                 );
                 if (jsonStr && jsonStr.length > 10) {
@@ -5258,6 +5260,7 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
                 accuracy: accuracy || 10.0,
                 vertical_level: window.currentVerticalLevel || "GROUND",
                 altitude_m: window.currentAltitudeM || 0.0,
+                floor: curFloor,
                 beacon_anchor: window.currentBeaconAnchor || null
             })
         })
@@ -5273,6 +5276,7 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
 /**
  * 差分定位品質等級即時回調 (由 Android LocationSensorBridge 注入)
  */
+window.currentDifferentialTier = null;
 window.onDifferentialTierUpdate = function(tierName, displayName, expectedAcc) {
     window.currentDifferentialTier = { name: tierName, displayName: displayName, expectedAcc: expectedAcc };
     const diffElem = document.getElementById("diff-status-pill");
@@ -5292,18 +5296,34 @@ window.onVerticalLevelUpdate = function(levelName, displayName, altitudeM, descr
     window.currentVerticalLevel = levelName;
     window.currentAltitudeM = altitudeM;
 
+    // 若為室內樓層，自動推導標準樓層標籤 (例如 INDOOR_3F -> 3F, INDOOR_B1 -> B1)
+    if (levelName && levelName.startsWith("INDOOR_")) {
+        window.currentNeuralFloor = levelName.replace("INDOOR_", "");
+    } else if (levelName === "GROUND") {
+        if (!window.currentNeuralFloor || window.currentNeuralFloor.startsWith("INDOOR_")) {
+            window.currentNeuralFloor = "1F";
+        }
+    } else if (levelName === "OVERPASS") {
+        window.currentNeuralFloor = "2F";
+    } else if (levelName === "UNDERGROUND") {
+        window.currentNeuralFloor = "B1";
+    } else if (levelName === "UNDERGROUND_B2") {
+        window.currentNeuralFloor = "B2";
+    }
+
+    const curFloorLabel = window.currentNeuralFloor || "1F";
     const vertElem = document.getElementById("vertical-status-pill");
     if (vertElem) {
         const sign = altitudeM >= 0 ? "+" : "";
         let icon = "🏢";
         if (levelName === "OVERPASS") icon = "🌁";
-        else if (levelName.startsWith("UNDERGROUND")) icon = "🚇";
-        vertElem.textContent = `${icon} ${displayName} (${sign}${altitudeM.toFixed(1)}m)`;
-        vertElem.setAttribute("aria-label", `立體高程: ${displayName} (${sign}${altitudeM.toFixed(1)}公尺)`);
+        else if (levelName.startsWith("UNDERGROUND") || levelName.startsWith("INDOOR_B")) icon = "🚇";
+        vertElem.textContent = `${icon} ${curFloorLabel} (${sign}${altitudeM.toFixed(1)}m)`;
+        vertElem.setAttribute("aria-label", `所在樓層: ${curFloorLabel}，立體高程: ${displayName} (${sign}${altitudeM.toFixed(1)}公尺)`);
     }
 
     if (levelName !== oldLevel) {
-        const isUp = (levelName === "OVERPASS") || (oldLevel.startsWith("UNDERGROUND") && levelName === "GROUND");
+        const isUp = (levelName === "OVERPASS") || (oldLevel.startsWith("UNDERGROUND") && levelName === "GROUND") || (altitudeM > 0);
         if (window.app && window.app.audio) {
             window.app.audio.playVerticalTransitionTone(isUp);
         }
@@ -5382,6 +5402,16 @@ window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
     window.currentVerticalMotionType = motionType;
     const oldFloor = window.currentNeuralFloor;
     window.currentNeuralFloor = floorStr;
+    if (altM !== undefined && altM !== null) {
+        window.currentAltitudeM = altM;
+    }
+
+    const vertElem = document.getElementById("vertical-status-pill");
+    if (vertElem) {
+        const sign = (window.currentAltitudeM || 0) >= 0 ? "+" : "";
+        vertElem.textContent = `🏢 ${floorStr} (${sign}${(window.currentAltitudeM || 0).toFixed(1)}m)`;
+        vertElem.setAttribute("aria-label", `所在樓層: ${floorStr}，距地表 ${(window.currentAltitudeM || 0).toFixed(1)}公尺`);
+    }
 
     if (oldFloor !== floorStr && window.app && window.app.updateLiveLog) {
         let actionDesc = "目前位於";
@@ -5389,7 +5419,7 @@ window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
         else if (motionType === "WALKING_STAIRS_DOWN") actionDesc = "走樓梯抵達";
         else if (motionType === "ELEVATOR_MOVING") actionDesc = "搭電梯抵達";
 
-        const msg = `🏢 樓層識別：${actionDesc}【${floorStr}】(高程差 ${altM.toFixed(1)}m)`;
+        const msg = `🏢 垂直樓層：${actionDesc}【${floorStr}】(距地表 ${altM.toFixed(1)}公尺)`;
         window.app.updateLiveLog(msg, false, true);
 
         if (window.app.audio) {

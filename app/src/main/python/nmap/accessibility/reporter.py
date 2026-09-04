@@ -1,7 +1,7 @@
 from typing import Dict, Any, List, Optional
 from nmap.agent.explorer import ExplorerAgent
 from nmap.spatial.geometry import bearing_to_cardinal
-from nmap.spatial.vertical_level import VerticalLevelManager, LEVEL_DISPLAY_NAMES
+from nmap.spatial.vertical_level import VerticalLevelManager, LEVEL_DISPLAY_NAMES, to_spoken_floor, level_to_floor
 from nmap.spatial.beacon_database import TaiwanBeaconDatabase
 
 
@@ -23,6 +23,7 @@ class NVDAReporter:
         self.last_street = ""
         self.last_junc_alert = ""
         self.last_vertical_level = "GROUND"
+        self.last_floor = "1F"
         self.last_beacon_id = ""
 
     def generate_concise_report(
@@ -33,6 +34,7 @@ class NVDAReporter:
         intersection: Optional[Dict[str, Any]] = None,
         vertical_level: str = "GROUND",
         altitude_m: float = 0.0,
+        floor: str = "1F",
         beacon_anchor: Optional[Dict[str, Any]] = None,
         ground_elevation_m: float = 0.0,
         **kwargs: Any
@@ -66,10 +68,12 @@ class NVDAReporter:
             parts.append(TaiwanBeaconDatabase.format_anchor_announcement(beacon_anchor, beacon_anchor.get("dist_m", 2.0)))
             self.last_beacon_id = beacon_anchor.get("id", "")
 
-        # 0.1 垂直高程與樓層切換提醒 (天橋/地下道/地面)
-        if vertical_level != self.last_vertical_level:
-            parts.append(VerticalLevelManager.format_transition_speech(self.last_vertical_level, vertical_level, altitude_m))
+        # 0.1 垂直高程與樓層切換提醒 (天橋/地下道/地面/室內樓層)
+        target_floor = floor or level_to_floor(vertical_level)
+        if vertical_level != self.last_vertical_level or target_floor != self.last_floor:
+            parts.append(VerticalLevelManager.format_transition_speech(self.last_vertical_level, vertical_level, altitude_m, floor_str=target_floor))
             self.last_vertical_level = vertical_level
+            self.last_floor = target_floor
 
         # 1. 道路變更提醒（走進新路時報讀）
         if street_name != self.last_street:
@@ -111,7 +115,7 @@ class NVDAReporter:
                 has_junc_alert = True
 
         # 5. 前方前進走廊左右店家提醒（緊鄰店家合併打包與門牌自然錨定）
-        filtered_pois = VerticalLevelManager.filter_and_prioritize_pois(pois or [], vertical_level)
+        filtered_pois = VerticalLevelManager.filter_and_prioritize_pois(pois or [], vertical_level, target_floor=target_floor)
         corridor_pois = [p for p in filtered_pois if p.get("distance_m", 999) <= 25.0 and p.get("distance_m", 0) >= 1.5 and "後方" not in p.get("relative_direction", "")]
         
         has_poi_alert = False
@@ -159,6 +163,7 @@ class NVDAReporter:
         scene: Optional[Dict[str, Any]] = None,
         vertical_level: str = "GROUND",
         altitude_m: float = 0.0,
+        floor: str = "1F",
         beacon_anchor: Optional[Dict[str, Any]] = None,
         ground_elevation_m: float = 0.0,
         **kwargs: Any
@@ -213,11 +218,13 @@ class NVDAReporter:
         lines.append(f"• 朝向：面向{bearing_to_cardinal(agent.heading_deg)} (方位角 {int(agent.heading_deg)}°)")
 
         # Section 1.2: 3D 垂直空間高程與公眾 Beacon 定錨
-        level_name = LEVEL_DISPLAY_NAMES.get(vertical_level, "地面層")
+        target_floor = floor or level_to_floor(vertical_level)
+        spoken_floor = to_spoken_floor(target_floor)
+        level_name = LEVEL_DISPLAY_NAMES.get(vertical_level, spoken_floor)
         alt_str = f"{altitude_m:+.1f} 公尺" if altitude_m != 0.0 else "±0.0 公尺"
-        lines.append(f"\n【3D 垂直空間與地形高程】")
-        lines.append(f"• 所在立體層級：{level_name}")
-        lines.append(f"• 相對地面高程：{alt_str}")
+        lines.append(f"\n【3D 垂直空間與樓層高程】")
+        lines.append(f"• 當前所在樓層：【{spoken_floor}】({target_floor})")
+        lines.append(f"• 相對地面高度：{alt_str}")
         lines.append(f"• 真實地形海拔：{ground_elevation_m:+.1f} 公尺 (由 SRTM 3D 地形庫提供)")
         if beacon_anchor:
             dist_val = beacon_anchor.get('dist_m', 2.0)
@@ -348,3 +355,7 @@ class NVDAReporter:
                 lines.append(f"• {b['name']} ({b['building_type']}{level_str})：位於 {b['clock_position']} ({b['relative_direction']})，距離 {b['distance_m']} 公尺")
 
         return "\n".join(lines)
+
+
+# 別名保持相容性
+Reporter = NVDAReporter

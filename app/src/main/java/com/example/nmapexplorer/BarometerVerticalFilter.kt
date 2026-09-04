@@ -25,13 +25,20 @@ enum class VerticalLevel(val displayName: String, val spokenPrefix: String) {
     UNDERGROUND_B2("捷運大廳/B2", "已進入地下二樓大廳"),
     
     // 新增室內商場絕對樓層
+    INDOOR_B5("室內 B5", "已進入 B5"),
+    INDOOR_B4("室內 B4", "已進入 B4"),
     INDOOR_B3("室內 B3", "已進入 B3"),
     INDOOR_B2("室內 B2", "已進入 B2"),
     INDOOR_B1("室內 B1", "已進入 B1"),
     INDOOR_2F("室內 2樓", "已進入 2樓"),
     INDOOR_3F("室內 3樓", "已進入 3樓"),
     INDOOR_4F("室內 4樓", "已進入 4樓"),
-    INDOOR_5F("室內 5樓", "已進入 5樓")
+    INDOOR_5F("室內 5樓", "已進入 5樓"),
+    INDOOR_6F("室內 6樓", "已進入 6樓"),
+    INDOOR_7F("室內 7樓", "已進入 7樓"),
+    INDOOR_8F("室內 8樓", "已進入 8樓"),
+    INDOOR_9F("室內 9樓", "已進入 9樓"),
+    INDOOR_10F("室內 10樓", "已進入 10樓")
 }
 
 /**
@@ -231,15 +238,22 @@ class BarometerVerticalFilter(
         var rawTargetLevel = oldLevel
 
         if (isGpsWeak) {
-            // 室內商場絕對樓層模式 (每層樓假設 4.2 公尺)
+            // 室內商場絕對樓層模式 (每層樓約 3.2 ~ 3.5 公尺)
             rawTargetLevel = when {
-                altM >= 14.7f -> VerticalLevel.INDOOR_5F
-                altM >= 10.5f -> VerticalLevel.INDOOR_4F
-                altM >= 6.3f -> VerticalLevel.INDOOR_3F
-                altM >= 2.1f -> VerticalLevel.INDOOR_2F
-                altM <= -10.5f -> VerticalLevel.INDOOR_B3
-                altM <= -6.3f -> VerticalLevel.INDOOR_B2
-                altM <= -2.1f -> VerticalLevel.INDOOR_B1
+                altM >= 28.8f -> VerticalLevel.INDOOR_10F
+                altM >= 25.6f -> VerticalLevel.INDOOR_9F
+                altM >= 22.4f -> VerticalLevel.INDOOR_8F
+                altM >= 19.2f -> VerticalLevel.INDOOR_7F
+                altM >= 16.0f -> VerticalLevel.INDOOR_6F
+                altM >= 12.8f -> VerticalLevel.INDOOR_5F
+                altM >= 9.6f -> VerticalLevel.INDOOR_4F
+                altM >= 6.4f -> VerticalLevel.INDOOR_3F
+                altM >= 2.0f -> VerticalLevel.INDOOR_2F
+                altM <= -16.0f -> VerticalLevel.INDOOR_B5
+                altM <= -12.8f -> VerticalLevel.INDOOR_B4
+                altM <= -9.6f -> VerticalLevel.INDOOR_B3
+                altM <= -6.4f -> VerticalLevel.INDOOR_B2
+                altM <= -2.0f -> VerticalLevel.INDOOR_B1
                 else -> VerticalLevel.GROUND
             }
         } else {
@@ -315,5 +329,32 @@ class BarometerVerticalFilter(
             evaluateLevelTransition(stateAltitudeM, false)
             Log.i(tag, "[CALIBRATE] Vertical altitude manually anchored to ${knownAltitudeM}m (Level: ${currentLevel.name})")
         }
+    }
+
+    /**
+     * 【依據 NASA SRTM 當地地表真實裸地海拔與 GPS 橢球高反推標準地面大氣壓】
+     * 作用：徹底解決使用者在 5 樓開機時，將 5 樓氣壓誤認作地面基準 0 米的致命 Bug！
+     */
+    fun calibrateBaselineFromDem(groundDemElevationM: Float, currentGpsAltitudeM: Float) {
+        lastKnownDemGroundElevation = groundDemElevationM
+        val relAltM = currentGpsAltitudeM - groundDemElevationM
+        if (lastRawPressureHpa in 300f..1100f) {
+            val ratio = (1.0f - (relAltM / 44330.0f)).coerceIn(0.1f, 1.5f)
+            val p0 = (lastRawPressureHpa / ratio.pow(5.255f)).coerceIn(800f, 1150f)
+            baselinePressureHpa = p0
+            isBaselineInitialized = true
+            stateAltitudeM = relAltM
+            evaluateLevelTransition(stateAltitudeM, false)
+            Log.i(tag, "[CALIBRATE_DEM] Ground baseline calibrated from DEM ($groundDemElevationM m) & GPS Alt ($currentGpsAltitudeM m): P0=${String.format(Locale.US, "%.2f", p0)} hPa, relAlt=${String.format(Locale.US, "%.1f", relAltM)}m")
+        }
+    }
+
+    /**
+     * 【無氣壓計時之 GPS / SRTM 雙軌高度與層級直接覆寫】
+     */
+    fun setAltitudeAndLevelDirect(altM: Float, level: VerticalLevel, desc: String) {
+        stateAltitudeM = altM
+        currentLevel = level
+        onLevelChanged(level, altM, desc)
     }
 }
