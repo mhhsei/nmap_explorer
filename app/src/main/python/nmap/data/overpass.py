@@ -201,21 +201,46 @@ class OverpassClient:
 
             hw = tags.get("highway")
             if hw == "crossing":
+                crossing_signals = tags.get("crossing:signals", "no")
+                is_sig_crossing = crossing_signals in ("yes", "traffic_signals") or tags.get("crossing") == "traffic_signals"
                 crossings.append({
                     "id": node_id,
                     "lat": lat,
                     "lon": lon,
                     "crossing_type": tags.get("crossing", "unspecified"),
-                    "crossing_signals": tags.get("crossing:signals", "no"),
+                    "crossing_signals": "yes" if is_sig_crossing else crossing_signals,
                     "tactile_paving": tags.get("tactile_paving", "unknown"),
                     "tags": tags
                 })
+                # 若斑馬線明確設有行人紅綠燈號誌，同步納入交通號誌列表
+                if is_sig_crossing:
+                    has_sound = tags.get("traffic_signals:sound") in ("yes", "acoustic", "buzzer") or tags.get("sound") in ("yes", "acoustic", "buzzer")
+                    has_btn = tags.get("button_operated") == "yes" or tags.get("traffic_signals:button") == "yes"
+                    traffic_signals.append({
+                        "id": node_id,
+                        "name": tags.get("name") or "行人專用號誌 (斑馬線)",
+                        "lat": lat,
+                        "lon": lon,
+                        "sound": "yes" if has_sound else tags.get("sound", "unknown"),
+                        "has_sound": has_sound,
+                        "has_button": has_btn,
+                        "signal_type": "行人專用號誌",
+                        "tags": tags
+                    })
             elif hw == "traffic_signals":
+                has_sound = tags.get("traffic_signals:sound") in ("yes", "acoustic", "buzzer") or tags.get("sound") in ("yes", "acoustic", "buzzer")
+                has_btn = tags.get("button_operated") == "yes" or tags.get("traffic_signals:button") == "yes"
+                sig_type = "閃光號誌" if tags.get("traffic_signals") == "blink" or tags.get("flashing") == "yes" else \
+                           ("行人專用號誌" if tags.get("traffic_signals") == "pedestrian" else "紅綠燈號誌")
                 traffic_signals.append({
                     "id": node_id,
+                    "name": tags.get("name") or "路口交通號誌",
                     "lat": lat,
                     "lon": lon,
-                    "sound": tags.get("sound", "unknown"),
+                    "sound": "yes" if has_sound else tags.get("sound", "unknown"),
+                    "has_sound": has_sound,
+                    "has_button": has_btn,
+                    "signal_type": sig_type,
                     "tags": tags
                 })
             elif hw == "bus_stop" or tags.get("railway") == "subway_entrance" or tags.get("public_transport") in ["platform", "stop_position"]:

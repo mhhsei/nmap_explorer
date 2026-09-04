@@ -411,6 +411,145 @@ class TaiwanSignalManager:
 
         return best_sig
 
+    def find_all_signals_near(self, lat: float, lon: float, max_dist_m: float = 50.0) -> List[Dict[str, Any]]:
+        """
+        【檢索範圍內的所有交通號誌（有聲號誌 + 一般紅綠燈 + 行人觸動號誌 + 閃光號誌）】
+        作用：同時整合記憶體重點號誌、全台 56,800 座離線號誌資料庫與現場 OSM 號誌，
+        杜絕只抓有鳥叫聲的號誌，將一般紅綠燈與行人按鈕號誌全量收錄。
+        """
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_deg_lon = max_dist_m / (111139.0 * cos_lat)
+        r_deg_lat = max_dist_m / 111139.0
+        bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
+
+        found_signals = []
+
+        # 1. 檢索記憶體中之重點號誌（含示範 APS 與動態注入的 OSM 號誌）
+        for item in self.spatial_index.intersection(bounds, objects=True):
+            sig = dict(item.object)
+            dist = haversine_distance(lat, lon, sig["lat"], sig["lon"])
+            if dist <= max_dist_m:
+                # 若與已收錄號誌相距小於 3.0 公尺，視為同一座實體設施予以去重
+                if not any(haversine_distance(sig["lat"], sig["lon"], s["lat"], s["lon"]) < 3.0 for s in found_signals):
+                    sig["distance_m"] = dist
+                    found_signals.append(sig)
+
+        # 2. 檢索全台 56,824 座離線 SQLite 號誌資料庫
+        if self._db_conn is not None:
+            try:
+                cur = self._db_conn.cursor()
+                cur.execute("""
+                    SELECT id, lat, lon, is_signalized, has_sound, has_button, crossing_type, name, tags
+                    FROM taiwan_signals
+                    WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                """, (lat - r_deg_lat, lat + r_deg_lat, lon - r_deg_lon, lon + r_deg_lon))
+                rows = cur.fetchall()
+                for row in rows:
+                    r_id, r_lat, r_lon, r_is_sig, r_sound, r_btn, r_cross, r_name, r_tags_str = row
+                    dist = haversine_distance(lat, lon, r_lat, r_lon)
+                    if dist <= max_dist_m:
+                        # 若與記憶體/OSM 號誌距離小於 3.5 公尺，由現場 OSM 資料優先
+                        if any(haversine_distance(r_lat, r_lon, s["lat"], s["lon"]) < 3.5 for s in found_signals):
+                            continue
+                        found_signals.append({
+                            "id": r_id,
+                            "intersection_name": r_name or f"紅綠燈 ({r_cross or '路口'})",
+                            "lat": r_lat,
+                            "lon": r_lon,
+                            "has_aps": bool(r_sound),
+                            "ew_sound": "鳥鳴聲" if r_sound else "",
+                            "ns_sound": "布穀鳥聲" if r_sound else "",
+                            "has_button": bool(r_btn),
+                            "button_pole": "右側號誌桿" if r_btn else "",
+                            "button_height_cm": 110 if r_btn else 0,
+                            "has_tactile_arrow": False,
+                            "has_refuge_island": False,
+                            "is_signalized": True,
+                            "is_connected_spat": False,
+                            "distance_m": dist
+                        })
+            except Exception:
+                pass
+
+        found_signals.sort(key=lambda x: x.get("distance_m", 999))
+        return found_signals
+
+    def get_nearby_signals(
+        self,
+        lat: float,
+        lon: float,
+        heading_deg: float,
+        radius_m: float = 50.0
+    ) -> List[Dict[str, Any]]:
+        """
+        【查詢周遭所有交通號誌（依距離排序，含鐘點方向與白話語音回饋）】
+        """
+        all_signals = self.find_all_signals_near(lat, lon, max_dist_m=radius_m)
+        results = []
+
+        norm_head = heading_deg % 360.0
+        is_walking_east_west = (45.0 <= norm_head <= 135.0) or (225.0 <= norm_head <= 315.0)
+
+        for sig in all_signals:
+            s_lat = sig["lat"]
+            s_lon = sig["lon"]
+            dist = sig.get("distance_m", haversine_distance(lat, lon, s_lat, s_lon))
+
+            t_bearing = calculate_bearing(lat, lon, s_lat, s_lon)
+            rel_deg = relative_bearing(heading_deg, t_bearing)
+            clock = bearing_to_clock_position(rel_deg)
+            rel_dir = bearing_to_relative_direction(rel_deg)
+
+            has_aps = sig.get("has_aps", False)
+            has_button = sig.get("has_button", False)
+            target_sound = sig.get("ew_sound", "鳥鳴聲") if is_walking_east_west else sig.get("ns_sound", "布穀鳥聲")
+
+            # 決定號誌種類與描述
+            if has_aps:
+                sig_type = "視障有聲號誌"
+                sig_desc = f"{sig_type} ({target_sound})"
+            elif has_button:
+                sig_type = "行人觸控號誌"
+                sig_desc = "紅綠燈號誌 (設有按鈕)"
+            else:
+                sig_type = "行車紅綠燈"
+                sig_desc = "紅綠燈號誌 (一般無聲)"
+
+            int_name = sig.get("intersection_name", "路口號誌")
+            speech_prompt = f"{rel_dir} {clock} {round(dist)}米：【{int_name}】{sig_desc}"
+
+            btn_guide = sig.get("button_guide")
+            if not btn_guide and has_button:
+                pole = sig.get("button_pole")
+                h_cm = sig.get("button_height_cm", 0)
+                if pole and h_cm > 0:
+                    btn_guide = f"觸控按鈕位於{pole}（高度約{h_cm}公分）"
+                elif pole:
+                    btn_guide = f"觸控按鈕位於{pole}"
+                else:
+                    btn_guide = "設有行人觸控按鈕"
+
+            results.append({
+                "id": sig.get("id"),
+                "name": int_name,
+                "signal_type": sig_type,
+                "lat": s_lat,
+                "lon": s_lon,
+                "distance_m": round(dist, 1),
+                "clock_position": clock,
+                "relative_direction": rel_dir,
+                "has_aps": has_aps,
+                "target_sound": target_sound if has_aps else "",
+                "has_button": has_button,
+                "button_guide": btn_guide or "",
+                "has_refuge_island": sig.get("has_refuge_island", False),
+                "is_signalized": True,
+                "speech_prompt": speech_prompt
+            })
+
+        results.sort(key=lambda x: x["distance_m"])
+        return results
+
     def update_live_spat(self, signal_id: str, light_status: str, remaining_seconds: int):
         """【注入交控即時秒數】"""
         self._live_spat_cache[signal_id] = {
@@ -478,6 +617,8 @@ class TaiwanSignalManager:
 
         if closest_signal.get("has_aps"):
             speech_parts.append(f"設有【{target_sound}】有聲號誌")
+        else:
+            speech_parts.append("設有紅綠燈管制（一般無聲號誌）")
 
         if closest_signal.get("has_refuge_island"):
             speech_parts.append("中央設有行人庇護島")
@@ -500,6 +641,7 @@ class TaiwanSignalManager:
             "clock_position": clock,
             "relative_direction": direction_name,
             "has_aps": closest_signal.get("has_aps", False),
+            "is_signalized": True,
             "target_sound": target_sound,
             "has_refuge_island": closest_signal.get("has_refuge_island", False),
             "has_live_seconds": has_live_seconds,

@@ -113,6 +113,7 @@ def build_status_dict(
 
     # 查詢台灣專屬公共資源 (路口SPaT號誌/變電箱安全雷達/捷運專屬無障礙電梯)
     traffic_signal = agent.world_model.get_signal_safety(cur_lat, cur_lon, cur_head)
+    traffic_signals = agent.world_model.get_nearby_traffic_signals(cur_lat, cur_lon, cur_head, radius_m=50.0)
     sidewalk_hazards = agent.world_model.get_sidewalk_hazards(cur_lat, cur_lon, cur_head)
     mrt_exits = agent.world_model.get_mrt_accessible_exits(cur_lat, cur_lon, cur_head)
 
@@ -159,6 +160,7 @@ def build_status_dict(
         "intersection": intersection,
         "door_estimates": door_estimates,
         "traffic_signal": traffic_signal,
+        "traffic_signals": traffic_signals,
         "sidewalk_hazards": sidewalk_hazards,
         "mrt_exits": mrt_exits,
         "micro_facilities": micro_facilities,
@@ -615,6 +617,37 @@ def get_micro_facilities():
         "entrances": entrances,
         "steps": steps,
         "micro_amenities": micro_amenities
+    })
+
+
+@app.route("/api/traffic_signals", method=["GET", "POST"])
+def get_traffic_signals():
+    """
+    【全台交通號誌與紅綠燈精準查詢 (All Traffic Signals)】
+    作用：隨時查詢身邊所有交通號誌清單（包含視障有聲號誌、一般紅綠燈、行人觸動按鈕號誌與閃光號誌）。
+    支援動態朝向與經緯度參數。
+    """
+    if not agent.is_loaded:
+        return json_response({"success": False, "message": "尚未初始化地圖。"}, status=400)
+
+    h = request.query.get("heading_deg") or (request.json.get("heading_deg") if request.json else None)
+    lat = request.query.get("lat") or (request.json.get("lat") if request.json else None)
+    lon = request.query.get("lon") or (request.json.get("lon") if request.json else None)
+
+    cur_head = float(h) if (h is not None and str(h).strip() != "") else agent.heading_deg
+    cur_lat = float(lat) if (lat is not None and str(lat).strip() != "") else agent.lat
+    cur_lon = float(lon) if (lon is not None and str(lon).strip() != "") else agent.lon
+
+    signals = agent.world_model.get_nearby_traffic_signals(cur_lat, cur_lon, cur_head, radius_m=50.0)
+    safety = agent.world_model.get_signal_safety(cur_lat, cur_lon, cur_head)
+
+    return json_response({
+        "success": True,
+        "lat": cur_lat,
+        "lon": cur_lon,
+        "heading_deg": cur_head,
+        "traffic_signals": signals,
+        "signal_safety": safety
     })
 
 

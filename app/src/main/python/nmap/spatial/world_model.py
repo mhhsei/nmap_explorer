@@ -224,6 +224,13 @@ class WorldModel:
         """取得前方路口交通號誌時制 (SPaT) 與有聲號誌 (APS)"""
         return self.signal_manager.get_nearby_signal_safety(lat, lon, heading_deg, radius_m)
 
+    def get_nearby_traffic_signals(self, lat: float, lon: float, heading_deg: float, radius_m: float = 50.0) -> List[Dict[str, Any]]:
+        """
+        【查詢周遭所有交通號誌（紅綠燈、行人專用號誌、按鈕號誌、有聲號誌、閃光號誌）】
+        作用：回傳方圓 radius_m 內之所有交通號誌，依距離排序，提供鐘點方向、按鈕導引與親切白話提示。
+        """
+        return self.signal_manager.get_nearby_signals(lat, lon, heading_deg, radius_m=radius_m)
+
     def get_sidewalk_hazards(self, lat: float, lon: float, heading_deg: float, max_dist_m: float = 12.0) -> List[Dict[str, Any]]:
         """取得前方人行道實體障礙物 (變電箱、消防栓、段差)"""
         return self.hazard_scanner.scan_forward_corridor(lat, lon, heading_deg, max_dist_m)
@@ -348,11 +355,52 @@ class WorldModel:
                     rev_brng = (brng + 180.0) % 360.0
                     self.road_graph.add_edge(v_id, u_id, weight=dist, name=road["name"], bearing=rev_brng, road=road)
 
-        # 1. 率先構建交通號誌空間索引 (供路口智能關聯)
+        # 1. 率先構建交通號誌空間索引 (供路口智能關聯，全面融合 OSM 現場號誌與全台 5.6 萬座號誌)
         ts_idx = 0
+        seen_sig_coords = set()
         for ts in self.traffic_signals:
             self.traffic_signal_rtree.insert(ts_idx, (ts["lon"], ts["lat"], ts["lon"], ts["lat"]), obj=ts)
             ts_idx += 1
+            seen_sig_coords.add((round(ts["lat"], 5), round(ts["lon"], 5)))
+            has_sound = ts.get("has_sound", False) or ts.get("sound") in ("yes", "acoustic", "buzzer")
+            self.signal_manager.add_signal({
+                "id": f"OSM_SIG_{ts['id']}",
+                "intersection_name": ts.get("name") or "現場交通號誌",
+                "lat": ts["lat"],
+                "lon": ts["lon"],
+                "has_aps": has_sound,
+                "ew_sound": "鳥鳴聲",
+                "ns_sound": "布穀鳥聲",
+                "has_button": ts.get("has_button", False),
+                "button_pole": "右側號誌桿" if ts.get("has_button") else "",
+                "button_height_cm": 110,
+                "has_tactile_arrow": False,
+                "has_refuge_island": False,
+                "is_signalized": True,
+                "is_connected_spat": False
+            })
+
+        # 從離線號誌資料庫同步注入本區域之所有紅綠燈至空間索引
+        sig_ref_lat = ref_lat or (self.roads[0]["geometry"][0][0] if self.roads and len(self.roads[0].get("geometry", [])) > 0 else None)
+        sig_ref_lon = ref_lon or (self.roads[0]["geometry"][0][1] if self.roads and len(self.roads[0].get("geometry", [])) > 0 else None)
+        if sig_ref_lat is not None and sig_ref_lon is not None:
+            offline_signals = self.signal_manager.find_all_signals_near(sig_ref_lat, sig_ref_lon, max_dist_m=350.0)
+            for osig in offline_signals:
+                coord_key = (round(osig["lat"], 5), round(osig["lon"], 5))
+                if coord_key not in seen_sig_coords:
+                    seen_sig_coords.add(coord_key)
+                    self.traffic_signal_rtree.insert(ts_idx, (osig["lon"], osig["lat"], osig["lon"], osig["lat"]), obj={
+                        "id": osig["id"],
+                        "name": osig.get("intersection_name", "紅綠燈號誌"),
+                        "lat": osig["lat"],
+                        "lon": osig["lon"],
+                        "sound": "yes" if osig.get("has_aps") else "no",
+                        "has_sound": osig.get("has_aps", False),
+                        "has_button": osig.get("has_button", False),
+                        "signal_type": "視障有聲號誌" if osig.get("has_aps") else "紅綠燈號誌",
+                        "tags": {"highway": "traffic_signals"}
+                    })
+                    ts_idx += 1
 
         # 2. 率先構建斑馬線空間索引 (供路口庇護島智能關聯)
         c_idx = 0

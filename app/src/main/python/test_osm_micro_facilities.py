@@ -129,6 +129,33 @@ class TestOsmMicroFacilities(unittest.TestCase):
                         "ramp": "yes",
                         "tactile_paving": "yes"
                     }
+                },
+                # 8. 行人觸控交通號誌 (Traffic Signal Node with Button) - 前方 11 公尺
+                {
+                    "type": "node",
+                    "id": 701,
+                    "lat": 25.04710,
+                    "lon": 121.51700,
+                    "tags": {
+                        "highway": "traffic_signals",
+                        "name": "站前廣場行人觸控號誌",
+                        "button_operated": "yes",
+                        "traffic_signals": "pedestrian"
+                    }
+                },
+                # 9. 號誌化斑馬線 (Signalized Crossing Node with Sound) - 前方 17 公尺
+                {
+                    "type": "node",
+                    "id": 702,
+                    "lat": 25.04715,
+                    "lon": 121.51705,
+                    "tags": {
+                        "highway": "crossing",
+                        "crossing": "traffic_signals",
+                        "crossing:signals": "yes",
+                        "traffic_signals:sound": "yes",
+                        "tactile_paving": "yes"
+                    }
                 }
             ]
         }
@@ -177,6 +204,19 @@ class TestOsmMicroFacilities(unittest.TestCase):
         self.assertIn("無障礙公共廁所", amenity_names)
         self.assertIn("休息長椅", amenity_names)
 
+        # 5. 驗證交通號誌提煉（含按鈕標籤與號誌化斑馬線）
+        self.assertIn("traffic_signals", parsed)
+        self.assertGreaterEqual(len(parsed["traffic_signals"]), 2)
+        sig_btn = next((s for s in parsed["traffic_signals"] if s["id"] == 701), None)
+        self.assertIsNotNone(sig_btn)
+        self.assertTrue(sig_btn["has_button"])
+        self.assertEqual(sig_btn["signal_type"], "行人專用號誌")
+        self.assertEqual(sig_btn["name"], "站前廣場行人觸控號誌")
+
+        sig_cross = next((s for s in parsed["traffic_signals"] if s["id"] == 702), None)
+        self.assertIsNotNone(sig_cross)
+        self.assertTrue(sig_cross["has_sound"])
+
     def test_world_model_spatial_indexing_and_queries(self):
         """測試 WorldModel 建立空間索引後，能正確回傳距離、鐘點方位與親切提示語"""
         parsed = self.overpass.parse_elements(self.mock_osm_data, self.center_lat, self.center_lon)
@@ -208,6 +248,39 @@ class TestOsmMicroFacilities(unittest.TestCase):
         # 4. 查詢微型公眾設施
         amenities = self.world_model.get_nearby_micro_amenities(self.center_lat, self.center_lon, heading, radius_m=30.0)
         self.assertGreaterEqual(len(amenities), 3)
+
+    def test_all_traffic_signals_retrieval_and_prompts(self):
+        """測試全台號誌融合（現場 OSM 號誌 + 離線資料庫）與鐘點方位、按鈕導引報讀"""
+        parsed = self.overpass.parse_elements(self.mock_osm_data, self.center_lat, self.center_lon)
+        self.world_model.build_from_osm(parsed, self.center_lat, self.center_lon)
+
+        # 站在 center_lat, center_lon，面向正北 (0 度)
+        heading = 0.0
+
+        signals = self.world_model.get_nearby_traffic_signals(self.center_lat, self.center_lon, heading, radius_m=30.0)
+        self.assertGreaterEqual(len(signals), 2)
+
+        # 檢驗包含帶有觸控按鈕的行人專用號誌
+        btn_sigs = [s for s in signals if s.get("has_button")]
+        self.assertGreaterEqual(len(btn_sigs), 1)
+        btn_sig = btn_sigs[0]
+        self.assertEqual(btn_sig["signal_type"], "行人觸控號誌")
+        self.assertIn("12點鐘方向", btn_sig["clock_position"])
+        self.assertIn("設有按鈕", btn_sig["speech_prompt"])
+        self.assertTrue(btn_sig["button_guide"] != "")
+
+        # 檢驗包含有聲號誌或號誌化設施
+        aps_sigs = [s for s in signals if s.get("has_aps")]
+        self.assertGreaterEqual(len(aps_sigs), 1)
+        aps_sig = aps_sigs[0]
+        self.assertEqual(aps_sig["signal_type"], "視障有聲號誌")
+        self.assertIn("布穀鳥聲", aps_sig["speech_prompt"])
+
+        # 檢驗路口安全號誌語音回饋
+        safety = self.world_model.get_signal_safety(self.center_lat, self.center_lon, heading, radius_m=28.0)
+        self.assertIsNotNone(safety)
+        self.assertTrue(safety.get("is_signalized"))
+        self.assertTrue("有聲號誌" in safety.get("speech_prompt", "") or "紅綠燈" in safety.get("speech_prompt", ""))
 
     def test_sidewalk_hazard_radar_dynamic_bollard_detection(self):
         """測試車擋柱自動注入 SidewalkHazardScanner 後，前進走廊碰撞雷達能發出繞行建議"""

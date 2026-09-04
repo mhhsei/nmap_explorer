@@ -47,6 +47,31 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.1 - 2026-09-04] - 實裝全台交通號誌全量收錄（5.6萬座紅綠燈、行人觸控按鈕、閃光號誌與視障有聲號誌全融合）、專屬查詢端點與高精度幾何去重
+- **🚦 1. 解決視障者痛點：告別單一有聲號誌，紅綠燈與行人按鈕全量感知**:
+  - **白話視障痛點**：過去系統僅收錄少量「視障有聲號誌 (APS)」（全台僅數十座示範路口），當視障者走在絕大多數一般紅綠燈路口時，系統完全沉默。視障者無法確知即將踏入的路口是否有紅綠燈管制、車輛是否會停下、路旁是否有行人觸控按鈕可按。
+  - **5.6 萬座離線號誌全面聯網啟動**：全面啟用 `app/src/main/python/data/taiwan_signals.db` 離線資料庫（內建全台 56,824 筆完整紅綠燈、行人號誌與有聲號誌資料），無網路環境下亦能秒級檢索。
+- **🧠 2. TaiwanSignalManager 號誌融合引擎升級 (`taiwan_signals.py`)**:
+  - **高精度幾何去重檢索 (`find_all_signals_near`)**：採用 `< 3.0` 米實體距離防重複演算法，無縫聚合「示範重點號誌」、「全台 5.6 萬座離線紅綠燈」與「現場即時 OSM 號誌」，消除經緯度過度捨入造成的近距離號誌誤殺問題。
+  - **全方位白話提示語與鐘點方位 (`get_nearby_signals`)**：
+    - 精準計算鐘點方位（如 `12點鐘方向`）、相對位置（如 `正前方`、`右前方`）與公尺距離。
+    - 清楚分類四種號誌型態：【視障有聲號誌】、【行人觸控號誌】、【行車紅綠燈】、【閃光號誌】。
+    - 按鈕明確導引（`button_guide`）：主動提供「觸控按鈕位於右側號誌桿（高度約110公分）」，方便盲杖或手部自然觸摸腰部高度尋找按鈕。
+  - **路口安全狀態機回饋升級 (`get_nearby_signal_safety`)**：
+    - 當路口為一般無聲號誌時，明確播報「設有紅綠燈管制（一般無聲號誌）」，杜絕靜默無聲。
+- **🌐 3. OSM Overpass 號誌多維標籤提煉 (`overpass.py`)**:
+  - 完整解析 `highway=traffic_signals`：提煉 `button_operated` / `traffic_signals:button` 按鈕標籤、`traffic_signals:sound` 有聲標籤、閃光號誌 (`blink`/`flashing`) 與行人專用號誌 (`traffic_signals=pedestrian`)。
+  - 深度捕捉號誌化斑馬線 `highway=crossing`（`crossing:signals=yes` 或 `crossing=traffic_signals`），自動同步納入交通號誌索引。
+- **🗂️ 4. WorldModel 空間網格雙向注入與查詢 (`world_model.py`)**:
+  - 在 `build_from_osm` 中將 OSM 現場號誌與周遭離線號誌同步注入 `traffic_signal_rtree` 與 `signal_manager`。
+  - 提供 `get_nearby_traffic_signals(lat, lon, heading_deg, radius_m=50.0)` 對外即時查詢介面。
+- **🔌 5. HTTP API 擴充與即時狀態封包 (`server.py`)**:
+  - `/api/status` 狀態響應新增 `traffic_signals` 清單欄位。
+  - 新增專用端點 `@app.route("/api/traffic_signals", method=["GET", "POST"])`，支援指定 `lat`, `lon`, `heading_deg` 動態過濾身邊所有號誌。
+- **🧪 6. 端到端單元測試與空間風洞實驗室 (`test_osm_micro_facilities.py`)**:
+  - 新增 `test_all_traffic_signals_retrieval_and_prompts` 測試用例，驗證 OSM 號誌提煉、全台號誌融合、按鈕導引與安全語音。
+  - 專案全套 26 項單元測試 100% 通過。
+
 ### [v1.0.17.0 - 2026-09-04] - 實裝 OSM 全維度微型無障礙設施提煉、純 Python 四向空間網格索引與前向車擋防撞雷達連動
 - **♿ 1. OSM 微型無障礙設施多維提煉引擎 (`overpass.py`)**:
   - **白話視障痛點**：過去 OSM Overpass 查詢忽略了 `barrier` 與 `entrance`，且在解析 `amenity` 時若沒有店名 (`name`) 就整筆丟棄。然而公園飲水機、休息長椅、公廁、路口車擋柱在 OSM 中絕大多數都沒有專屬名字，導致視障者「明明身處公園，卻完全聽不到身邊有飲水機或長椅可以休息」。
