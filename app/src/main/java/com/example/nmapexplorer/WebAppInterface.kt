@@ -142,9 +142,12 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         Log.i(tag, "[TTS_DIRECT] text='$text', elapsed=${elapsed}ms")
 
         // 【無障礙日誌零黑盒子】：將原生 TTS 播報同步記錄至前端語音歷史
-        val safeText = text.replace("'", "\\'")
-        webView.post {
-            webView.evaluateJavascript("if (window.onNativeSpeechLogged) window.onNativeSpeechLogged('$safeText');", null)
+        val targetWebView = webView
+        if (targetWebView != null) {
+            val safeText = text.replace("'", "\\'")
+            targetWebView.post {
+                targetWebView.evaluateJavascript("if (window.onNativeSpeechLogged) window.onNativeSpeechLogged('$safeText');", null)
+            }
         }
 
         (context as? android.app.Activity)?.runOnUiThread {
