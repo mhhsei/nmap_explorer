@@ -139,6 +139,12 @@ class TrafficSignalCameraManager(
     // 綠燈 1Hz 閃爍偵測滑動佇列 (記錄最近 2.5 秒內綠光有無之時序)
     private val greenHistory = ArrayDeque<Pair<Long, Boolean>>() // timestampMs -> isGreenVisible
 
+    // 【行人過街保護期 (Crossing Protection Window)】
+    // 當相機確認綠燈時，啟動 18 秒過街保護期。在保護期內全面靜默「手機朝下請抬起」與「左右微調」催促，
+    // 讓視障者能將手機自然持握或垂手，專注於白手杖探測與聆聽車流聲音！
+    private var crossingProtectionUntilMs = 0L
+    private val CROSSING_PROTECTION_DURATION_MS = 18000L
+
     // TFLite 深度學習直譯器
     private var tfliteInterpreter: Interpreter? = null
     private var isTfliteLoaded = false
@@ -315,10 +321,13 @@ class TrafficSignalCameraManager(
 
         val now = SystemClock.uptimeMillis()
 
+        // 0. 行人過街保護期判定：綠燈確認後 18 秒內，全面抑制姿態與搜尋微調催促，保障視障者專心聆聽過馬路！
+        val isCrossingProtected = now < crossingProtectionUntilMs
+
         // 1. 空間仰角導引 (俯仰角太低朝向地面 < -32°，提示稍抬起手機)
         val currentPitch = LocationSensorBridge.currentPitchDeg.toDouble()
         if (currentPitch < -32.0) {
-            if (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS) {
+            if (!isCrossingProtected && (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS)) {
                 lastDirectionPromptTimeMs = now
                 webAppInterface.speakTtsDirect("手機朝下，請稍抬起", interrupt = false)
                 recordCameraEvent("[CAMERA_GUIDE] 手機俯仰角過低 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，語音提示稍抬起")
@@ -328,7 +337,7 @@ class TrafficSignalCameraManager(
         }
 
         // 2. 階段性搜尋進度提示：若開鏡超過 3.5 秒仍未捕捉到確定號誌
-        if (lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && now - lastSearchPromptTimeMs > SEARCH_PROMPT_COOLDOWN_MS) {
+        if (!isCrossingProtected && lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && now - lastSearchPromptTimeMs > SEARCH_PROMPT_COOLDOWN_MS) {
             lastSearchPromptTimeMs = now
             webAppInterface.speakTtsDirect("未見號誌，請左右微調", interrupt = false)
             recordCameraEvent("[CAMERA_SEARCH] 搜尋號誌逾 3.5 秒仍未定錨，提示左右微調")
@@ -682,18 +691,23 @@ class TrafficSignalCameraManager(
             // 2. 語音播報與震動
             when (confirmedState) {
                 SignalState.GREEN -> {
+                    crossingProtectionUntilMs = now + CROSSING_PROTECTION_DURATION_MS
+                    recordCameraEvent("[CROSSING_PROTECTION] 綠燈通行確認，啟動 18 秒過街保護期，抑制姿態催促。")
                     webAppInterface.speakTtsDirect("小綠人，可通行！", interrupt = true)
                     triggerDoubleVibrate()
                 }
                 SignalState.FLASHING_GREEN -> {
+                    crossingProtectionUntilMs = 0L
                     webAppInterface.speakTtsDirect("小綠人閃爍，請勿穿越！", interrupt = true)
                     triggerRapidVibrate()
                 }
                 SignalState.RED -> {
+                    crossingProtectionUntilMs = 0L
                     webAppInterface.speakTtsDirect("紅燈，請等候", interrupt = true)
                     triggerLongVibrate()
                 }
                 SignalState.YELLOW -> {
+                    crossingProtectionUntilMs = 0L
                     webAppInterface.speakTtsDirect("黃燈，即將變燈", interrupt = true)
                 }
                 else -> {}

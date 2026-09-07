@@ -188,4 +188,16 @@ class VerticalMotionNeuralClassifier(
         }
         onMotionStateChanged(currentMotionType, floorString, accumulatedRelativeAltitudeM)
     }
+
+    /**
+     * 【強制重置回地面層 (車行模式 / 戶外道路強制定錨)】
+     */
+    fun resetToGround() {
+        if (currentFloorIndex != 1 || currentMotionType != VerticalMotionType.HORIZONTAL_CORRIDOR) {
+            currentFloorIndex = 1
+            currentMotionType = VerticalMotionType.HORIZONTAL_CORRIDOR
+            accumulatedRelativeAltitudeM = 0.0f
+            onMotionStateChanged(currentMotionType, "1F", 0.0f)
+        }
+    }
 }

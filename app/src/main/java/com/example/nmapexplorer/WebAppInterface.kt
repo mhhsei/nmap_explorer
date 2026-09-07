@@ -141,6 +141,12 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         lastTtsDirectTimeMs = now
         Log.i(tag, "[TTS_DIRECT] text='$text', elapsed=${elapsed}ms")
 
+        // 【無障礙日誌零黑盒子】：將原生 TTS 播報同步記錄至前端語音歷史
+        val safeText = text.replace("'", "\\'")
+        webView.post {
+            webView.evaluateJavascript("if (window.onNativeSpeechLogged) window.onNativeSpeechLogged('$safeText');", null)
+        }
+
         (context as? android.app.Activity)?.runOnUiThread {
             try {
                 if (isTtsReady && tts != null) {
@@ -568,9 +574,12 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 val sortedMilestones = milestones.sortedBy { it.first }
                 if (sortedMilestones.isNotEmpty()) {
                     sortedMilestones.takeLast(40).forEach { (t, desc) ->
-                        val shortTime = if (t.length >= 8 && t.contains(":")) {
-                            t.substringAfterLast("T").substringBefore(".").take(8)
-                        } else t
+                        val shortTime = when {
+                            t.contains("T") -> t.substringAfterLast("T").substringBefore(".").take(8)
+                            t.contains(" ") -> t.substringAfterLast(" ").substringBefore(".").take(8)
+                            t.length >= 8 -> t.takeLast(8)
+                            else -> t
+                        }
                         appendLine("• $shortTime $desc")
                     }
                 } else {

@@ -515,8 +515,9 @@ class TaiwanSignalManager:
                 sig_type = "行車紅綠燈"
                 sig_desc = "紅綠燈號誌 (一般無聲)"
 
-            int_name = sig.get("intersection_name", "路口號誌")
-            speech_prompt = f"{rel_dir} {clock} {round(dist)}米：【{int_name}】{sig_desc}"
+            int_name = sig.get("intersection_name", "路口")
+            name_display = "路口" if int_name in ["路口交通號誌", "交通號誌", "路口", "未命名", "1F"] else int_name
+            speech_prompt = f"{rel_dir} {clock} {round(dist)}米：【{name_display}】{sig_desc}"
 
             btn_guide = sig.get("button_guide")
             if not btn_guide and has_button:
@@ -613,7 +614,11 @@ class TaiwanSignalManager:
 
         # 3. 組織精簡無障礙語音提示
         speech_parts = []
-        speech_parts.append(f"前方【{closest_signal['intersection_name']}】")
+        int_name = (closest_signal.get("intersection_name") or "").strip()
+        if not int_name or int_name in ["路口交通號誌", "交通號誌", "路口", "未命名", "1F"]:
+            speech_parts.append("前方路口")
+        else:
+            speech_parts.append(f"前方【{int_name}】")
 
         if closest_signal.get("has_aps"):
             speech_parts.append(f"設有【{target_sound}】有聲號誌")

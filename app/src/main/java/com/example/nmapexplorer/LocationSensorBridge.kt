@@ -678,6 +678,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var phoneRollDeg: Float = 0f
     private var hardwareStepCount: Long = 0L
     private var softwareStepCount: Long = 0L
+    private var lastHardwareStepTimeMs: Long = 0L
 
     // 行人卡爾曼濾波器與靜止偵測器實例
     private val kalmanFilter = PedestrianKalmanFilter()
@@ -1185,12 +1186,14 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val estimatedSL = (0.43 * deltaAcc.pow(0.25)).toFloat()
             userStepLengthM = 0.8f * userStepLengthM + 0.2f * max(0.45f, min(0.85f, estimatedSL))
         }
+        // GEMINI.md 規範：自適應步長嚴格約束在 0.50 ~ 0.85m 區間
+        userStepLengthM = userStepLengthM.coerceIn(0.50f, 0.85f)
 
-        // 若 GPS 中斷超過 0.5 秒，或者當前 GPS 精度較差 (> 12.0m，代表身處騎樓、室內或大樓陰影區) 時：
+        // 若 GPS 中斷超過 1.2 秒 (GEMINI.md 規範)，或者當前 GPS 精度較差 (> 12.0m，代表身處騎樓、室內或大樓陰影區) 時：
         // 由實體步伐推算 (PDR) 介入推進，消滅進店或騎樓時的座標停滯
         val timeSinceGps = now - lastGpsFixTimeMs
         val isGpsWeakOrIndoor = lastGpsAccuracyM > 12.0f
-        if ((timeSinceGps > 500L || isGpsWeakOrIndoor) && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
+        if ((timeSinceGps > 1200L || isGpsWeakOrIndoor) && kalmanFilter.isFilterInitialized() && smoothedHeading >= 0f) {
             val (pdrLat, pdrLon) = kalmanFilter.advanceStep(userStepLengthM.toDouble(), smoothedHeading.toDouble())
             val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
             val humanLog = "[$timeStr] [騎樓PDR計步] 座標: ($pdrLat, $pdrLon) | 自適應步長: ${String.format(Locale.US, "%.2f", userStepLengthM)}m | 朝向: ${String.format(Locale.US, "%.1f", smoothedHeading)}°"
@@ -1207,7 +1210,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             Log.i(tag, "[PDR_STEP] Advanced to ($pdrLat, $pdrLon), stride=${String.format(Locale.US, "%.2f", userStepLengthM)}m, heading=${String.format(Locale.US, "%.1f", smoothedHeading)}°")
             webView.post {
                 webView.evaluateJavascript(
-                    "if (window.onLocationUpdate) window.onLocationUpdate(${pdrLat}, ${pdrLon}, 6.0, ${smoothedHeading}, 1.1);" +
+                    "if (window.onLocationUpdate) window.onLocationUpdate(${pdrLat}, ${pdrLon}, 6.0, ${smoothedHeading}, 1.1, '${stationaryDetector.currentState.name}');" +
                     "if (window.onVerticalLevelUpdate) window.onVerticalLevelUpdate('${currentVerticalLevel.name}', '${currentVerticalLevel.displayName}', ${currentAltitudeM}, '');",
                     null
                 )
@@ -1221,6 +1224,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) {
             hardwareStepCount++
+            lastHardwareStepTimeMs = SystemClock.uptimeMillis()
             Log.d(tag, "[STEP_DETECTED] source=HardwareStepDetector, total=$hardwareStepCount")
             onStepDetected()
             return
@@ -1235,6 +1239,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         if (event.sensor.type == Sensor.TYPE_PRESSURE) {
             val pressureHpa = event.values[0]
+            val isVehicular = stationaryDetector.currentState == MotionState.VEHICULAR_TRANSIT || lastGpsSpeedMps >= 2.8f
+            if (isVehicular) {
+                // 行車/搭公車中，氣壓可能受車內空調與開關門干擾，強制將垂直神經分類器重設回地面，避免誤判樓層/樓梯/電梯
+                verticalMotionClassifier.resetToGround()
+                return
+            }
+
             val isStationary = stationaryDetector.currentState == MotionState.STATIONARY_LOCKED
             val isWalking = stationaryDetector.currentState == MotionState.PEDESTRIAN_WALKING || !stationaryDetector.isStepTimedOut() || stationaryDetector.currentAccVariance > 0.28f
             val isPocketLikely = isProximityNear && isWalking
@@ -1247,8 +1258,13 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             val filterRes = barometerFilter?.updatePressure(pressureHpa, event.timestamp, isStationary, isWalking, isPocketLikely, isGpsWeak)
             val filteredAltM = filterRes?.second
 
-            // 【項目 4：垂直運動神經分類器】即時更新，並傳入卡爾曼平滑高度
-            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, accelerometerReading[2], isWalking, filteredAltM)
+            // 世界座標系垂直加速度 (利用 rotationMatrix，R[6]*ax + R[7]*ay + R[8]*az - 9.80665f)
+            val worldAccZ = rotationMatrix[6] * accelerometerReading[0] +
+                            rotationMatrix[7] * accelerometerReading[1] +
+                            rotationMatrix[8] * accelerometerReading[2] - 9.80665f
+
+            // 【項目 4：垂直運動神經分類器】即時更新，並傳入平滑高度與世界座標系垂直加速度
+            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, worldAccZ, isWalking, filteredAltM)
             return
         }
 
@@ -1267,9 +1283,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             if (mag > maxAccInWindow) maxAccInWindow = mag
             if (mag < minAccInWindow) minAccInWindow = mag
 
-            // 軟體波峰計步備援 (視障平穩行走調校：峰值 > 10.15 m/s²，增量 > 0.35 m/s²，間隔 > 280ms)
+            // 軟體波峰計步備援 (GEMINI.md 規範：峰值 > 11.20 m/s²，增量 > 0.45 m/s²，間隔 > 330ms)
+            // 且當有硬體計步器剛觸發 (<400ms) 或正處於車行模式時，嚴格抑制軟體波峰誤觸發
             val nowUptime = SystemClock.uptimeMillis()
-            if (mag > 10.15f && (mag - lastAccMag) > 0.35f && (nowUptime - lastSoftwareStepMs) > 280L) {
+            val isVehicular = stationaryDetector.currentState == MotionState.VEHICULAR_TRANSIT || lastGpsSpeedMps >= 2.8f
+            val isHardwareStepRecent = (nowUptime - lastHardwareStepTimeMs) < 400L
+            if (!isVehicular && !isHardwareStepRecent && mag > 11.20f && (mag - lastAccMag) > 0.45f && (nowUptime - lastSoftwareStepMs) > 330L) {
                 softwareStepCount++
                 lastSoftwareStepMs = nowUptime
                 Log.d(tag, "[STEP_DETECTED] source=SoftwarePeak, total=$softwareStepCount, mag=${String.format(Locale.US, "%.2f", mag)}")
@@ -1685,6 +1704,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         fun forceResetBarometerToGround() {
             activeInstance?.barometerFilter?.forceResetToGround()
+            activeInstance?.verticalMotionClassifier?.resetToGround()
         }
 
         fun setGroundElevation(elevationM: Float) {

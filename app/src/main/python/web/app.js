@@ -2496,11 +2496,19 @@ class NmapWebApp {
     // (now - lastSpeechTime < 1800ms) 或前進走廊 POI 店家播報攔截中斷。
     // 只要進入前方 6.0m ~ 28.0m 號誌化路口範圍，無條件開鏡對準號誌；踏入 (<6m) 或遠離 (>28m) 則自動收鏡。
     // =========================================================================
+    // 【前置：相機即時偵測號誌動態接管 (Camera Vision Handover with Hysteresis)】
+    // 設計意圖：相機開關屬於「無聲硬體光學感測」行為，不可受語音防剪音節流閥中斷。
+    // 施密特觸發遲滯設計：進入 6~28m 開鏡；但為防止邊界 GPS 抖動或朝向微轉造成 1 秒內開關抽搐 (Flapping)，
+    // 必須滿足：(1) 啟動後至少運作 6 秒 (2) 脫靶丟失目標必須持續超過 5 秒 (3) 退出下限延伸至 <4.0m、上限延伸至 >35.0m。
+    // 若已確認小綠人綠燈 (isCrossingProtected)，則在過街保護期內維持穩定，絕不任意收鏡開鏡！
+    // =========================================================================
     if (data.intersection && data.intersection.is_signalized) {
       const jDist = data.intersection.junction_distance_m;
       if (jDist !== null && jDist >= 6.0 && jDist <= 28.0) {
-        if (!this.isSignalCameraActive) {
+        this.lastSignalSeenTime = now;
+        if (!this.isSignalCameraActive && !window.isCrossingProtected) {
           this.isSignalCameraActive = true;
+          this.signalCameraStartTime = now;
           if (this.recordTrace) {
             this.recordTrace("CAMERA_TRIGGERED", { action: "START", distance_m: jDist, bearing_deg: data.intersection.bearing_deg });
           }
@@ -2510,11 +2518,12 @@ class NmapWebApp {
             window.AndroidBridge.startTrafficSignalCamera(bearing, clock);
           }
         }
-      } else if (jDist !== null && (jDist < 6.0 || jDist > 28.0)) {
-        if (this.isSignalCameraActive) {
+      } else if (jDist !== null && (jDist < 4.0 || jDist > 35.0)) {
+        // 遲滯退出：遠離 >35m 或已通過路口 <4m，且至少運行滿 6 秒
+        if (this.isSignalCameraActive && !window.isCrossingProtected && (now - (this.signalCameraStartTime || 0) > 6000)) {
           this.isSignalCameraActive = false;
           if (this.recordTrace) {
-            this.recordTrace("CAMERA_TRIGGERED", { action: "STOP", distance_m: jDist, reason: jDist < 6.0 ? "CROSSED_JUNCTION" : "OUT_OF_RANGE" });
+            this.recordTrace("CAMERA_TRIGGERED", { action: "STOP", distance_m: jDist, reason: jDist < 4.0 ? "CROSSED_JUNCTION" : "OUT_OF_RANGE" });
           }
           if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
             window.AndroidBridge.stopTrafficSignalCamera();
@@ -2522,14 +2531,18 @@ class NmapWebApp {
         }
       }
     } else {
-      // 若當前沒有路口或非號誌化路口，且相機正在運作，則自動收鏡關閉
-      if (this.isSignalCameraActive) {
-        this.isSignalCameraActive = false;
-        if (this.recordTrace) {
-          this.recordTrace("CAMERA_TRIGGERED", { action: "STOP", reason: "NO_SIGNALIZED_JUNCTION" });
-        }
-        if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
-          window.AndroidBridge.stopTrafficSignalCamera();
+      // 若當前沒有路口或非號誌化路口，且相機正在運作，需持續丟失超過 5 秒且已運行滿 6 秒才收鏡關閉
+      if (this.isSignalCameraActive && !window.isCrossingProtected) {
+        const timeSinceSeen = now - (this.lastSignalSeenTime || 0);
+        const timeSinceStart = now - (this.signalCameraStartTime || 0);
+        if (timeSinceSeen > 5000 && timeSinceStart > 6000) {
+          this.isSignalCameraActive = false;
+          if (this.recordTrace) {
+            this.recordTrace("CAMERA_TRIGGERED", { action: "STOP", reason: "NO_SIGNALIZED_JUNCTION" });
+          }
+          if (window.AndroidBridge && window.AndroidBridge.stopTrafficSignalCamera) {
+            window.AndroidBridge.stopTrafficSignalCamera();
+          }
         }
       }
     }
@@ -2537,8 +2550,8 @@ class NmapWebApp {
     // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次自動掃描，杜絕腰斬吞字！
     if (now - (this.lastSpeechTime || 0) < 1800) return;
 
-    // 判斷當前是否處於乘車模式 (VEHICULAR_TRANSIT 或時速 > 13.7 km/h)
-    const isVehicular = !!(this.isVehicularTransit || window.isVehicularTransit || (window.lastWalkSpeed && window.lastWalkSpeed > 3.8));
+    // 判斷當前是否處於乘車模式 (VEHICULAR_TRANSIT 或平滑車速 > 3.8 m/s)
+    const isVehicular = !!(this.isVehicularTransit || window.isVehicularTransit || (window.currentMotionState === "VEHICULAR_TRANSIT"));
 
     // 0. 初始化冷卻快取
     if (!this.announcedHazardCooldown) this.announcedHazardCooldown = new Map();
@@ -2548,20 +2561,19 @@ class NmapWebApp {
     if (!this.arrivedPoiCooldown) this.arrivedPoiCooldown = new Map();
 
     // =========================================================================
-    // 【模式 A：乘車模式 (Vehicular Mode) - 路口與交通設施最高優先，店家次序往後】
-    // 設計意圖：視障者在公車/計程車上以高速度移動 (8~20 m/s)，必須提前 80 公尺
-    // 預警下一個十字路口與交通號誌，徹底杜絕快速掠過路口時被次要店家或抵達狂唸蓋台！
+    // 【模式 A：乘車模式 (Vehicular Mode) - 道路與重要交會幹道第一優先，消滅無聲號誌雜訊】
+    // 設計意圖：視障者在公車/計程車上以高速度移動 (8~20 m/s)，必須提前預警
+    // 當前道路與下一個重要交會路口。
+    // 【乘車無障礙鐵律】：禁止對公車乘客播報普通無聲紅綠燈！僅在號誌具備視障有聲號誌 (APS) 且距離 <= 45m 時播報。
     // =========================================================================
     if (isVehicular) {
-      // 1. 交通設施優先：路口有聲號誌 / 交通號誌時制 (延伸探測至 65 公尺)
-      if (data.traffic_signal && data.traffic_signal.distance_m <= 65.0 && data.traffic_signal.distance_m >= 0.0) {
+      // 1. 僅在設有【視障有聲號誌 (APS)】時才予以提示（便利視障者準備下車或確認大路口位置）
+      if (data.traffic_signal && data.traffic_signal.has_aps && data.traffic_signal.distance_m <= 45.0 && data.traffic_signal.distance_m >= 0.0) {
         const sig = data.traffic_signal;
         const lastSigTime = this.announcedSignalCooldown.get(sig.id) || 0;
-        if (now - lastSigTime > 25000) {
+        if (now - lastSigTime > 30000) {
           this.announcedSignalCooldown.set(sig.id, now);
-          const prompt = sig.has_aps 
-            ? `📍 前方【${sig.intersection_name}】設有聲號誌，${sig.speech_prompt}`
-            : `📍 前方【${sig.intersection_name}】交通號誌，${sig.speech_prompt}`;
+          const prompt = `📍 ${sig.speech_prompt}`;
           this.announceObject({
             name: sig.intersection_name,
             category: "signal",
@@ -4781,10 +4793,13 @@ window.onPermissionGranted = () => {
 
 /**
  * 衛星訊號搜尋中即時提示 (由 Android LocationSensorBridge 注入)
+ * 【視障無障礙靜默原則】：更新頂部 diff-status-pill 狀態供觸摸查驗，不主動語音插播
  */
 window.onGpsSearching = () => {
-  if (window.app && !window.app.serverLat) {
-    window.app.updateLiveLog("📍 正在搜尋衛星訊號與建立離線圖資，請稍候...", false, false);
+  const diffElem = document.getElementById("diff-status-pill");
+  if (diffElem) {
+    diffElem.textContent = "📍 正在搜尋衛星訊號...";
+    diffElem.setAttribute("aria-label", "差分定位品質: 正在搜尋衛星訊號");
   }
 };
 
@@ -5074,6 +5089,25 @@ window.onHeadingUpdate = function(headingDegrees) {
     }
 };
 
+window.onNativeSpeechLogged = function(text, category = "CAMERA_TTS") {
+    if (window.app && window.app.sessionSpeechHistory) {
+        window.app.sessionSpeechHistory.push({
+            time: new Date().toISOString(),
+            text: text,
+            type: category
+        });
+    }
+    // 若原生相機確認綠燈，啟動前端過街保護期 (20秒)，抑制相機開關抽搐
+    if (text.includes("小綠人") || text.includes("可通行")) {
+        window.isTrafficSignalGreenConfirmed = true;
+        window.isCrossingProtected = true;
+        setTimeout(() => {
+            window.isTrafficSignalGreenConfirmed = false;
+            window.isCrossingProtected = false;
+        }, 20000);
+    }
+};
+
 window.onMotionStateUpdate = function(motionState) {
     window.currentMotionState = motionState;
     if (window.app) {
@@ -5097,9 +5131,12 @@ window.onLocationUpdate = function(lat, lon, accuracy, bearing, speed, motionSta
     if (currentSpeed > 0.35) {
         window.lastWalkSpeed = currentSpeed;
         window.lastMoveTime = Date.now();
+    } else if (currentSpeed <= 0.20 && window.currentMotionState === "PEDESTRIAN_WALKING") {
+        // 使用者步行停步（如等紅燈），清除車速記憶，杜絕誤判為乘車
+        window.lastWalkSpeed = currentSpeed;
     }
 
-    // 乘車模式判定：運動狀態為 VEHICULAR_TRANSIT 或連續速度 > 3.8 m/s (時速 > 13.7 km/h)
+    // 乘車模式判定：運動狀態為 VEHICULAR_TRANSIT 或當前速度 > 3.8 m/s (時速 > 13.7 km/h)
     const isVehicular = (window.currentMotionState === "VEHICULAR_TRANSIT") || (currentSpeed > 3.8);
     window.isVehicularTransit = isVehicular;
     if (window.app) window.app.isVehicularTransit = isVehicular;
@@ -5327,10 +5364,7 @@ window.onVerticalLevelUpdate = function(levelName, displayName, altitudeM, descr
         if (window.app && window.app.audio) {
             window.app.audio.playVerticalTransitionTone(isUp);
         }
-        // 降低優先級 (isForce = false)，嚴禁搶蓋 Priority 1/2/3 生命安全與路口播報
-        if (description && window.app && window.app.updateLiveLog) {
-            window.app.updateLiveLog(description, false, false);
-        }
+        // 【視障無障礙靜默原則】：高度與樓層保留於頂部 status-pill 供探索，不主動 TTS 播音
     }
 };
 
@@ -5417,27 +5451,9 @@ window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
         vertElem.setAttribute("aria-label", `所在樓層: ${floorStr}，距地表 ${(window.currentAltitudeM || 0).toFixed(1)}公尺`);
     }
 
-    const now = Date.now();
-    const cooldownMs = (motionType === "HORIZONTAL_CORRIDOR") ? 45000 : 15000;
-    const isFloorChanged = (floorStr !== window.lastAnnouncedFloor);
-
-    if (isFloorChanged && (now - window.lastVerticalFloorSpeechTime > cooldownMs) && window.app && window.app.updateLiveLog) {
-        window.lastVerticalFloorSpeechTime = now;
-        window.lastAnnouncedFloor = floorStr;
-
-        let actionDesc = "目前位於";
-        if (motionType === "WALKING_STAIRS_UP") actionDesc = "走樓梯抵達";
-        else if (motionType === "WALKING_STAIRS_DOWN") actionDesc = "走樓梯抵達";
-        else if (motionType === "ELEVATOR_MOVING") actionDesc = "搭電梯抵達";
-
-        const msg = `🏢 垂直樓層：${actionDesc}【${floorStr}】(距地表 ${altM.toFixed(1)}公尺)`;
-        // 使用一般優先級 (isForce = false)，杜絕強行插播腰斬防撞與號誌語音！
-        window.app.updateLiveLog(msg, false, false);
-
-        if (window.app.audio) {
-            window.app.audio.playVerticalTransitionTone(altM > 0);
-        }
-    }
+    // 【視障無障礙靜默原則】：
+    // 依使用者明確指示，高度與樓層狀態保留於頂部 vertical-status-pill 供手動觸控/NVDA 聆聽查驗，
+    // 不主動進行 TTS 語音播報打擾！
 };
 
 
