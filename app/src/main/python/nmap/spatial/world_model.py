@@ -1394,7 +1394,28 @@ class WorldModel:
                 if d < best_d:
                     best_d = d
                     seg_bearing = calculate_bearing(p1[0], p1[1], p2[0], p2[1])
-                    if abs(relative_bearing(heading_deg, seg_bearing)) > 90:
+                    rel_angle = abs(relative_bearing(heading_deg, seg_bearing))
+
+                    # 遲滯鎖定機制 (Hysteresis Direction Latch)：
+                    # 防止手持擺動或手機放入口袋時航向在 90° 垂直死角微小抖動，
+                    # 導致道路幾何向量瞬間 180° 反轉，引發左右兩側門牌乒乓跳動！
+                    # 具備 90° 寬幅遲滯緩衝區 (45° ~ 135°)：只有轉向偏角 > 135° (確切掉頭反向) 才判定為反向，轉回 < 45° (確切正向前進) 才判定為順向。
+                    # 徹底杜絕視障者執白手杖行走時 60° 手臂自然擺動穿透遲滯區造成的門牌左右顛倒！
+                    latch_key = f"{curr_street}:{round(p1[0], 4)}_{round(p1[1], 4)}"
+                    if not hasattr(self, "_road_seg_latch"):
+                        self._road_seg_latch = {}
+
+                    is_reversed = self._road_seg_latch.get(latch_key, None)
+                    if is_reversed is None:
+                        is_reversed = (rel_angle > 90)
+                    else:
+                        if is_reversed and rel_angle < 45:
+                            is_reversed = False
+                        elif not is_reversed and rel_angle > 135:
+                            is_reversed = True
+
+                    self._road_seg_latch[latch_key] = is_reversed
+                    if is_reversed:
                         road_seg = (p2, p1)
                     else:
                         road_seg = (p1, p2)

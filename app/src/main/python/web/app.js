@@ -817,7 +817,7 @@ class NmapWebApp {
             uiBtnAround.innerText = `${currentCat.icon} ${currentCat.label} (P)`;
             uiBtnAround.setAttribute("aria-valuenow", index);
             uiBtnAround.setAttribute("aria-valuetext", currentCat.label);
-            uiBtnAround.setAttribute("aria-label", `周遭探索：${currentCat.label}。單指上下滑動切換分類，點兩下立即掃描`);
+            uiBtnAround.setAttribute("aria-label", `周遭探索：${currentCat.label}。滑桿可調整分類，點兩下立即掃描`);
             if (this.recordInteraction) {
                 this.recordInteraction("分類撥動", `切換至【${currentCat.label}】`);
             }
@@ -957,6 +957,8 @@ class NmapWebApp {
             if (streamList) streamList.innerHTML = "";
             const summaryEl = document.getElementById("stream-summary-text");
             if (summaryEl) summaryEl.textContent = "已清空目前清單。新播報與搜尋設施將持續於此處呈現。";
+            // 修正 H-09：主動向 TalkBack / NVDA 回報清空狀態，消滅死寂
+            this.updateLiveLog("已清空設施清單", false, true);
         });
     }
 
@@ -1971,8 +1973,8 @@ class NmapWebApp {
     // 更新首頁控制條之即時剩餘距離與方位
     this.updateActiveGuidanceBar(target, dist, clock);
 
-    // 判斷是否抵達目標 (<= 3.5 公尺)
-    if (dist <= 3.5) {
+    // 判斷是否抵達目標 (<= 3.8 公尺，GEMINI.md Section 1.3 規範一致性)
+    if (dist <= 3.8) {
       this.handleArrivalAtTarget(target, dist);
       return;
     }
@@ -2215,11 +2217,10 @@ class NmapWebApp {
         const headingDeg = (data.heading_deg !== undefined && data.heading_deg !== null) ? data.heading_deg : (curHead || 0);
         const dirStr = this.getCardinalDirection(headingDeg);
         const exactDeg = Math.round(((headingDeg % 360.0) + 360.0) % 360.0);
-        const gpsStr = (data.lat && data.lon) ? `GPS座標：${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}` : "";
-        
+        // 修正 M-01：省話原則（GEMINI.md Section 1.2），口播移除長達 4~5 秒的經緯度小數點，達成 1 秒俐落播報
         const txt = doorStr 
-          ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。${gpsStr}。`
-          : `走在【${street}】。面向${dirStr} (${exactDeg}°)。${gpsStr}。`;
+          ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。`
+          : `走在【${street}】。面向${dirStr} (${exactDeg}°)。`;
 
         const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
         if (isEarconOn && this.audio) {
@@ -2483,6 +2484,7 @@ class NmapWebApp {
     }
     this.lastSpeechTime = Date.now();
     this.lastRoadAnnouncementTime = Date.now();
+    this.lastRoadAnnouncementMsg = msg;
   }
 
   // ========== 前進路徑走廊店家與路口到達即時導引 ==========
@@ -2547,18 +2549,37 @@ class NmapWebApp {
       }
     }
 
-    // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次自動掃描，杜絕腰斬吞字！
-    if (now - (this.lastSpeechTime || 0) < 1800) return;
-
-    // 判斷當前是否處於乘車模式 (VEHICULAR_TRANSIT 或平滑車速 > 3.8 m/s)
-    const isVehicular = !!(this.isVehicularTransit || window.isVehicularTransit || (window.currentMotionState === "VEHICULAR_TRANSIT"));
-
     // 0. 初始化冷卻快取
     if (!this.announcedHazardCooldown) this.announcedHazardCooldown = new Map();
     if (!this.announcedSignalCooldown) this.announcedSignalCooldown = new Map();
     if (!this.announcedMrtCooldown) this.announcedMrtCooldown = new Map();
     if (!this.announcedPoiCooldown) this.announcedPoiCooldown = new Map();
     if (!this.arrivedPoiCooldown) this.arrivedPoiCooldown = new Map();
+
+    // 【修正 C-01：Priority 1 生命安全防撞雷達 (GEMINI.md Section 1.2)】
+    // 變電箱、消防栓、施工窄頸等急迫障礙物 (<= 8.0m) 擁有最高生命安全優先權，
+    // 絕對無視 1.8 秒防剪音節流閥，立即插播警報！
+    if (data.sidewalk_hazards && data.sidewalk_hazards.length > 0) {
+      const h = data.sidewalk_hazards[0];
+      const lastHzTime = this.announcedHazardCooldown.get(h.id) || 0;
+      if (h.distance_m <= 8.0 && h.distance_m >= 0.0 && (now - lastHzTime > 25000)) {
+        this.announcedHazardCooldown.set(h.id, now);
+        const urgentPrompt = h.distance_m < 1.5 ? `⚠️ 注意正前方 ${h.name}，請立即停步探測！` : h.speech_prompt;
+        this.announceObject({
+          name: h.name,
+          category: "warning",
+          distance_m: h.distance_m,
+          relative_bearing_deg: (h.lateral_offset_m || 0) > 0 ? 15 : -15
+        }, urgentPrompt, true);
+        return;
+      }
+    }
+
+    // 語音節流防剪音保護：距離上一句開口未滿 1800ms，暫緩本次例行掃描，杜絕腰斬吞字！
+    if (now - (this.lastSpeechTime || 0) < 1800) return;
+
+    // 判斷當前是否處於乘車模式 (VEHICULAR_TRANSIT 或平滑車速 > 3.8 m/s)
+    const isVehicular = !!(this.isVehicularTransit || window.isVehicularTransit || (window.currentMotionState === "VEHICULAR_TRANSIT"));
 
     // =========================================================================
     // 【模式 A：乘車模式 (Vehicular Mode) - 道路與重要交會幹道第一優先，消滅無聲號誌雜訊】
@@ -2696,8 +2717,11 @@ class NmapWebApp {
           const cleanedName = this.cleanPoiName(topPoi.name);
           const poiKey = topPoi.id || (topPoi.lat && topPoi.lon ? `${cleanedName}_${topPoi.lat.toFixed(4)}_${topPoi.lon.toFixed(4)}` : cleanedName);
           const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
-          if (now - lastTime > 45000 && (now - (this.lastIntersectionAlertTime || 0) > 12000)) {
+          // 修正 H-04：乘車模式全域 POI 冷卻（25秒），消除每隔 1.8 秒播一家店的語音轟炸
+          const sinceLastVehicularPoi = now - (this.lastVehicularPoiTime || 0);
+          if (now - lastTime > 45000 && sinceLastVehicularPoi > 25000 && (now - (this.lastIntersectionAlertTime || 0) > 12000)) {
             this.announcedPoiCooldown.set(poiKey, now);
+            this.lastVehicularPoiTime = now;
             const dirText = topPoi.relative_direction ? `，${topPoi.relative_direction} ${Math.round(topPoi.distance_m)}公尺` : "";
             this.announceObject(topPoi, `${cleanedName}${dirText}`, false);
             return;
@@ -2808,9 +2832,9 @@ class NmapWebApp {
 
         // A. 踏入 / 正通過路口
         // 判定條件：
-        // 1. 幾何正中心通過 (juncDist < 7.0m)
+        // 1. 幾何正中心通過 (juncDist < 6.0m，GEMINI.md Section 1.4 規範)
         // 2. 或側向巷弄人行道穿越：距離曾接近至 <= 13.5m 且開始遠離（juncDist >= _minJunctionDist + 0.8m）
-        const isPassingGeometry = juncDist < 7.0;
+        const isPassingGeometry = juncDist < 6.0;
         const isPassingByInflexion = (this.currentJunctionState === "APPROACHING" && this._minJunctionDist <= 13.5 && juncDist >= (this._minJunctionDist + 0.8) && juncDist <= 16.0);
 
         if ((isPassingGeometry || isPassingByInflexion) && !isJunctionLocked) {
@@ -2843,8 +2867,8 @@ class NmapWebApp {
           isJunctionHandled = true;
         }
         
-        // B. 通過完成確認 (LEAVING: 7.0m ~ 20.0m 且前一狀態為 PASSING) - 【優先於 APPROACHING 判定】
-        else if (juncDist >= 7.0 && juncDist <= 20.0 && this.currentJunctionState === "PASSING") {
+        // B. 通過完成確認 (LEAVING: 6.0m ~ 18.0m 且前一狀態為 PASSING) - 【優先於 APPROACHING 判定】
+        else if (juncDist >= 6.0 && juncDist <= 18.0 && this.currentJunctionState === "PASSING") {
           const prevState = this.currentJunctionState;
           this.currentJunctionState = "LEAVING";
           this.passedJunctionCooldown.set(juncName, now); // 鎖定該路口 45 秒，消滅倒退重唸
@@ -2864,8 +2888,8 @@ class NmapWebApp {
           return;
         }
 
-        // C. 提前接近路口 (8.0m ~ 25.0m) - 【動態鐘點分支導引，不講幾何贅字】
-        else if (juncDist <= 25.0 && juncDist >= 8.0 && !isJunctionLocked) {
+        // C. 提前接近路口 (6.0m ~ 25.0m) - 【動態鐘點分支導引，不講幾何贅字，無縫銜接無死角】
+        else if (juncDist <= 25.0 && juncDist >= 6.0 && !isJunctionLocked) {
           const lastAppTime = this.approachedJunctionCooldown.get(juncName) || 0;
           const globalAppGap = now - (this.lastIntersectionAlertTime || 0);
           const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
@@ -3021,7 +3045,7 @@ class NmapWebApp {
         }
       }
 
-      // B. 前進路徑走廊店家掃描 (前方 0.0 ~ 25.0 公尺，側向 <= 14.0 公尺)
+      // B. 前進路徑走廊店家掃描 (GEMINI.md Section 1.3: 前方 2.0 ~ 18.0 公尺，側向 <= 14.0 公尺)
       if (now - (this.lastPoiBroadcastTime || 0) >= minPoiInterval) {
         const corridorPois = realtimePois.filter((p) => {
           const d = p.distance_m;
@@ -3033,7 +3057,8 @@ class NmapWebApp {
           const rad = (relBearing * Math.PI) / 180.0;
           const latDist = Math.abs(d * Math.sin(rad));
           const fwdDist = d * Math.cos(rad);
-          return fwdDist >= 0.0 && fwdDist <= 25.0 && latDist <= 14.0;
+          // 修正 H-02：嚴格遵循 GEMINI.md 2.0 ~ 18.0m 走廊門檻，排除過遠與身後雜訊
+          return fwdDist >= 2.0 && fwdDist <= 18.0 && latDist <= 14.0;
         });
 
         if (corridorPois.length > 0) {
@@ -3074,7 +3099,14 @@ class NmapWebApp {
             if (unannouncedPois.length >= 2) {
               const p1 = unannouncedPois[0];
               const cluster = unannouncedPois.filter(p => {
-                const angleDiff = Math.abs((p.relative_bearing_deg || 0) - (p1.relative_bearing_deg || 0));
+                const b1 = p1.relative_bearing_deg || 0;
+                const b2 = p.relative_bearing_deg || 0;
+                // 修正 H-05：同側檢查（GEMINI.md Section 1.3「緊鄰同側店家聚類打包」）
+                // 兩店必須同在右側 (bearing > 0) 或同在左側 (bearing < 0)，或均在正前方 (<= 8°)
+                const isSameSide = (b1 * b2 > 0) || (Math.abs(b1) <= 8 && Math.abs(b2) <= 8);
+                if (!isSameSide) return false;
+
+                const angleDiff = Math.abs(b2 - b1);
                 const distDiff = Math.abs(p.distance_m - p1.distance_m);
                 return (angleDiff <= 28 || (p.clock_position && p.clock_position === p1.clock_position)) && distDiff <= 6.0;
               });
@@ -3122,14 +3154,23 @@ class NmapWebApp {
     }
 
     // =========================================================================
-    // 【4. 若都沒有店家 / 語音安靜超過 20 秒，精簡播報當前走在哪條路上與大約門牌】
+    // 【4. 若都沒有店家 / 語音安靜超過 45 秒，精簡播報當前走在哪條路上與大約門牌】
+    // 門控條件：
+    // 1. 杜絕原地跳針：靜止狀態 (STATIONARY / STATIONARY_LOCKED) 或室內非地面層不重複報路
+    // 2. 獨立冷卻：間隔拉長至 45 秒，杜絕語音催促疲勞 (GEMINI.md Section 1.4)
+    // 3. 內容防重複：若道路與門牌未變動，需等待至少 75 秒才複述
     // =========================================================================
-    if (now - this.lastSpeechTime >= 20000 && now - (this.lastRoadAnnouncementTime || 0) >= 20000) {
+    const isStationary = this.isStationary || (this.motionState && this.motionState.includes("STATIONARY"));
+    const isIndoor = (this.currentVerticalLevel && this.currentVerticalLevel !== "GROUND") || (this.currentFloor && this.currentFloor !== "1F");
+    if (!isStationary && !isIndoor && now - this.lastSpeechTime >= 25000 && now - (this.lastRoadAnnouncementTime || 0) >= 45000) {
       if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
         const street = data.road_info.street_name;
         const door = (data.door_estimates && data.door_estimates.concise_door) ? data.door_estimates.concise_door : "";
         const msg = door ? `沿著【${street}】前進，${door}` : `沿著【${street}】前進`;
-        this.announceRoad(msg, false);
+        if (msg !== this.lastRoadAnnouncementMsg || (now - (this.lastRoadAnnouncementTime || 0) >= 75000)) {
+          this.lastRoadAnnouncementMsg = msg;
+          this.announceRoad(msg, false);
+        }
       }
     }
   }
@@ -3500,7 +3541,8 @@ class NmapWebApp {
       const act = actions[currentActionIdx];
       li.setAttribute("aria-valuenow", currentActionIdx.toString());
       li.setAttribute("aria-valuetext", act.label);
-      li.setAttribute("aria-label", `${fullDesc}。動作：${act.label}。單指上下滑動可切換動作，雙擊或按 Enter 立即執行`);
+      // 修正 H-08：移除單指上下滑動衝突說明，清晰引導
+      li.setAttribute("aria-label", `${fullDesc}。動作：${act.label}。滑桿可切換動作，雙擊或按 Enter 立即執行`);
 
       const badge = li.querySelector(".poi-action-badge");
       if (badge) {

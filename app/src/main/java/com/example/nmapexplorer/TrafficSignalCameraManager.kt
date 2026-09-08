@@ -1,6 +1,7 @@
 package com.example.nmapexplorer
 
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -8,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.media.MediaActionSound
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -78,11 +80,14 @@ class TrafficSignalCameraManager(
 
         /**
          * 取得診斷日誌所需之相機快照圖片清單 (供 WebAppInterface 打包進 .zip)
+         * 只匯出最近 2 小時內生成的快照，避免歷史昨日舊照片污染今日診斷日誌
          */
         fun getSnapshotFiles(context: Context): List<File> {
             val dir = File(context.cacheDir, "camera_snapshots")
             if (!dir.exists()) return emptyList()
+            val twoHoursAgo = System.currentTimeMillis() - 2 * 3600 * 1000L
             return dir.listFiles { _, name -> name.endsWith(".jpg") }
+                ?.filter { it.lastModified() >= twoHoursAgo }
                 ?.sortedByDescending { it.lastModified() }
                 ?.take(MAX_SNAPSHOT_FILES)
                 ?: emptyList()
@@ -114,14 +119,14 @@ class TrafficSignalCameraManager(
     private var targetBearingDeg: Double = 0.0
     private var targetClockPosition: String = "12點鐘方向"
 
-    // 空間角度提示冷卻 (避免喋喋不休)
+    // 空間角度提示冷卻 (避免喋喋不休，拉長至 12 秒)
     private var lastDirectionPromptTimeMs = 0L
-    private val DIRECTION_PROMPT_COOLDOWN_MS = 3500L
+    private val DIRECTION_PROMPT_COOLDOWN_MS = 12000L
 
-    // 方案 C 搜尋階段計時器
+    // 方案 C 搜尋階段計時器 (拉長至 15 秒)
     private var cameraStartTimeMs = 0L
     private var lastSearchPromptTimeMs = 0L
-    private val SEARCH_PROMPT_COOLDOWN_MS = 5000L
+    private val SEARCH_PROMPT_COOLDOWN_MS = 15000L
 
     // 幀分析日誌節流 (每 1.5 秒記錄一次以防日誌暴增)
     private var lastFrameLogTimeMs = 0L
@@ -196,6 +201,19 @@ class TrafficSignalCameraManager(
      * @param clockPosition 前方號誌之鐘點方向 (例如「12點鐘方向」)
      */
     fun startCamera(bearingDeg: Double, clockPosition: String) {
+        // 口袋與鎖定防護：若螢幕已鎖定、螢幕未喚醒、或接近感測器回報遮蔽 (手機放入口袋)，嚴禁偷開相機與拍照
+        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isLocked = km?.isKeyguardLocked ?: false
+        val isInteractive = pm?.isInteractive ?: true
+        val isPocket = LocationSensorBridge.isProximityNear
+
+        if (isLocked || !isInteractive || isPocket) {
+            Log.i(tag, "[CAMERA_START_BLOCKED] 螢幕鎖定、未點亮或口袋遮蔽，抑制紅綠燈開鏡 (locked=$isLocked, interactive=$isInteractive, pocket=$isPocket)")
+            recordCameraEvent("[CAMERA_BLOCKED] 口袋遮蔽或螢幕鎖定，取消啟動相機")
+            return
+        }
+
         if (isRunning.getAndSet(true)) {
             this.targetBearingDeg = bearingDeg
             this.targetClockPosition = clockPosition
@@ -210,13 +228,12 @@ class TrafficSignalCameraManager(
         cameraStartTimeMs = now
         lastSearchPromptTimeMs = now
 
-        // 1. 播放相機開鏡音效並提示「對街搜尋中」
+        // 1. 播放相機開鏡簡促音效（省話原則：以快門 Earcon 代表開鏡，不重複口播「對街搜尋中」）
         try {
             mediaActionSound.play(MediaActionSound.START_VIDEO_RECORDING)
         } catch (e: Exception) {
             Log.e(tag, "Failed to play camera start sound", e)
         }
-        webAppInterface.speakTtsDirect("對街搜尋中", interrupt = false)
         recordCameraEvent("[CAMERA_START] 啟動紅綠燈相機 | 目標號誌方位: ${String.format(Locale.US, "%.1f", bearingDeg)}° ($clockPosition)")
 
         // 2. 螢幕常亮喚醒保活 (FLAG_KEEP_SCREEN_ON)：消滅 070815 的 1 秒休眠砍相機死角！
@@ -319,18 +336,32 @@ class TrafficSignalCameraManager(
             return
         }
 
+        // 口袋與鎖定即時熔斷：若使用中途鎖定手機或放入口袋，立即關閉相機釋放硬體資源
+        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (km?.isKeyguardLocked == true || pm?.isInteractive == false || LocationSensorBridge.isProximityNear) {
+            imageProxy.close()
+            stopCamera()
+            return
+        }
+
         val now = SystemClock.uptimeMillis()
 
         // 0. 行人過街保護期判定：綠燈確認後 18 秒內，全面抑制姿態與搜尋微調催促，保障視障者專心聆聽過馬路！
         val isCrossingProtected = now < crossingProtectionUntilMs
 
-        // 1. 空間仰角導引 (俯仰角太低朝向地面 < -32°，提示稍抬起手機)
+        // 1. 空間仰角導引 (俯仰角朝向地面 Pitch > 25°，提示稍抬起手機)
+        // 【重要坐標系說明】：在 Android SensorManager.getOrientation 中，
+        // pitch = asin(-R[7])。當手機頂部朝向天空 (斜向上對準對街號誌) 時，
+        // R[7] > 0，因此 Pitch 數值為負值 (-15° ~ -75°)！
+        // 反之，當手機頂部朝向地面/雙腳時，R[7] < 0，Pitch 數值為正值 (+25° ~ +90°)。
+        // 過去錯誤寫成 `currentPitch < -32.0` 導致視障者斜向上瞄準紅綠燈時被反向誤判為朝下並被丟棄幀！
         val currentPitch = LocationSensorBridge.currentPitchDeg.toDouble()
-        if (currentPitch < -32.0) {
+        if (currentPitch > 25.0) {
             if (!isCrossingProtected && (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS)) {
                 lastDirectionPromptTimeMs = now
                 webAppInterface.speakTtsDirect("手機朝下，請稍抬起", interrupt = false)
-                recordCameraEvent("[CAMERA_GUIDE] 手機俯仰角過低 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，語音提示稍抬起")
+                recordCameraEvent("[CAMERA_GUIDE] 手機朝向地面 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，語音提示稍抬起")
             }
             imageProxy.close()
             return

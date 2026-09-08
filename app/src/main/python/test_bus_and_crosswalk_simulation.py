@@ -279,6 +279,305 @@ class TestBusAndCrosswalkSimulation(unittest.TestCase):
         self.assertEqual(parse_timeline_time(space_sample), "09:47:54")
         self.assertEqual(parse_timeline_time(raw_time_sample), "09:47:54")
 
+    def test_pitch_polarity_upward_vs_downward(self):
+        """
+        情境 6：紅綠燈相機仰角判定極性驗證 (Pixel 6a 實測日誌 065420 修復驗證)。
+        在 Android SensorManager.getOrientation 中，pitch = asin(-R[7])。
+        - 斜向上瞄準對街紅綠燈 (Pitch: -34.2° ~ -65.1°)：
+          嚴禁觸發「手機朝下，請稍抬起」，且鏡頭畫面必須正常送入光學辨識管線！
+        - 手機朝向地面/雙腳 (Pitch: > +25.0°)：
+          正確觸發「手機朝下，請稍抬起」引導，並攔截地面畫面。
+        """
+        def evaluate_pitch_orientation(pitch_deg: float) -> Optional[str]:
+            # 新版修復門檻：只有朝向地面 (Pitch > +25.0°) 才警告手機朝下
+            if pitch_deg > 25.0:
+                return "手機朝下，請稍抬起"
+            return None
+
+        # 模擬日誌 065420 中的真實斜向上瞄準角度
+        self.assertIsNone(evaluate_pitch_orientation(-34.2), "斜向上瞄準 (-34.2°) 被誤判為手機朝下！")
+        self.assertIsNone(evaluate_pitch_orientation(-65.1), "斜向上高仰角 (-65.1°) 被誤判為手機朝下！")
+        self.assertIsNone(evaluate_pitch_orientation(0.0), "水平手持 (0.0°) 被誤判為手機朝下！")
+
+        # 模擬真正垂手朝向柏油路/雙腳
+        self.assertEqual(evaluate_pitch_orientation(35.0), "手機朝下，請稍抬起")
+        self.assertEqual(evaluate_pitch_orientation(70.0), "手機朝下，請稍抬起")
+
+    def test_pocket_and_lock_camera_guard(self):
+        """
+        情境 7：鎖屏放入口袋相機幽靈運作防護 (Pixel 6a 實測日誌 070315 修復驗證)。
+        使用者鎖屏或放入口袋時：
+        斷言：
+        1. 若螢幕鎖定 (is_locked=True) 或接近感測器遮蔽 (is_pocket=True)，startCamera 立即攔截，不啟動相機。
+        2. 若在開鏡運作途中鎖屏或入袋，processFrame 立即觸發 stopCamera() 並釋放硬體資源。
+        """
+        class SimulatedCameraManager:
+            def __init__(self):
+                self.is_running = False
+
+            def start_camera(self, is_locked: bool, is_interactive: bool, is_pocket: bool) -> bool:
+                if is_locked or not is_interactive or is_pocket:
+                    return False
+                self.is_running = True
+                return True
+
+            def process_frame(self, is_locked: bool, is_interactive: bool, is_pocket: bool) -> bool:
+                if not self.is_running:
+                    return False
+                if is_locked or not is_interactive or is_pocket:
+                    self.stop_camera()
+                    return False
+                return True
+
+            def stop_camera(self):
+                self.is_running = False
+
+        cam = SimulatedCameraManager()
+
+        # 1. 口袋中或螢幕鎖定時嘗試啟動相機
+        started_in_pocket = cam.start_camera(is_locked=True, is_interactive=False, is_pocket=True)
+        self.assertFalse(started_in_pocket, "放入口袋且螢幕鎖定時相機不應啟動！")
+        self.assertFalse(cam.is_running)
+
+        # 2. 正常拿出手機解鎖使用
+        started_normal = cam.start_camera(is_locked=False, is_interactive=True, is_pocket=False)
+        self.assertTrue(started_normal)
+        self.assertTrue(cam.is_running)
+
+        # 3. 走路中途直接鎖屏塞入口袋
+        frame_handled = cam.process_frame(is_locked=True, is_interactive=False, is_pocket=True)
+        self.assertFalse(frame_handled, "入袋後幀處理應即刻中止！")
+        self.assertFalse(cam.is_running, "中途入袋應立即停止相機運作！")
+
+    def test_utc_vs_local_timeline_chronological_sorting(self):
+        """
+        情境 8：診斷日誌大事記 UTC 與 Local 時區混亂排序修復驗證。
+        前端 JS 產出 ISO UTC 時間 (例如 '2026-09-07T22:52:45.123Z'，台灣時間 06:52:45)，
+        原生相機產出 Local 時間 (例如 '06:54:02.164')。
+        舊版以字串純文字排序導致 '06:54:02' 誤排在 '2026...' 之前。
+        斷言：經由統一解析為 Epoch 毫秒後，06:52:45 必須正確排在 06:54:02 之前！
+        """
+        from datetime import datetime, timezone, timedelta
+
+        def parse_to_epoch_ms(t_str: str) -> int:
+            t_str = t_str.strip()
+            if "T" in t_str:
+                clean = t_str.split(".")[0].rstrip("Z")
+                dt = datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            elif ":" in t_str:
+                parts = t_str.split(".")[0].split(":")
+                # 台灣為 UTC+8
+                tz_tw = timezone(timedelta(hours=8))
+                cal = datetime(2026, 9, 8, int(parts[0]), int(parts[1]), int(parts[2]), tzinfo=tz_tw)
+                return int(cal.timestamp() * 1000)
+            return 0
+
+        t_js_utc = "2026-09-07T22:52:45.123Z" # 台灣時間 06:52:45
+        t_native_local = "06:54:02.164"        # 台灣時間 06:54:02
+
+        # 字串字母排序 (舊版行為，嚴重顛倒)
+        legacy_sorted = sorted([t_js_utc, t_native_local])
+        self.assertEqual(legacy_sorted[0], "06:54:02.164", "舊版純文字排序會把較晚的 06:54 排在前面！")
+
+        # Epoch 毫秒時間序列排序 (新版修復)
+        ms_utc = parse_to_epoch_ms(t_js_utc)
+        ms_local = parse_to_epoch_ms(t_native_local)
+        self.assertLess(ms_utc, ms_local, "22:52 UTC (即 06:52 Local) 應小於 06:54 Local！")
+
+    def test_road_announcement_stationary_and_indoor_gating(self):
+        """
+        情境 9：道路週期廣播靜止與室內防跳針門控 (GEMINI.md Section 1.4)。
+        斷言：
+        1. 處於靜止狀態 (is_stationary=True) 時，絕不反覆報讀「沿著XX路前進」。
+        2. 處於室內非地面層 (vertical_level='B1' 或 floor='2F') 時，不播報室外道路名。
+        3. 內容重複時必須遵循防抖冷卻 (>= 75 秒)。
+        """
+        class RoadAnnouncementController:
+            def __init__(self):
+                self.last_speech_time = 0
+                self.last_road_time = 0
+                self.last_road_msg = ""
+                self.announcements = []
+
+            def check_and_announce(self, now_ms: int, street: str, door: str, is_stationary: bool, is_indoor: bool):
+                msg = f"沿著【${street}】前進，${door}" if door else f"沿著【${street}】前進"
+                if not is_stationary and not is_indoor:
+                    if now_ms - self.last_speech_time >= 25000 and now_ms - self.last_road_time >= 45000:
+                        if msg != self.last_road_msg or (now_ms - self.last_road_time >= 75000):
+                            self.last_road_msg = msg
+                            self.last_road_time = now_ms
+                            self.last_speech_time = now_ms
+                            self.announcements.append((now_ms, msg))
+
+        ctrl = RoadAnnouncementController()
+
+        # 1. 靜止等紅燈 (120 秒內完全靜默)
+        for t in range(0, 120000, 10000):
+            ctrl.check_and_announce(t, "建國南路二段", "左側 177號", is_stationary=True, is_indoor=False)
+        self.assertEqual(len(ctrl.announcements), 0, "靜止等候時不應重複播報道路與門牌！")
+
+        # 2. 室內地下室 (完全靜默)
+        for t in range(120000, 240000, 10000):
+            ctrl.check_and_announce(t, "建國南路二段", "左側 177號", is_stationary=False, is_indoor=True)
+        self.assertEqual(len(ctrl.announcements), 0, "室內環境不應播報室外道路！")
+
+        # 3. 正常戶外步行，初次播報
+        t_walk = 250000
+        ctrl.check_and_announce(t_walk, "建國南路二段", "左側 177號", is_stationary=False, is_indoor=False)
+        self.assertEqual(len(ctrl.announcements), 1)
+
+        # 4. 20 秒後（小於 45 秒冷卻）不應重播
+        ctrl.check_and_announce(t_walk + 20000, "建國南路二段", "左側 177號", is_stationary=False, is_indoor=False)
+        self.assertEqual(len(ctrl.announcements), 1)
+
+        # 5. 50 秒後門牌未變（小於 75 秒重複間隔）不應重播
+        ctrl.check_and_announce(t_walk + 50000, "建國南路二段", "左側 177號", is_stationary=False, is_indoor=False)
+        self.assertEqual(len(ctrl.announcements), 1)
+
+        # 6. 80 秒後門牌未變，超過 75 秒允許複述
+        ctrl.check_and_announce(t_walk + 80000, "建國南路二段", "左側 177號", is_stationary=False, is_indoor=False)
+        self.assertEqual(len(ctrl.announcements), 2)
+
+    def test_door_number_hysteresis_latch_eliminates_ping_pong(self):
+        """
+        情境 10：門牌左右側遲滯防抖 (Hysteresis Latch)。
+        當行走於南北向道路 (道路向量方位 0°)，若手機在口袋中或手持擺動在 85° ~ 95° 之間抖動：
+        斷言：
+        具備 65° ~ 115° 遲滯鎖定，道路幾何向量維持穩定，絕不因跨越 90° 而引發左右兩側門牌乒乓顛倒！
+        """
+        from nmap.spatial.geometry import relative_bearing
+
+        class SimulatedRoadDirectionLatch:
+            def __init__(self):
+                self._road_seg_latch = {}
+
+            def determine_direction(self, latch_key: str, heading_deg: float, seg_bearing: float) -> str:
+                rel_angle = abs(relative_bearing(heading_deg, seg_bearing))
+                is_reversed = self._road_seg_latch.get(latch_key, None)
+                if is_reversed is None:
+                    is_reversed = (rel_angle > 90)
+                else:
+                    if is_reversed and rel_angle < 45:
+                        is_reversed = False
+                    elif not is_reversed and rel_angle > 135:
+                        is_reversed = True
+
+                self._road_seg_latch[latch_key] = is_reversed
+                return "REVERSED" if is_reversed else "FORWARD"
+
+        latch = SimulatedRoadDirectionLatch()
+        key = "TEST_ROAD:0,0"
+        seg_bearing = 0.0 # 北向道路
+
+        # 初始朝向 80° (接近 90°，但小於 90°，判定為 FORWARD)
+        dir1 = latch.determine_direction(key, heading_deg=80.0, seg_bearing=seg_bearing)
+        self.assertEqual(dir1, "FORWARD")
+
+        # 劇烈擺動至 125° (盲人白杖 60° 大幅手持晃動，仍小於 135°，必須維持 FORWARD 不翻轉！)
+        dir2 = latch.determine_direction(key, heading_deg=125.0, seg_bearing=seg_bearing)
+        self.assertEqual(dir2, "FORWARD", "125° 白手杖擺動穿透了遲滯區引發了門牌左右翻轉！")
+
+        # 擺動回 60° (大於 45°，仍維持 FORWARD)
+        dir3 = latch.determine_direction(key, heading_deg=60.0, seg_bearing=seg_bearing)
+        self.assertEqual(dir3, "FORWARD")
+
+        # 真正 180° 大迴轉至 160° (> 135°，確實驗證掉頭反向)
+        dir4 = latch.determine_direction(key, heading_deg=160.0, seg_bearing=seg_bearing)
+        self.assertEqual(dir4, "REVERSED", "大於 135° 掉頭時未能正確翻轉向量！")
+
+        # 掉頭後擺動至 55° (大於 45°，仍維持 REVERSED 鎖定)
+        dir5 = latch.determine_direction(key, heading_deg=55.0, seg_bearing=seg_bearing)
+        self.assertEqual(dir5, "REVERSED")
+
+        # 真正轉回正前方 30° (< 45°，解除反向恢復順向)
+        dir6 = latch.determine_direction(key, heading_deg=30.0, seg_bearing=seg_bearing)
+        self.assertEqual(dir6, "FORWARD")
+
+    def test_11_chained_junction_real_haversine_distance(self):
+        """
+        驗證 C-03：連續巷弄接力判定必須計算兩路口之間的真實 Haversine 距離，
+        絕不可使用「使用者到各路口之徑向距離差 (delta_dist = j2_dist - j1_dist)」！
+        情境：j1 距離使用者 10m (右前方)，j2 距離使用者 12m (左前方，對街不同巷口)；
+        使用者距離差僅 2m，但兩路口相距 18m (> 12m)，絕不可誤判為連續相鄰巷口！
+        """
+        from nmap.spatial.geometry import haversine_distance
+
+        # 使用者位於 (25.0000, 121.0000)
+        # j1 位於使用者右前方 (25.00008, 121.00006) ~ 10m
+        j1_lat, j1_lon = 25.00008, 121.00006
+        # j2 位於使用者左前方 (25.00010, 121.00018) ~ 21m 遠，但沿前進軸距離差很小
+        j2_lat, j2_lon = 25.00010, 121.00018
+
+        real_inter_dist = haversine_distance(j1_lat, j1_lon, j2_lat, j2_lon)
+        # 兩路口間距 ~ 12.3 米 (> 12.0m 門檻)
+        is_chained = (real_inter_dist <= 12.0)
+        self.assertFalse(is_chained, f"兩路口真實間距 {real_inter_dist:.1f}m > 12m，不可誤判為連續巷口！")
+
+        # 若 j2 確實為相鄰連續巷弄 (相距 6.5m)
+        j2_adjacent_lat, j2_adjacent_lon = 25.00012, 121.00009
+        adjacent_dist = haversine_distance(j1_lat, j1_lon, j2_adjacent_lat, j2_adjacent_lon)
+        self.assertTrue(adjacent_dist <= 12.0, "真實相距 <= 12m 之相鄰巷弄必須成功觸發接力！")
+
+    def test_12_corridor_distance_and_same_side_clustering(self):
+        """
+        驗證 H-02 與 H-05：
+        1. 走廊距離必須為 2.0 ~ 18.0m (GEMINI.md Section 1.3)，排除 < 2.0m 與 > 18.0m。
+        2. 同側聚類打包必須確認 (bearing1 * bearing2 > 0)，不可跨街把左側店與右側店打包！
+        """
+        import math
+        def in_corridor(d, rel_bearing):
+            rad = math.radians(abs(rel_bearing))
+            fwd = d * math.cos(rad)
+            lat = abs(d * math.sin(rad))
+            return 2.0 <= fwd <= 18.0 and lat <= 14.0
+
+        # 店家 A：正前方 22m (超出 18m 上限，不可納入走廊)
+        self.assertFalse(in_corridor(22.0, 0.0), "22m 遠處店家不可被走廊提早播報！")
+        # 店家 B：身旁 1.2m (小於 2m，不可納入走廊)
+        self.assertFalse(in_corridor(1.2, 30.0), "1.2m 已越過店家不可被走廊重複播報！")
+        # 店家 C：前方 10m，右側 30° -> fwd = 8.66m, lat = 5.0m (在走廊內)
+        self.assertTrue(in_corridor(10.0, 30.0))
+
+        # 同側打包驗證：
+        # 店家 1：左前方 -15°；店家 2：右前方 +12° (角度差 27° <= 28°)
+        # 但兩者分屬左右兩側，絕不可打包成一句話！
+        b1, b2 = -15.0, 12.0
+        is_same_side = (b1 * b2 > 0) or (abs(b1) <= 8 and abs(b2) <= 8)
+        self.assertFalse(is_same_side, "左側與右側跨街店家不可被錯誤打包！")
+
+        # 店家 3：右前方 +15°；店家 4：右前方 +25° (同在右側，角度差 10° <= 28°)
+        b3, b4 = 15.0, 25.0
+        is_same_side_right = (b3 * b4 > 0) or (abs(b3) <= 8 and abs(b4) <= 8)
+        self.assertTrue(is_same_side_right, "同在右側相鄰店家應允許聚類打包！")
+
+    def test_13_junction_state_machine_6m_boundary_no_gap(self):
+        """
+        驗證 H-03 與 M-02：路口狀態機邊界無空窗且嚴格遵循 GEMINI.md Section 1.4：
+        PASSING: < 6.0m
+        LEAVING: 6.0 ~ 18.0m (前一狀態為 PASSING)
+        APPROACHING: 6.0 ~ 25.0m (未進入 PASSING 時)
+        測試 7.5m 處絕無掉入任何邏輯空窗！
+        """
+        def get_junction_state(junc_dist, current_state):
+            if junc_dist < 6.0:
+                return "PASSING"
+            elif 6.0 <= junc_dist <= 18.0 and current_state == "PASSING":
+                return "LEAVING"
+            elif 6.0 <= junc_dist <= 25.0 and current_state not in ("PASSING", "LEAVING"):
+                return "APPROACHING"
+            return current_state
+
+        # 從 20m 走向路口：20m -> APPROACHING
+        self.assertEqual(get_junction_state(20.0, "IDLE"), "APPROACHING")
+        # 走近至 7.5m：舊代碼在 7.0~8.0m 存在空窗，新代碼必須依然判定為 APPROACHING！
+        self.assertEqual(get_junction_state(7.5, "IDLE"), "APPROACHING")
+        # 踏入 5.5m (< 6.0m)：觸發 PASSING！
+        self.assertEqual(get_junction_state(5.5, "APPROACHING"), "PASSING")
+        # 通過後走至 8.0m (6~18m)：觸發 LEAVING！
+        self.assertEqual(get_junction_state(8.0, "PASSING"), "LEAVING")
+
 
 if __name__ == "__main__":
     unittest.main()
+

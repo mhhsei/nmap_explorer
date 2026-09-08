@@ -366,8 +366,9 @@ class IntersectionAnalyzer:
             # 檢查是否存在相距 <= 12 米之連續接力路口 (Chained Junction)
             if len(front_junction_candidates) >= 2:
                 j2 = front_junction_candidates[1]
-                delta_dist = j2["dist"] - j1["dist"]
-                if delta_dist <= 12.0 and j1["dist"] <= 35.0:
+                # 修正 C-03：計算兩路口節點之間的真實大地物理距離，而非使用者到各路口的徑向差！
+                inter_junction_dist = haversine_distance(j1["lat"], j1["lon"], j2["lat"], j2["lon"])
+                if inter_junction_dist <= 12.0 and j1["dist"] <= 35.0:
                     j2_branches, j2_intersecting = extract_node_branches(j2["node_id"], j2["lat"], j2["lon"], j2["physical_neighbors"])
                     j2_valid = [
                         b for b in j2_branches 
@@ -382,7 +383,7 @@ class IntersectionAnalyzer:
                         j2_name = j2_branch["road_name"]
                         j2_dir = j2_branch.get("relative_direction", "")
                         j2_clock = j2_branch.get("clock_position", "")
-                        j2_delta_m = max(2, round(delta_dist))
+                        j2_delta_m = max(2, round(inter_junction_dist))
                         has_chained_junction = True
                         chained_junction_info = {
                             "name": j2_name,

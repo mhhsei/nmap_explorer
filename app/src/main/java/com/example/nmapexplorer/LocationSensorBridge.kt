@@ -505,6 +505,11 @@ class PedestrianKalmanFilter {
                 p22 = 1.0
                 p33 = 1.0
                 consecutiveRejections = 0
+                // 修正 C-04：重置平滑軌跡緩衝區與定錨，避免停留微收斂時被舊座標扯回數十米！
+                lockedLat = rawLat
+                lockedLon = rawLon
+                recentFixes.clear()
+                recentFixes.addLast(FilteredFix(x, y, accuracyMeters, timestampNanos))
             } else {
                 // 單點折射瞬移雜訊，予以過濾
                 return getCurrentGeoLocation()
@@ -561,8 +566,8 @@ class PedestrianKalmanFilter {
         vx = (k0 * effectiveInnovX) / dt
         vy = (k1 * effectiveInnovY) / dt
 
-        // 速度鉗制防護：車載模式上限提升至 35.0 m/s (126 km/h)，滿足台灣高鐵、國道客運與快速道路行駛需求
-        val maxSpeed = if (motionState == MotionState.VEHICULAR_TRANSIT) 35.0 else 4.5
+        // 速度鉗制防護：車載模式上限提升至 35.0 m/s (126 km/h)；步行模式嚴格鉗制在 4.0 m/s (GEMINI.md Section 4.1)
+        val maxSpeed = if (motionState == MotionState.VEHICULAR_TRANSIT) 35.0 else 4.0
         val curSpd = sqrt(vx * vx + vy * vy)
         if (curSpd > maxSpeed) {
             val scale = maxSpeed / curSpd
@@ -1283,12 +1288,12 @@ class LocationSensorBridge(private val context: Context, private val webView: We
             if (mag > maxAccInWindow) maxAccInWindow = mag
             if (mag < minAccInWindow) minAccInWindow = mag
 
-            // 軟體波峰計步備援 (GEMINI.md 規範：峰值 > 11.20 m/s²，增量 > 0.45 m/s²，間隔 > 330ms)
+            // 軟體波峰計步備援 (GEMINI.md 規範：峰值 > 11.20 m/s²，增量 > 0.20 m/s²，間隔 > 330ms)
             // 且當有硬體計步器剛觸發 (<400ms) 或正處於車行模式時，嚴格抑制軟體波峰誤觸發
             val nowUptime = SystemClock.uptimeMillis()
             val isVehicular = stationaryDetector.currentState == MotionState.VEHICULAR_TRANSIT || lastGpsSpeedMps >= 2.8f
             val isHardwareStepRecent = (nowUptime - lastHardwareStepTimeMs) < 400L
-            if (!isVehicular && !isHardwareStepRecent && mag > 11.20f && (mag - lastAccMag) > 0.45f && (nowUptime - lastSoftwareStepMs) > 330L) {
+            if (!isVehicular && !isHardwareStepRecent && mag > 11.20f && (mag - lastAccMag) > 0.20f && (nowUptime - lastSoftwareStepMs) > 330L) {
                 softwareStepCount++
                 lastSoftwareStepMs = nowUptime
                 Log.d(tag, "[STEP_DETECTED] source=SoftwarePeak, total=$softwareStepCount, mag=${String.format(Locale.US, "%.2f", mag)}")
@@ -1656,6 +1661,9 @@ class LocationSensorBridge(private val context: Context, private val webView: We
 
         val currentPitchDeg: Float
             get() = activeInstance?.phonePitchDeg ?: 0f
+
+        val isProximityNear: Boolean
+            get() = activeInstance?.isProximityNear ?: false
 
         val currentFloor: String
             get() = activeInstance?.currentFloorString ?: "1F"

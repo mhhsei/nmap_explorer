@@ -25,8 +25,10 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -48,6 +50,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     private var lastSpokenTimeMs: Long = 0L
     private var lastTtsDirectText: String = ""
     private var lastTtsDirectTimeMs: Long = 0L
+    private var lastSpeechPriority: Int = 4
 
     init {
         try {
@@ -152,7 +155,13 @@ class WebAppInterface(private val context: Context, private val webView: WebView
 
         (context as? android.app.Activity)?.runOnUiThread {
             try {
-                if (isTtsReady && tts != null) {
+                val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+                val isTouchExploration = am?.isEnabled == true && am.isTouchExplorationEnabled
+
+                // 若開啟 TalkBack (isTouchExploration)，改由無障礙宣告播報，徹底杜絕 raw TTS 與 TalkBack 同時發聲的雙聲道衝突！
+                if (isTouchExploration) {
+                    webView?.announceForAccessibility(text)
+                } else if (isTtsReady && tts != null) {
                     val queueMode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                     tts?.speak(text, queueMode, null, "turn_${System.currentTimeMillis()}")
                 } else {
@@ -239,20 +248,42 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             return
         }
 
-        // 智慧型插播判定：
-        // 若為急迫警報或手動點擊（如包含 ⚠️、危險、目前位置），立即插播；
-        // 若為一般例行店家/路口通知且上一句剛發聲 (< 800ms)，強制改為平滑排隊，杜絕被下一句腰斬！
-        val isEmergency = text.startsWith("⚠️") || text.contains("危險") || text.startsWith("【目前位置】")
-        val effectiveInterrupt = if (isEmergency) true else (interrupt && elapsed > 800L)
+        // 【四級優先級發話權降序調度 (GEMINI.md Section 1.2)】
+        // 1: 生命安全防撞 (⚠️、危險、手動目前位置)
+        // 2: 視障有聲號誌與燈號 (小綠人、紅燈、APS)
+        // 3: 路口生命線狀態機 (接近路口、正通過路口)
+        // 4: 前進走廊店家、門牌與一般道路導引
+        val newPriority = when {
+            text.startsWith("⚠️") || text.contains("危險") || text.startsWith("【目前位置】") -> 1
+            text.contains("小綠人") || text.contains("紅燈") || text.contains("有聲號誌") || text.contains("號誌") -> 2
+            text.contains("路口") || text.contains("正通過") -> 3
+            else -> 4
+        }
 
+        // 智慧插播判定：低優先級 (Priority 4 店家) 絕對禁止搶播蓋台或腰斬高優先級 (Priority 1~3)！
+        val canInterrupt = if (newPriority < lastSpeechPriority) {
+            true // 高優先級可立即搶播打斷低優先級
+        } else if (newPriority == lastSpeechPriority) {
+            interrupt && elapsed > 1200L
+        } else {
+            false // 低優先級不可打斷高優先級，維持平滑排隊
+        }
+        val effectiveInterrupt = (newPriority == 1) || canInterrupt
+
+        lastSpeechPriority = newPriority
         lastSpokenText = text
         lastSpokenTimeMs = now
-        Log.i(tag, "[SPEECH_DISPATCH] text='$text', requestedInterrupt=$interrupt, effectiveInterrupt=$effectiveInterrupt, elapsed=${elapsed}ms")
+        Log.i(tag, "[SPEECH_DISPATCH] text='$text', priority=$newPriority, requestedInterrupt=$interrupt, effectiveInterrupt=$effectiveInterrupt, elapsed=${elapsed}ms")
 
         (context as? android.app.Activity)?.runOnUiThread {
             try {
                 val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
-                if (am?.isEnabled == true) {
+                val isTouchExploration = am?.isEnabled == true && am.isTouchExplorationEnabled
+
+                // 修正 C-02：消滅 TalkBack 雙重事件導致同一句話重複連唸兩次的跳針問題
+                if (webView != null) {
+                    webView.announceForAccessibility(text)
+                } else if (am?.isEnabled == true) {
                     val event = android.view.accessibility.AccessibilityEvent.obtain(
                         android.view.accessibility.AccessibilityEvent.TYPE_ANNOUNCEMENT
                     )
@@ -262,11 +293,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                     am.sendAccessibilityEvent(event)
                 }
 
-                // 同步調用 WebView announceForAccessibility
-                webView?.announceForAccessibility(text)
-
                 // 若未啟用觸控瀏覽輔助，透過原生 TTS 引擎發聲
-                val isTouchExploration = am?.isEnabled == true && am.isTouchExplorationEnabled
                 if (!isTouchExploration && isTtsReady) {
                     val queueMode = if (effectiveInterrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                     tts?.speak(text, queueMode, null, "nmap_${System.currentTimeMillis()}")
@@ -524,10 +551,50 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 appendLine("【本次行走旅程大事記 (Journey Milestones Timeline)】")
                 appendLine("（按時間先後排列，讓視障者與工程師 10 秒掌握整趟探索所有核心動態）")
                 appendLine("--------------------------------------------------------------------------------")
-                val milestones = mutableListOf<Pair<String, String>>()
+                // 輔助函式：將來自不同來源 (JS ISO-8601 UTC 字串 / 原生 Local 時間) 統一解析為 Epoch 毫秒
+                val parseTimestampToMillis = { t: String ->
+                    var parsedMs = 0L
+                    if (t.isNotBlank()) {
+                        // 1. JS ISO-8601 UTC 時間 (例如 "2026-09-07T22:52:45.123Z")
+                        if (t.contains("T")) {
+                            try {
+                                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+                                    timeZone = TimeZone.getTimeZone("UTC")
+                                }
+                                val clean = t.substringBefore(".")
+                                parsedMs = sdf.parse(clean)?.time ?: 0L
+                            } catch (e: Exception) {}
+                        }
+                        // 2. 原生帶完整日期時間 (例如 "2026-09-08 06:54:20")
+                        else if (t.contains("-") && t.contains(" ")) {
+                            try {
+                                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                                val clean = t.substringBefore(".")
+                                parsedMs = sdf.parse(clean)?.time ?: 0L
+                            } catch (e: Exception) {}
+                        }
+                        // 3. 原生僅時間戳 (例如 "06:54:02.164" 或 "06:54:02")
+                        else if (t.contains(":")) {
+                            try {
+                                val parts = t.substringBefore(".").split(":")
+                                if (parts.size >= 2) {
+                                    val cal = Calendar.getInstance()
+                                    cal.set(Calendar.HOUR_OF_DAY, parts[0].trim().toInt())
+                                    cal.set(Calendar.MINUTE, parts[1].trim().toInt())
+                                    cal.set(Calendar.SECOND, if (parts.size > 2) parts[2].trim().toInt() else 0)
+                                    cal.set(Calendar.MILLISECOND, 0)
+                                    parsedMs = cal.timeInMillis
+                                }
+                            } catch (e: Exception) {}
+                        }
+                    }
+                    if (parsedMs <= 0L) System.currentTimeMillis() else parsedMs
+                }
+
+                val milestones = mutableListOf<Pair<Long, String>>()
 
                 // 1. 起點事件
-                milestones.add(Pair(displayTimeStr, "[旅程起點] 定位鎖定於【${json.optString("currentRoad", "未知出發地")}】，開始探索"))
+                milestones.add(Pair(parseTimestampToMillis(displayTimeStr), "[旅程起點] 定位鎖定於【${json.optString("currentRoad", "未知出發地")}】，開始探索"))
 
                 // 2. 語音導引事件精選 (路口、過街、店家抵達、變燈)
                 if (speechArray != null) {
@@ -536,7 +603,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                         val t = s.optString("time", "")
                         val txt = s.optString("text", "")
                         if (txt.contains("接近路口") || txt.contains("正通過路口") || txt.contains("沿著") || txt.contains("抵達") || txt.contains("小綠人") || txt.contains("紅燈") || txt.contains("對街搜尋中")) {
-                            milestones.add(Pair(t, "[語音導引] $txt"))
+                            milestones.add(Pair(parseTimestampToMillis(t), "[語音導引] $txt"))
                         }
                     }
                 }
@@ -548,7 +615,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                         val parts = clean.split("|", limit = 2)
                         val t = if (parts.isNotEmpty()) parts[0].trim() else ""
                         val m = if (parts.size > 1) parts[1].trim() else clean
-                        milestones.add(Pair(t, "[相機號誌] $m"))
+                        milestones.add(Pair(parseTimestampToMillis(t), "[相機號誌] $m"))
                     }
                 }
 
@@ -559,7 +626,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                         val t = act.optString("time", "")
                         val a = act.optString("action", "")
                         val d = act.optString("detail", "")
-                        milestones.add(Pair(t, "[手勢操作] $a: $d"))
+                        milestones.add(Pair(parseTimestampToMillis(t), "[手勢操作] $a: $d"))
                     }
                 }
 
@@ -569,20 +636,16 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                         val an = anomaliesArray.optJSONObject(i) ?: continue
                         val t = an.optString("time", "")
                         val d = an.optString("message").ifEmpty { an.optString("desc", "") }
-                        milestones.add(Pair(t, "[⚠️ 系統異常] $d"))
+                        milestones.add(Pair(parseTimestampToMillis(t), "[⚠️ 系統異常] $d"))
                     }
                 }
 
-                // 依時間排序並輸出精華大事
+                // 依時間毫秒排序並以本地時間格式化輸出精華大事
                 val sortedMilestones = milestones.sortedBy { it.first }
                 if (sortedMilestones.isNotEmpty()) {
-                    sortedMilestones.takeLast(40).forEach { (t, desc) ->
-                        val shortTime = when {
-                            t.contains("T") -> t.substringAfterLast("T").substringBefore(".").take(8)
-                            t.contains(" ") -> t.substringAfterLast(" ").substringBefore(".").take(8)
-                            t.length >= 8 -> t.takeLast(8)
-                            else -> t
-                        }
+                    val localTimeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                    sortedMilestones.takeLast(40).forEach { (epochMs, desc) ->
+                        val shortTime = localTimeFmt.format(Date(epochMs))
                         appendLine("• $shortTime $desc")
                     }
                 } else {

@@ -353,6 +353,11 @@ body {
   color: var(--text-main);
   font-size: 1.5rem;
   cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Visual Radar & Street View Panel */

@@ -21,6 +21,8 @@
   </style>
 </head>
 <body>
+  <!-- WCAG 2.2 AAA Skip Link (跳過主要導覽，外接鍵盤與 NVDA 快速鍵直達主要內容) -->
+  <a href="#main-content" class="skip-link">跳過主要導覽至主要內容</a>
 
   <!-- 主畫面內容容器 (當開啟任何對話框時，此容器會被自動設置 inert 與 aria-hidden="true"，TalkBack 100% 無法穿透) -->
   <main id="main-content" class="main-content" role="main">
@@ -62,7 +64,7 @@
     <div id="active-guidance-bar" class="active-guidance-bar" style="display: none; background: #064e3b; border: 2px solid #10b981; border-radius: 10px; padding: 12px; margin-bottom: 12px;" role="region" aria-label="進行中的 3D 空間聲音導引">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
         <span style="font-weight: bold; color: #a7f3d0; font-size: 1.15em;">🎯 3D 空間導引中</span>
-        <span id="guidance-dist-pill" style="background: #047857; color: #ecfdf5; font-size: 0.95em; padding: 3px 10px; border-radius: 6px; font-weight: bold;">剩餘 --m</span>
+        <span id="guidance-dist-pill" style="background: #022c22; color: #ecfdf5; font-size: 0.95em; padding: 3px 10px; border-radius: 6px; font-weight: bold; border: 1px solid #10b981;">剩餘 --m</span>
       </div>
       <p id="guidance-target-desc" style="color: #f0fdf4; margin: 0 0 10px 0; font-size: 1.1em; line-height: 1.5;">目標：--</p>
       <button id="home-stop-guidance-btn" class="btn" style="background: #ef4444; color: #ffffff; width: 100%; padding: 12px; font-size: 1.1em; font-weight: bold; border-radius: 8px;" aria-label="停止目前 3D 空間聲音導引">🛑 停止導引</button>
@@ -88,8 +90,8 @@
         <span id="stream-title" style="font-size: 1.35em; font-weight: bold; color: #38bdf8;">📋 設施清單與行進播報 (上下滑選動作)</span>
         <button id="stream-clear-btn" style="background: #334155; color: #cbd5e1; border: 1px solid #475569; padding: 6px 14px; border-radius: 6px; font-size: 1.05em; font-weight: bold; cursor: pointer;" aria-label="清空目前清單">清空清單</button>
       </div>
-      <div id="stream-summary-text" style="font-size: 1.3em; line-height: 1.6; color: #f8fafc; margin-bottom: 12px;" tabindex="0">
-        歡迎使用 nmap！行進播報、搜尋結果與周遭設施皆呈現於此清單，每項皆可單指上下滑動切換動作。
+      <div id="stream-summary-text" style="font-size: 1.3em; line-height: 1.6; color: #f8fafc; margin-bottom: 12px;" tabindex="0" role="status" aria-live="polite">
+        歡迎使用 nmap！行進播報、搜尋結果與周遭設施皆呈現於此清單，每項皆可切換動作。
       </div>
       <ul id="activity-stream-list" class="activity-stream-list" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px;">
         <!-- 行進地標與搜尋結果皆轉為帶有滑桿動作之大字卡片 -->
