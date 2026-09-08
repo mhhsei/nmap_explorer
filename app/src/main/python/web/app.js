@@ -4840,14 +4840,40 @@ window.onPermissionGranted = () => {
 window.onGpsSearching = () => {
   const diffElem = document.getElementById("diff-status-pill");
   if (diffElem) {
-    diffElem.textContent = "📍 正在搜尋衛星訊號...";
-    diffElem.setAttribute("aria-label", "差分定位品質: 正在搜尋衛星訊號");
+    const newText = "📍 正在搜尋衛星訊號...";
+    const newAria = "差分定位品質: 正在搜尋衛星訊號";
+    if (diffElem.textContent !== newText) diffElem.textContent = newText;
+    if (diffElem.getAttribute("aria-label") !== newAria) diffElem.setAttribute("aria-label", newAria);
   }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new NmapWebApp();
   window.touchCtrl = new TouchGestureController(window.app);
+
+  // 【頂部狀態徽章手動查驗監聽器 (Manual Status Pill Exploration)】
+  // 當視障者手動滑動或雙擊觸發狀態徽章時，主動朗讀當前狀態，平時背景數值變更維持 100% 靜音
+  const bindPillSpeak = (pillId) => {
+    const pill = document.getElementById(pillId);
+    if (pill) {
+      const speakPill = () => {
+        const msg = pill.getAttribute("aria-label") || pill.textContent;
+        if (window.app && window.app.updateLiveLog) {
+          window.app.updateLiveLog(msg, false, true);
+        }
+      };
+      pill.addEventListener("click", speakPill);
+      pill.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          speakPill();
+        }
+      });
+    }
+  };
+  bindPillSpeak("diff-status-pill");
+  bindPillSpeak("vertical-status-pill");
+  bindPillSpeak("beacon-status-pill");
 
   // 【無障礙即時語音開機心跳 (Screen Reader Startup Chime & Speech)】
   // 開機瞬間立即透過 TalkBack / NVDA 朗讀就緒狀態，消滅死機恐懼
@@ -5360,8 +5386,10 @@ window.onDifferentialTierUpdate = function(tierName, displayName, expectedAcc) {
     window.currentDifferentialTier = { name: tierName, displayName: displayName, expectedAcc: expectedAcc };
     const diffElem = document.getElementById("diff-status-pill");
     if (diffElem) {
-        diffElem.textContent = "📍 " + displayName;
-        diffElem.setAttribute("aria-label", "差分定位品質: " + displayName);
+        const newText = "📍 " + displayName;
+        const newAria = "差分定位品質: " + displayName;
+        if (diffElem.textContent !== newText) diffElem.textContent = newText;
+        if (diffElem.getAttribute("aria-label") !== newAria) diffElem.setAttribute("aria-label", newAria);
     }
 };
 
@@ -5397,8 +5425,10 @@ window.onVerticalLevelUpdate = function(levelName, displayName, altitudeM, descr
         let icon = "🏢";
         if (levelName === "OVERPASS") icon = "🌁";
         else if (levelName.startsWith("UNDERGROUND") || levelName.startsWith("INDOOR_B")) icon = "🚇";
-        vertElem.textContent = `${icon} ${curFloorLabel} (${sign}${altitudeM.toFixed(1)}m)`;
-        vertElem.setAttribute("aria-label", `所在樓層: ${curFloorLabel}，立體高程: ${displayName} (${sign}${altitudeM.toFixed(1)}公尺)`);
+        const newText = `${icon} ${curFloorLabel} (${sign}${altitudeM.toFixed(1)}m)`;
+        const newAria = `所在樓層: ${curFloorLabel}，立體高程: ${displayName} (${sign}${altitudeM.toFixed(1)}公尺)`;
+        if (vertElem.textContent !== newText) vertElem.textContent = newText;
+        if (vertElem.getAttribute("aria-label") !== newAria) vertElem.setAttribute("aria-label", newAria);
     }
 
     if (levelName !== oldLevel) {
@@ -5427,9 +5457,11 @@ window.onBeaconAnchorUpdate = function(beaconId, beaconName, lat, lon, distM, le
 
     const beaconPill = document.getElementById("beacon-status-pill");
     if (beaconPill) {
-        beaconPill.style.display = "inline-block";
-        beaconPill.textContent = `📡 ${beaconName.split(" ")[0]} (${distM.toFixed(1)}m)`;
-        beaconPill.setAttribute("aria-label", `已定錨公眾信標: ${beaconName}，距離約 ${Math.round(distM)} 公尺`);
+        if (beaconPill.style.display !== "inline-block") beaconPill.style.display = "inline-block";
+        const newText = `📡 ${beaconName.split(" ")[0]} (${distM.toFixed(1)}m)`;
+        const newAria = `已定錨公眾信標: ${beaconName}，距離約 ${Math.round(distM)} 公尺`;
+        if (beaconPill.textContent !== newText) beaconPill.textContent = newText;
+        if (beaconPill.getAttribute("aria-label") !== newAria) beaconPill.setAttribute("aria-label", newAria);
     }
 
     if (window.app && window.app.audio) {
@@ -5489,8 +5521,10 @@ window.onVerticalFloorUpdate = function(motionType, floorStr, altM) {
     const vertElem = document.getElementById("vertical-status-pill");
     if (vertElem) {
         const sign = (window.currentAltitudeM || 0) >= 0 ? "+" : "";
-        vertElem.textContent = `🏢 ${floorStr} (${sign}${(window.currentAltitudeM || 0).toFixed(1)}m)`;
-        vertElem.setAttribute("aria-label", `所在樓層: ${floorStr}，距地表 ${(window.currentAltitudeM || 0).toFixed(1)}公尺`);
+        const newText = `🏢 ${floorStr} (${sign}${(window.currentAltitudeM || 0).toFixed(1)}m)`;
+        const newAria = `所在樓層: ${floorStr}，距地表 ${(window.currentAltitudeM || 0).toFixed(1)}公尺`;
+        if (vertElem.textContent !== newText) vertElem.textContent = newText;
+        if (vertElem.getAttribute("aria-label") !== newAria) vertElem.setAttribute("aria-label", newAria);
     }
 
     // 【視障無障礙靜默原則】：

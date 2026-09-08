@@ -47,6 +47,31 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.7 - 2026-09-09] - 狀態徽章無障礙靜默防騷擾：GPS 與樓層狀態變更 TalkBack 徹底靜音，支援手動觸控/滑動查驗
+
+#### 🎯 視障者使用者明確指示與痛點修復
+- **實體痛點**：視障者在戶外行走時，GPS 衛星品質（單機導航 / DGPS / 搜尋中）或氣壓高程（0.1m 微幅抖動、1F）時常頻繁微幅變動。原先頂部狀態膠囊標註了 `role="status"` 與 `aria-live="polite"`，導致每次感測器微小變化時，Android TalkBack 就會強行插播朗讀狀態（例如：「差分定位品質: 單機導航 (3-5m)」、「所在樓層: 1F，立體高程: 地面層 (+0.1公尺)」），嚴重打斷視障者聆聽街頭環境音（車流、腳步聲、盲杖回聲）與導航店家路口提示。
+- **使用者要求**：
+  > 「當 gps 或樓層的狀態改變時 不要讓 talkback 朗讀
+  > 我可以自己移動到狀態 自行朗讀就可以 這很重要」
+
+#### 🛠️ 具體修復方案與代碼落實
+1. **移除動態區域即時廣播 (`index.html`)**：
+   - 徹底移除 `#diff-status-pill`、`#vertical-status-pill` 與 `#beacon-status-pill` 上的 `role="status"` 與 `aria-live="polite"`。
+   - 消滅 DOM 變動時觸發 TalkBack 自動發聲的機制，讓背景狀態變更維持 100% 靜音。
+2. **加入可聚焦屬性保障手動查驗 (`index.html` & `app.js`)**：
+   - 為所有狀態膠囊加入 `tabindex="0"` 與語意清晰的 `aria-label`。
+   - 視障者手動單指滑動或觸摸螢幕上方探索時，TalkBack 能清晰選中該膠囊並朗讀當前狀態。
+   - 在 `app.js` 的 `DOMContentLoaded` 中加入 `bindPillSpeak`，支援雙擊/點擊或 Enter/Space 鍵直接主動報讀。
+3. **優化 DOM 更新差異比對 (`app.js`)**：
+   - 在 `onDifferentialTierUpdate`、`onVerticalLevelUpdate`、`onVerticalFloorUpdate`、`onBeaconAnchorUpdate`、`onGpsSearching` 加入文字與 `aria-label` 變更檢查，避免同一數值每秒重複寫入 DOM。
+4. **新增端到端無障礙規格回歸測試 (`test_status_pills_accessibility.py`)**：
+   - 驗證頂部狀態徽章絕不包含 `aria-live` 或 `role="status"`。
+   - 驗證必須具備 `tabindex="0"` 與 `aria-label`。
+   - 驗證 `app.js` 已綁定手動觸摸點擊查驗邏輯。47 項測試全數通過。
+
+---
+
 ### [v1.0.17.6 - 2026-09-08] - 全方位無障礙與空間感知代碼大審閱全面修復：四級降序優先權鏈、TalkBack雙重跳針消除、真實路口間距接力、卡爾曼拉回定錨防倒退、門牌90度防擺動寬幅遲滯、走廊同側聚類打包
 
 #### 🎯 視障者獨立戶外行走「所聽即所得」代碼全面審閱覆盤與修復報告
