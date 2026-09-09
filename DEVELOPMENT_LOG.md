@@ -47,6 +47,37 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.12 - 2026-09-09] - 3D 空間導引聲音重大修復：消除 Fallback POI 0米原地抵達自滅 Bug、Web Audio HRTF 雙重衰減破除、2.5秒定錨保護與滑桿動作音效解耦
+
+#### 🎯 修復問題與視障實戰意圖
+1. **消滅動態清單點擊「開啟 3D 導引」0毫秒原地自滅的致命 Bug (Instant Arrival Self-Shutdown)**：
+   - **實體痛點**：視障者從即時語音清單點擊「開啟 3D 導引」後，手機完全沒有聲音提示，頂部徽章閃一下就消失。
+   - **根本原因**：在 `updateLiveLog` 中，若從語音文本提取未命中資料庫的地標時，代碼粗暴地將 `matchedPoi.lat` 與 `matchedPoi.lon` 直接賦予使用者目前座標 `(curLat, curLon)`！進入導引引擎時，距離瞬間計算為 `0.0 公尺`，直接落入 `dist <= 3.8` 門檻，觸發 `handleArrivalAtTarget()`，在 0 毫秒內自滅、清空計時器並關閉導引！
+   - **修復**：
+     - 在 `updateLiveLog` 中導入**字串時鐘方位與距離解析**，依據使用者真北朝向進行嚴密的航位推算（Dead Reckoning，前方 12 米或時鐘方向偏角），確保座標具有實體前進向量。
+     - 在 `scheduleNextBeaconStep` 中加入**座標定錨保護期 (2.5 秒)**，若啟動未滿 2.5 秒且距離異常為 0，視為 GPS 座標初始化防抖期，絕不誤觸發原地到達關閉。
+2. **破除 Web Audio HRTF Panner 雙重距離衰減導致之戶外手機揚聲器無聲 (Double Distance Attenuation Fix)**：
+   - **實體痛點**：即使座標正常，在吵雜街頭使用手機擴音器時，聽不到 3D 脈衝。
+   - **根本原因**：`playBeacon` 本身已依據距離調控 `volume`，但底層 `playSpatialTone` 的 `PannerNode` 又套用了 `distanceModel = 'inverse'`（以 1 米為基準），當距離為 8 米時音量被除以 8，使原本 0.10 的音量降到 0.0125（1.25%），在手機小喇叭上幾乎無法發聲！
+   - **修復**：
+     - 將 `playSpatialTone` 支援 `distanceModel` 參數，預設為 `'none'`，讓 PannerNode 專注於左右耳 HRTF 3D 空間方位角（Azimuth），不再二次衰減音量。
+     - 大幅提升 `playBeacon` 戶外基礎音量（最低 0.32 ~ 最高 0.95），確保不戴耳機的視障者在車流中亦能清晰掌握前進方向。
+3. **滑桿動作點擊與抵達和弦解耦 (Action Sound Decoupling)**：
+   - **修復**：移除 `executePoiAction` 執行動作時無差別播放 `playArrival()` 慶祝和弦的干擾行為，點擊導引時專屬播放定錨雙音 `playBeaconAnchorTone()`，非導引播放柔和確認音。
+
+#### 📂 變更檔案清單
+| 檔案路徑 | 變更行號區間 | 變更內容摘要 |
+| :--- | :--- | :--- |
+| `app/build.gradle.kts` | L15~L16 | 版本號升級至 `v1.0.17.12`，VersionCode 升級至 `57` |
+| `app/src/main/python/web/app.js` | L59~L80 | `playSpatialTone` 支援 `distanceModel='none'`，消滅二次衰減 |
+| `app/src/main/python/web/app.js` | L195~L227 | `playBeacon` 改用單位方向向量與提升戶外音量 (0.32~0.95) |
+| `app/src/main/python/web/app.js` | L1545~L1580 | `updateLiveLog` Fallback POI 改以航位推算前方坐標，消滅 0米抵達 |
+| `app/src/main/python/web/app.js` | L2108~L2175 | `scheduleNextBeaconStep` 目標坐標安全回退與 2.5 秒防抖保護 |
+| `app/src/main/python/web/app.js` | L3696~L3710 | `executePoiAction` 移除 `playArrival()`，改為定錨音 |
+| `app/src/main/python/test_status_pills_accessibility.py` | L117~L123 | 增加 `test_beacon_audio_safeguards_and_dead_reckoning` 單元測試 |
+
+---
+
 ### [v1.0.17.11 - 2026-09-09] - 3D 空間聲音導引全面修復與升級：消除致命方法覆蓋、手勢解鎖音訊、頂部狀態徽章一鍵關閉、雙態開關、雷達式急促音量縮放與自動抵達提示
 
 #### 🎯 修復問題與視障實戰意圖

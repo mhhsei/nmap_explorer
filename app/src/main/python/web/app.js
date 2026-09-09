@@ -56,7 +56,7 @@ class WebAudioEngine {
   }
 
   // Item 3.3: 3D Spatial HRTF PannerNode Audio Cue (硬體時鐘微秒級精確排程)
-  playSpatialTone(frequency = 440, type = 'sine', x = 0, y = 0, z = -1, duration = 0.15, startTimeOffset = 0, volume = 0.3) {
+  playSpatialTone(frequency = 440, type = 'sine', x = 0, y = 0, z = -1, duration = 0.15, startTimeOffset = 0, volume = 0.3, distanceModel = 'none') {
     if (!this.enabled) return;
     this.initContext();
     if (!this.ctx) return;
@@ -68,10 +68,12 @@ class WebAudioEngine {
       const panner = this.ctx.createPanner();
 
       panner.panningModel = 'HRTF';
-      panner.distanceModel = 'inverse';
-      panner.refDistance = 1;
-      panner.maxDistance = 100;
-      panner.rolloffFactor = 1;
+      panner.distanceModel = distanceModel;
+      if (distanceModel !== 'none') {
+        panner.refDistance = 1;
+        panner.maxDistance = 100;
+        panner.rolloffFactor = 1;
+      }
 
       if (panner.positionX) {
         panner.positionX.setValueAtTime(x, t0);
@@ -193,20 +195,19 @@ class WebAudioEngine {
     this.initContext();
     if (!this.ctx) return;
 
-    // 1. 3D 空間定位 (HRTF 立體聲 Panner)
+    // 1. 3D 空間定位 (HRTF 立體聲 Panner，使用單位朝向向量)
     const rad = relBearing * Math.PI / 180.0;
-    const distAudio = Math.max(0.6, Math.min(8.0, distM));
-    const x = distAudio * Math.sin(rad);
-    const z = -distAudio * Math.cos(rad);
+    const x = Math.sin(rad);
+    const z = -Math.cos(rad);
 
-    // 2. 音量動態縮放 (距離越遠越小聲、越近越響亮)
-    let volume = 0.12;
+    // 2. 音量動態縮放 (距離越遠越小聲、越近越響亮，確保手機揚聲器在戶外依然清晰可辨)
+    let volume = 0.32;
     if (distM <= 4.0) volume = 0.95;
-    else if (distM <= 10.0) volume = 0.80;
-    else if (distM <= 20.0) volume = 0.60;
-    else if (distM <= 40.0) volume = 0.35;
-    else if (distM <= 70.0) volume = 0.20;
-    else volume = 0.10;
+    else if (distM <= 10.0) volume = 0.85;
+    else if (distM <= 20.0) volume = 0.70;
+    else if (distM <= 40.0) volume = 0.55;
+    else if (distM <= 70.0) volume = 0.42;
+    else volume = 0.32;
 
     // 3. 頻率動態提高 (越近越高亢清脆)
     let freq = 880;
@@ -216,12 +217,12 @@ class WebAudioEngine {
     else if (distM > 6) freq = 1046.50;  // C6: 近距離高亢
     else freq = 1318.51;                 // E6: 門前極度清脆
 
-    // 播放主立體聲脈衝 (持續 90ms)
-    this.playSpatialTone(freq, 'sine', x, 0, z, 0.09, 0.0, volume);
+    // 播放主立體聲脈衝 (持續 100ms，以 distanceModel='none' 防止距離二次衰減)
+    this.playSpatialTone(freq, 'sine', x, 0, z, 0.10, 0.0, volume, 'none');
 
     // 小於 8 公尺時加上高頻緊湊副音 (Double-pip)，急迫感更加顯著
     if (distM <= 8.0) {
-      this.playSpatialTone(freq * 1.25, 'triangle', x, 0, z, 0.05, 0.06, volume * 0.9);
+      this.playSpatialTone(freq * 1.25, 'triangle', x, 0, z, 0.06, 0.07, volume * 0.9, 'none');
     }
   }
 
@@ -1545,12 +1546,46 @@ class NmapWebApp {
         if (!matchedPoi && (cleanPart.includes("公尺") || cleanPart.includes("m") || cleanPart.includes("前方") || cleanPart.includes("左") || cleanPart.includes("右") || cleanPart.includes("點鐘"))) {
           const rawName = cleanPart.replace(/[\(（].*$/, '').replace(/，.*$/, '').replace(/【.*】/, '').trim();
           if (rawName.length >= 2 && rawName.length <= 25 && !rawName.includes("周遭") && !rawName.includes("十字路口") && !rawName.includes("路口") && !rawName.includes("前進")) {
+            // 解析語音字串中的距離與時鐘方位
+            let parsedDist = 12.0;
+            const distMatch = cleanPart.match(/(\d+(?:\.\d+)?)\s*(?:公尺|m|米)/i);
+            if (distMatch) {
+              parsedDist = Math.max(3.0, parseFloat(distMatch[1]));
+            }
+            let parsedClock = "正前方";
+            let angleOffsetDeg = 0;
+            const clockMatch = cleanPart.match(/(\d{1,2})\s*點鐘/);
+            if (clockMatch) {
+              const hr = parseInt(clockMatch[1], 10);
+              parsedClock = `${hr}點鐘`;
+              angleOffsetDeg = ((hr % 12) * 30);
+            } else if (cleanPart.includes("右前")) {
+              parsedClock = "右前方";
+              angleOffsetDeg = 45;
+            } else if (cleanPart.includes("左前")) {
+              parsedClock = "左前方";
+              angleOffsetDeg = -45;
+            } else if (cleanPart.includes("右側") || cleanPart.includes("右邊")) {
+              parsedClock = "右側";
+              angleOffsetDeg = 90;
+            } else if (cleanPart.includes("左側") || cleanPart.includes("左邊")) {
+              parsedClock = "左側";
+              angleOffsetDeg = -90;
+            }
+
+            // 依據使用者朝向推算真實前方座標，絕不可直接設為使用者目前經緯度 (杜絕 0米原地到達關閉 Bug)
+            const curH = (this.localHeading !== null && this.localHeading !== undefined) ? this.localHeading : (window.lastHeading || 0);
+            const targetBrng = (curH + angleOffsetDeg + 360) % 360;
+            const rad = (targetBrng * Math.PI) / 180.0;
+            const dLat = (parsedDist * Math.cos(rad)) / 111139.0;
+            const dLon = (parsedDist * Math.sin(rad)) / (111139.0 * Math.max(0.1, Math.cos((curLat * Math.PI) / 180.0)));
+
             matchedPoi = {
               name: rawName,
-              lat: curLat,
-              lon: curLon,
-              distance_m: 10,
-              clock_position: "正前方",
+              lat: curLat + dLat,
+              lon: curLon + dLon,
+              distance_m: parsedDist,
+              clock_position: parsedClock,
               category: "poi"
             };
           }
@@ -2073,6 +2108,7 @@ class NmapWebApp {
       this.stopBeaconGuidance(true);
     }
 
+    this.beaconStartTime = Date.now();
     this.activeBeaconTarget = target;
     this.activeGuidance = {
       targetName: target.name,
@@ -2121,6 +2157,14 @@ class NmapWebApp {
       return;
     }
 
+    // 確保目標座標有效，若無效則自動依使用者朝向推算前方 10 米
+    if (target.lat === undefined || target.lat === null || isNaN(target.lat) ||
+        target.lon === undefined || target.lon === null || isNaN(target.lon)) {
+      const rad = (curHead * Math.PI) / 180.0;
+      target.lat = curLat + (10.0 * Math.cos(rad)) / 111139.0;
+      target.lon = curLon + (10.0 * Math.sin(rad)) / (111139.0 * Math.max(0.1, Math.cos((curLat * Math.PI) / 180.0)));
+    }
+
     const targetBrng = NMapGeometry.calculateBearing(curLat, curLon, target.lat, target.lon);
     const relBrng = NMapGeometry.relativeBearing(curHead, targetBrng);
     const dist = NMapGeometry.haversineDistance(curLat, curLon, target.lat, target.lon);
@@ -2130,9 +2174,15 @@ class NmapWebApp {
     this.updateActiveGuidanceBar(target, dist, clock);
 
     // 判斷是否抵達目標 (<= 3.8 公尺，GEMINI.md Section 1.3 規範一致性)
+    // 🛡️ 座標初始化保護：若導引啟動未滿 2.5 秒且距離異常為 0 (dist < 0.2m)，視為座標尚未定錨，不誤觸發原地抵達
+    const timeSinceStartMs = Date.now() - (this.beaconStartTime || 0);
     if (dist <= 3.8) {
-      this.handleArrivalAtTarget(target, dist);
-      return;
+      if (dist < 0.2 && timeSinceStartMs < 2500) {
+        // 座標初始化防抖保護期，跳過抵達，等待後續更新
+      } else {
+        this.handleArrivalAtTarget(target, dist);
+        return;
+      }
     }
 
     // 播放 3D 空間立體聲脈衝 (越近越響、越清脆、越急促)
@@ -3647,7 +3697,15 @@ class NmapWebApp {
   executePoiAction(poi, actionId, cardElement = null) {
     if (!poi) return;
     const poiName = poi.name || "目標地標";
-    if (this.audio) this.audio.playArrival();
+    if (actionId === "guide") {
+      if (this.audio && this.audio.playBeaconAnchorTone) {
+        this.audio.playBeaconAnchorTone();
+      }
+    } else {
+      if (this.audio && this.audio.playSettledChime) {
+        this.audio.playSettledChime();
+      }
+    }
 
     switch (actionId) {
       case "guide": // 🎯 開啟或關閉 3D 空間聲音導引 (依狀態智慧切換)

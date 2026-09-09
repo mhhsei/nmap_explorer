@@ -115,6 +115,12 @@ class TestStatusPillsAccessibility(unittest.TestCase):
         self.assertIn("distM <= 8.0", self.js_content, "8 米內必須觸發 Double-pip 急迫副音")
         self.assertIn("distM <= 3.8", self.js_content, "3.8 米抵達門檻必須自動觸發 handleArrivalAtTarget")
 
+    def test_beacon_audio_safeguards_and_dead_reckoning(self):
+        """驗證 3D 空間導引核心防護：PannerNode distanceModel='none' 防止距離二次消音、fallback POI 航位推算與 2.5s 座標定錨防護"""
+        self.assertIn("distanceModel = 'none'", self.js_content, "playSpatialTone 預設 distanceModel 應為 'none'，防止手機揚聲器被二次衰減消音")
+        self.assertIn("timeSinceStartMs < 2500", self.js_content, "scheduleNextBeaconStep 必須具備 2.5 秒啟動防抖定錨保護期")
+        self.assertIn("curLat + dLat", self.js_content, "updateLiveLog 的 fallback POI 必須依據朝向與距離推算座標，絕不可直接設為 (curLat, curLon)")
+
 
 if __name__ == "__main__":
     unittest.main()
