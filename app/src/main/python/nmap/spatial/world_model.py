@@ -196,6 +196,7 @@ class WorldModel:
         self.hazard_scanner = SidewalkHazardScanner()
         self.mrt_directory = MrtAccessibilityDirectory()
         self.hmm_matcher = HmmMapMatcher()
+        self.last_road_name = ""
 
     def match_road_hmm(
         self,
@@ -1002,7 +1003,11 @@ class WorldModel:
         【分析當前腳下道路屬性（路名、車道數、單行道、人行道狀況、地面鋪面）】
         """
 
-        road, dist_m = self.find_nearest_road(lat, lon)
+        # 傳入 heading_deg 與同名道路慣性名稱，啟用「防小巷側吸」與「行進慣性維持」
+        current_name = getattr(self, "last_road_name", "")
+        road, dist_m = self.find_nearest_road(lat, lon, user_heading=heading_deg, current_road_name=current_name)
+        if road and road.get("name"):
+            self.last_road_name = road.get("name", "")
         if not road:
             return {
                 "street_name": "未知道路",

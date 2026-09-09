@@ -311,6 +311,8 @@ class IntersectionAnalyzer:
         closest_junction_dist = 999.0
         closest_junction_t_brng = 0.0
         closest_junction_rel_brng = 0.0
+        closest_junction_lat = None
+        closest_junction_lon = None
         intersecting_roads = set()
         branches_info = []
         if curr_road_info is None:
@@ -366,6 +368,8 @@ class IntersectionAnalyzer:
             closest_junction_t_brng = j1["t_brng"]
             closest_junction_rel_brng = j1["rel_brng"]
             closest_junction_meta = j1["meta"]
+            closest_junction_lat = j1["lat"]
+            closest_junction_lon = j1["lon"]
             junction_type = "十字路口" if j1["degree"] >= 4 else "T字/岔路口"
             branches_info, intersecting_roads = extract_node_branches(j1["node_id"], j1["lat"], j1["lon"], j1["physical_neighbors"])
 
@@ -406,6 +410,8 @@ class IntersectionAnalyzer:
             closest_junction_dist = nearby_crossings[0]["distance_m"]
             closest_junction_rel_brng = nearby_crossings[0].get("relative_bearing_deg", 0.0)
             closest_junction_t_brng = (heading_deg + closest_junction_rel_brng) % 360.0
+            closest_junction_lat = nearby_crossings[0].get("lat")
+            closest_junction_lon = nearby_crossings[0].get("lon")
 
         # 提取融合號誌與無障礙安全情報
         is_signalized = closest_junction_meta.get("is_signalized", False)
@@ -608,6 +614,8 @@ class IntersectionAnalyzer:
             "junction_type": junction_type,
             "junction_name": junction_display_name,
             "junction_distance_m": round(closest_junction_dist, 1) if closest_junction_dist < 900 else None,
+            "junction_lat": round(closest_junction_lat, 6) if closest_junction_lat is not None else None,
+            "junction_lon": round(closest_junction_lon, 6) if closest_junction_lon is not None else None,
             "bearing_deg": round(target_signal_brng, 1),
             "clock_position": target_signal_clock,
             "is_signalized": is_signalized,

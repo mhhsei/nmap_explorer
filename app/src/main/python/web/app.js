@@ -3031,15 +3031,44 @@ class NmapWebApp {
         const hasIsland = !!data.intersection.has_refuge_island;
         const currentRoad = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路" && data.road_info.street_name !== "1F") ? data.road_info.street_name : "目前道路";
 
-        const passedLockTime = this.passedJunctionCooldown.get(juncName) || 0;
+        // 【網格座標獨立定錨】：無名路口若共用 "路口" 字串，會導致第二、第三個無名巷口全被全域 45 秒冷卻消音。
+        // 因此使用 15 米網格經緯度 (小數點 4 位約 11 米) 作為獨立冷卻 key。
+        const jLat = (data.intersection && data.intersection.junction_lat) ?? data.lat;
+        const jLon = (data.intersection && data.intersection.junction_lon) ?? data.lon;
+        const juncCooldownKey = (jLat && jLon && (juncName === "路口" || juncName.startsWith("無名") || juncName === "前方路口"))
+          ? `junc_${Number(jLat).toFixed(4)}_${Number(jLon).toFixed(4)}`
+          : juncName;
+
+        const passedLockTime = this.passedJunctionCooldown.get(juncCooldownKey) || 0;
         const isJunctionLocked = (now - passedLockTime < 45000); // 通過後 45 秒內嚴格防抖鎖定
 
         // 追蹤逼近該路口的歷史最小距離 (用於側向巷弄人行道過街的轉折判定)
-        if (this.activeJunctionTargetName !== juncName) {
-          this.activeJunctionTargetName = juncName;
+        if (this.activeJunctionTargetName !== juncCooldownKey) {
+          this.activeJunctionTargetName = juncCooldownKey;
           this._minJunctionDist = juncDist;
         } else {
           this._minJunctionDist = Math.min(this._minJunctionDist || 999.0, juncDist);
+        }
+
+        // 【等紅燈退步或折返重置狀態機 (Traffic Light Backing Up Reset)】:
+        // 當視障者在接近路口 (APPROACHING) 或等紅燈時，若被轉彎車輛逼退或後退超過 8.5 公尺，
+        // 狀態機優雅退回 IDLE，並清除該路口的 approached 暫存冷卻。
+        // 如此一來，當綠燈亮起、使用者重新往前走接近路口時，系統能再度溫馨提醒路口！
+        if (this.currentJunctionState === "APPROACHING" && this._minJunctionDist !== null && juncDist >= (this._minJunctionDist + 8.5)) {
+          const prevState = this.currentJunctionState;
+          this.currentJunctionState = "IDLE";
+          this._minJunctionDist = juncDist;
+          this.approachedJunctionCooldown.delete(juncCooldownKey);
+          if (this.recordTrace) {
+            this.recordTrace("JUNCTION_STATE_TRANSITION", {
+              from: prevState,
+              to: "IDLE",
+              junction: juncName,
+              cooldown_key: juncCooldownKey,
+              reason: "BACKING_UP_RESET",
+              distance_m: Math.round(juncDist * 10) / 10
+            });
+          }
         }
 
         // A. 踏入 / 正通過路口
@@ -3083,7 +3112,7 @@ class NmapWebApp {
         else if (juncDist >= 6.0 && juncDist <= 18.0 && this.currentJunctionState === "PASSING") {
           const prevState = this.currentJunctionState;
           this.currentJunctionState = "LEAVING";
-          this.passedJunctionCooldown.set(juncName, now); // 鎖定該路口 45 秒，消滅倒退重唸
+          this.passedJunctionCooldown.set(juncCooldownKey, now); // 鎖定該路口獨立 key 45 秒，消滅倒退重唸
           this.lastIntersectionAlertTime = now;
           if (this.recordTrace) {
             this.recordTrace("JUNCTION_STATE_TRANSITION", {
@@ -3102,7 +3131,7 @@ class NmapWebApp {
 
         // C. 提前接近路口 (6.0m ~ 25.0m) - 【動態鐘點分支導引，不講幾何贅字，無縫銜接無死角】
         else if (juncDist <= 25.0 && juncDist >= 6.0 && !isJunctionLocked) {
-          const lastAppTime = this.approachedJunctionCooldown.get(juncName) || 0;
+          const lastAppTime = this.approachedJunctionCooldown.get(juncCooldownKey) || 0;
           const globalAppGap = now - (this.lastIntersectionAlertTime || 0);
           const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
           const isUserMoving = curSpeed >= 0.35;
@@ -3110,9 +3139,9 @@ class NmapWebApp {
           if (this.currentJunctionState !== "APPROACHING" && this.currentJunctionState !== "PASSING" && this.currentJunctionState !== "LEAVING" && (now - lastAppTime > 45000) && globalAppGap >= 6000 && isUserMoving) {
             const prevState = this.currentJunctionState;
             this.currentJunctionState = "APPROACHING";
-            this.activeJunctionTargetName = juncName;
+            this.activeJunctionTargetName = juncCooldownKey;
             this.lastIntersectionAlertTime = now;
-            this.approachedJunctionCooldown.set(juncName, now);
+            this.approachedJunctionCooldown.set(juncCooldownKey, now);
             if (this.recordTrace) {
               this.recordTrace("JUNCTION_STATE_TRANSITION", {
                 from: prevState,
