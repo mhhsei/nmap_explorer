@@ -47,7 +47,52 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.11 - 2026-09-09] - 3D 空間聲音導引全面修復與升級：消除致命方法覆蓋、手勢解鎖音訊、頂部狀態徽章一鍵關閉、雙態開關、雷達式急促音量縮放與自動抵達提示
+
+#### 🎯 修復問題與視障實戰意圖
+1. **消滅 3D 導引完全無聲之致命同名方法覆蓋 Bug (Method Overriding Bug)**：
+   - **實體痛點**：視障者開啟 3D 導引時，手機完全無聲。經追查發現，`app.js` 第 4827 行殘留了同名宣告 `startBeaconToTarget()`，將第 2033 行帶有排程與距離計算的主引擎完全覆蓋。被覆蓋的殘留方法內部完全未啟動聲音計時器，且覆蓋了 `stopBeaconGuidance`，導致 100% 啞火無聲！
+   - **修復**：徹底刪除第 4827 行的殘留覆蓋代碼，將主引擎確立為唯一且完整的 3D 導引核心。
+2. **手勢點擊瞬間強制解鎖 Web Audio Context (AudioContext Suspended Fix)**：
+   - **實體痛點**：Android WebView（Chromium）具備 Autoplay 限制，背景啟動的定時器無法發聲。
+   - **修復**：在使用者手指點擊「開啟 3D 導引」的當下，同步調度 `audio.initContext()` 與 `audio.ctx.resume()`，並立即播放第一聲清脆的定錨音，徹底保障後續立體聲脈衝 100% 順暢播發。
+3. **頂部狀態徽章列新增可點擊關閉按鈕 `#guidance-status-pill`**：
+   - **實體痛點**：原本停止導引按鈕位在畫面中下方，TalkBack 視障者需要由上往下滑過多個元件才能摸到。
+   - **修復**：在頂部 `#diff-status-container` 徽章列中新增 `#guidance-status-pill`（`role="button"`，`tabindex="0"`），導引啟動時即時顯現「🎯 導引中: 店名 剩餘 XXm (點擊關閉)」，視障者摸到螢幕頂端即可一鍵立即停止導引！
+4. **設施清單卡片滑桿支援「能開也能關」雙態智慧切換**：
+   - **實體痛點**：原本卡片動作固定為「開啟 3D 導引」，無法反映當前是否正在導引。
+   - **修復**：滑桿依據 `activeBeaconTarget` 狀態動態判定：正在導引之地標顯示「🛑 關閉 3D 導引」，點擊即關閉；其他地標顯示「🎯 開啟 3D 導引」。
+5. **全新雷達式聽覺模型設計 (Distance-to-Volume & Distance-to-Tempo)**：
+   - **越遠越小聲**：> 50 米時音量微弱溫和 (0.10 ~ 0.18)，宛如遠方微光，絕不遮蓋環境車聲；中距 (15~50m) 為 0.25~0.55；近身 (4~15m) 為 0.65~0.85；門前 ($\le 3.8$m) 為 0.95~1.00。
+   - **越近越急促**：遠處每 2.2 秒一聲；中距每 1.0 秒；近身每 400 毫秒；$\le 3.8$ 米門前每 200 毫秒極速雙嗶音 (Double-pip)。
+   - **3D 空間定位 (HRTF)**：精準依據目標方位與手機真北夾角調度立體聲 Panner，朝著聲音傳來的方向前進即為地標所在。
+6. **抵達目標自動關閉與到達提示 (Arrival Automation)**：
+   - 當距離 $\le 3.8$ 公尺時，自動切斷聲音計時器、隱藏頂部與下方 UI，並同時觸發：
+     1. 華麗清脆的 4 音階抵達勝利和弦（Arrival Fanfare）
+     2. 專屬抵達雙長震動反饋
+     3. 強制插播語音提示：`🎉 順利抵達目的地：【店名】！導引聲音已自動關閉。`
+     4. 彈出抵達對話框。
+
+#### ✅ 修復檔案清單
+| 檔案 | 修改行數/區段 | 說明 |
+|------|--------------|------|
+| `app/src/main/python/web/index.html` | L32~L37 | 頂部徽章列新增 `guidance-status-pill` 按鈕 |
+| `app/src/main/python/web/app.js` | L185~L225 | `playBeacon` 升級遠小近大音量縮放與高頻雙音設計 |
+| `app/src/main/python/web/app.js` | L1080~L1098 | 綁定 `guidance-status-pill` 點擊關閉導引事件 |
+| `app/src/main/python/web/app.js` | L2030~L2230 | 3D 導引主引擎升級：手勢解鎖、雙徽章連動、雷達急促排程、自動抵達關閉 |
+| `app/src/main/python/web/app.js` | L3650~L3705 | `createActionablePoiCard` 與 `executePoiAction` 支援雙態開關 |
+| `app/src/main/python/web/app.js` | L4885~L4945 | 徹底刪除重複覆蓋的 `startBeaconToTarget` 死代碼 |
+| `app/src/main/python/test_status_pills_accessibility.py` | 末端 | 新增 4 項 3D 導引無障礙與聲音設計回歸測試 |
+| `app/build.gradle.kts` | L15-16 | 版本號升級至 1.0.17.11 (VersionCode 56) |
+
+#### 🧪 測試與驗證閉環
+- `python -m unittest app/src/main/python/test_status_pills_accessibility.py`：13 項無障礙與空間回歸測試 100% 通過。
+- `python -m unittest discover -s app/src/main/python -p 'test_*.py'`：全套 57 項單元測試 100% 通過。
+
+---
+
 ### [v1.0.17.10 - 2026-09-09] - 第一階段無障礙與安全防護修復：路口日誌變數修正、消除障礙物死代碼、走廊聚類同側判定優化與 40 秒冷卻校正
+
 
 #### 🎯 修復問題與視障實戰意圖
 1. **修復路口狀態轉換日誌 4 處 `jDist` 變數未定義致命筆誤**：

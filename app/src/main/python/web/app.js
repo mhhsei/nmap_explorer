@@ -183,35 +183,45 @@ class WebAudioEngine {
 
   /**
    * 3D 空間距離感應脈衝音 (Proximity Beacon Ping)
-   * 特性：越接近地標，聲音越響亮、頻率越高、越急促
+   * 聽覺模型設計：
+   * 1. 越遠越小聲 (0.10 ~ 0.18)，宛如遠方微光，絕不干擾聆聽周圍車聲
+   * 2. 越近越響亮 (0.65 ~ 0.95)，讓視障者全神貫注確認店門
+   * 3. 越近頻率越高亢清脆，小於 8 米時觸發急促雙嗶音 (Double-pip)
    */
   playBeacon(relBearing = 0, distM = 5) {
     if (!this.enabled) return;
     this.initContext();
     if (!this.ctx) return;
 
-    // 1. 3D 空間定位 (HRTF)
+    // 1. 3D 空間定位 (HRTF 立體聲 Panner)
     const rad = relBearing * Math.PI / 180.0;
     const distAudio = Math.max(0.6, Math.min(8.0, distM));
     const x = distAudio * Math.sin(rad);
     const z = -distAudio * Math.cos(rad);
 
-    // 2. 音量動態縮放 (越近越響亮: 0.35 ~ 0.95)
-    const volume = Math.min(0.95, Math.max(0.35, 1.0 - (distM / 60.0) * 0.6));
+    // 2. 音量動態縮放 (距離越遠越小聲、越近越響亮)
+    let volume = 0.12;
+    if (distM <= 4.0) volume = 0.95;
+    else if (distM <= 10.0) volume = 0.80;
+    else if (distM <= 20.0) volume = 0.60;
+    else if (distM <= 40.0) volume = 0.35;
+    else if (distM <= 70.0) volume = 0.20;
+    else volume = 0.10;
 
     // 3. 頻率動態提高 (越近越高亢清脆)
     let freq = 880;
-    if (distM > 40) freq = 660;
-    else if (distM > 15) freq = 880;
-    else if (distM > 6) freq = 1046.5;
-    else freq = 1318.5;
+    if (distM > 60) freq = 587.33;       // D5: 遠處低沉柔和
+    else if (distM > 35) freq = 659.25;  // E5: 中遠距
+    else if (distM > 15) freq = 880.00;  // A5: 標準明亮
+    else if (distM > 6) freq = 1046.50;  // C6: 近距離高亢
+    else freq = 1318.51;                 // E6: 門前極度清脆
 
-    // 播放主音頻脈衝
-    this.playSpatialTone(freq, 'sine', x, 0, z, 0.10, 0.0, volume);
+    // 播放主立體聲脈衝 (持續 90ms)
+    this.playSpatialTone(freq, 'sine', x, 0, z, 0.09, 0.0, volume);
 
-    // 小於 10 公尺時加上高頻緊湊副音 (Double-pip)，急迫感更加顯著
-    if (distM <= 10.0) {
-      this.playSpatialTone(freq * 1.25, 'triangle', x, 0, z, 0.05, 0.06, volume * 0.85);
+    // 小於 8 公尺時加上高頻緊湊副音 (Double-pip)，急迫感更加顯著
+    if (distM <= 8.0) {
+      this.playSpatialTone(freq * 1.25, 'triangle', x, 0, z, 0.05, 0.06, volume * 0.9);
     }
   }
 
@@ -1077,6 +1087,7 @@ class NmapWebApp {
     const poiNavNmapBtn = document.getElementById("poi-modal-nav-nmap");
     const poiNavGmapsBtn = document.getElementById("poi-modal-nav-gmaps");
     const homeStopBtn = document.getElementById("home-stop-guidance-btn");
+    const guidanceStatusPill = document.getElementById("guidance-status-pill");
     const arrivalStopBtn = document.getElementById("arrival-modal-stop-btn");
 
     if (poiCloseBtn) poiCloseBtn.addEventListener("click", () => this.closePoiModal());
@@ -1084,6 +1095,7 @@ class NmapWebApp {
     if (poiNavNmapBtn) poiNavNmapBtn.addEventListener("click", () => this.startBeaconToTarget());
     if (poiNavGmapsBtn) poiNavGmapsBtn.addEventListener("click", () => this.launchGoogleMapsNavigation());
     if (homeStopBtn) homeStopBtn.addEventListener("click", () => this.stopBeaconGuidance(false));
+    if (guidanceStatusPill) guidanceStatusPill.addEventListener("click", () => this.stopBeaconGuidance(false));
     if (arrivalStopBtn) arrivalStopBtn.addEventListener("click", () => this.closeArrivalModal());
 
     // ESC key closes any active modal
@@ -2015,46 +2027,76 @@ class NmapWebApp {
   }
 
   /**
-   * 計算 3D 導引脈衝間隔毫秒數 (越近越快越急)
+   * 計算 3D 導引脈衝間隔毫秒數 (雷達式連續急促模型：越近越快越急)
    */
   calculateBeaconIntervalMs(distM) {
-    if (distM <= 4.0) return 220;   // 極急促 (每秒 4.5 次)
-    if (distM <= 8.0) return 350;   // 急促 (每秒近 3 次)
-    if (distM <= 15.0) return 500;  // 快速 (每秒 2 次)
-    if (distM <= 25.0) return 750;  // 中速
-    if (distM <= 45.0) return 1100; // 稍慢
-    if (distM <= 70.0) return 1500; // 慢速脈衝
-    return 2000;                    // 遠處平緩 (每 2 秒一次)
+    if (distM <= 3.8) return 200;   // 門前極度急促 (每秒 5 次連續滴答)
+    if (distM <= 6.0) return 280;   // 超急促 (每秒 3.5 次)
+    if (distM <= 12.0) return 400;  // 急促近身 (每秒 2.5 次)
+    if (distM <= 25.0) return 650;  // 快速接近 (每秒 1.5 次)
+    if (distM <= 45.0) return 1000; // 中速節奏 (每秒 1 次)
+    if (distM <= 70.0) return 1600; // 慢速引導
+    return 2200;                    // 遠處悠緩 (每 2.2 秒微弱一聲)
   }
 
   /**
    * 啟動 3D 空間聲音導引 (單一目標監控原則)
+   * 具備手勢即時解鎖 AudioContext、雙態開關檢驗與頂部/首頁雙徽章聯動
    */
   startBeaconToTarget(poi = null) {
-    const target = poi || this.activePoiTarget;
-    if (!target) return;
+    const target = poi || this.selectedPoiForNav || this.activePoiTarget;
+    if (!target) {
+      this.updateLiveLog("未選取導引目標，請先從地標清單選擇設施。", false, true);
+      return;
+    }
 
-    // 若點選的正是當前正在導引的地標，則視為停止導引
+    // 手勢觸控點擊當下，同步強制解鎖 Web Audio Context，徹底消滅 Android WebView 自動靜音問題
+    if (this.audio) {
+      this.audio.initContext();
+      if (this.audio.ctx && this.audio.ctx.state === 'suspended') {
+        this.audio.ctx.resume().catch(() => {});
+      }
+      if (this.audio.playBeaconAnchorTone) {
+        this.audio.playBeaconAnchorTone();
+      }
+    }
+
+    // 雙態開關：若點選的正是當前正在導引的地標，點擊直接視為停止導引
     if (this.activeBeaconTarget && this.activeBeaconTarget.name === target.name) {
       this.stopBeaconGuidance(false);
       this.closePoiModal();
       return;
     }
 
-    // 1. 一次只能監控一個地點：若已有舊目標，先停止舊目標
+    // 1. 一次只導引一個地標：若已有前一目標，平滑停止舊目標
     if (this.activeBeaconTarget) {
       this.stopBeaconGuidance(true);
     }
 
     this.activeBeaconTarget = target;
-    this.updateLiveLog(`開始 3D 空間聲音導引前往【${target.name}】。越接近目標聲音越急促越響亮。`, false, true);
-    this.closePoiModal();
+    this.activeGuidance = {
+      targetName: target.name,
+      targetLat: target.lat,
+      targetLon: target.lon,
+      lastDistanceM: target.distance_m || 50
+    };
 
-    // 2. 顯示首頁常駐控制條
+    // 2. 頂部狀態徽章列即時連動 (方便 TalkBack 摸螢幕頂部一鍵關閉)
+    const topPill = document.getElementById("guidance-status-pill");
+    if (topPill) {
+      topPill.style.display = "inline-block";
+      topPill.textContent = `🎯 導引中: ${target.name} (點擊關閉)`;
+      topPill.setAttribute("aria-label", `正在 3D 空間導引前往 ${target.name}，點擊可立即關閉導引`);
+    }
+
+    // 3. 顯示首頁常駐控制條
     const activeBar = document.getElementById("active-guidance-bar");
     if (activeBar) activeBar.style.display = "block";
 
-    // 3. 立即觸發第一聲導航脈衝，並排程後續動態間隔
+    this.updateLiveLog(`🎯 開始 3D 空間聲音導引前往【${target.name}】。越接近目標聲音越急促越響亮。`, false, true);
+    this.closePoiModal();
+
+    // 4. 立即觸發第一聲導航脈衝，並排程後續動態間隔
     this.scheduleNextBeaconStep();
   }
 
@@ -2084,7 +2126,7 @@ class NmapWebApp {
     const dist = NMapGeometry.haversineDistance(curLat, curLon, target.lat, target.lon);
     const clock = NMapGeometry.bearingToClockPosition(relBrng);
 
-    // 更新首頁控制條之即時剩餘距離與方位
+    // 更新頂部徽章與首頁控制條之即時剩餘距離與方位
     this.updateActiveGuidanceBar(target, dist, clock);
 
     // 判斷是否抵達目標 (<= 3.8 公尺，GEMINI.md Section 1.3 規範一致性)
@@ -2093,7 +2135,7 @@ class NmapWebApp {
       return;
     }
 
-    // 播放 3D 空間脈衝 (越近越響、越清脆)
+    // 播放 3D 空間立體聲脈衝 (越近越響、越清脆、越急促)
     if (this.audio && (!this.settings || this.settings.earconEnabled !== false)) {
       this.audio.playBeacon(relBrng, dist);
     }
@@ -2104,13 +2146,24 @@ class NmapWebApp {
   }
 
   /**
-   * 更新首頁常駐導引控制列
+   * 更新頂部徽章與首頁常駐導引控制列
    */
   updateActiveGuidanceBar(target, distM, clockStr) {
+    const roundedDist = Math.round(distM);
+
+    // 頂部徽章
+    const topPill = document.getElementById("guidance-status-pill");
+    if (topPill) {
+      topPill.style.display = "inline-block";
+      topPill.textContent = `🎯 ${target.name} 剩餘 ${roundedDist}m (點擊關閉)`;
+      topPill.setAttribute("aria-label", `正在 3D 空間導引前往 ${target.name}，位於 ${clockStr} 剩餘 ${roundedDist} 公尺，點擊可立即關閉導引`);
+    }
+
+    // 下方導引條
     const pill = document.getElementById("guidance-dist-pill");
     const desc = document.getElementById("guidance-target-desc");
-    if (pill) pill.textContent = `剩餘 ${Math.round(distM)}m`;
-    if (desc) desc.textContent = `目標：${target.name}（${clockStr} 約 ${Math.round(distM)} 公尺）`;
+    if (pill) pill.textContent = `剩餘 ${roundedDist}m`;
+    if (desc) desc.textContent = `目標：${target.name}（${clockStr} 約 ${roundedDist} 公尺）`;
   }
 
   /**
@@ -2124,44 +2177,53 @@ class NmapWebApp {
     const hadTarget = !!this.activeBeaconTarget;
     const targetName = this.activeBeaconTarget ? this.activeBeaconTarget.name : "";
     this.activeBeaconTarget = null;
+    this.activeGuidance = null;
+
+    // 隱藏頂部徽章與下方控制條
+    const topPill = document.getElementById("guidance-status-pill");
+    if (topPill) topPill.style.display = "none";
 
     const activeBar = document.getElementById("active-guidance-bar");
     if (activeBar) activeBar.style.display = "none";
 
     if (!silent && hadTarget) {
-      this.updateLiveLog(`已停止【${targetName}】的 3D 空間聲音導引。`, false, true);
+      this.updateLiveLog(`🛑 已停止【${targetName}】的 3D 空間聲音導引。`, false, true);
     }
   }
 
   /**
-   * 抵達目的地處理：停止聲音、播放勝利和弦、震動、並彈出無障礙對話框
+   * 抵達目的地處理：停止聲音、播放勝利和弦、震動、主動語音播報、並彈出無障礙對話框
    */
   handleArrivalAtTarget(target, distM) {
-    // 立即停止脈衝計時器
+    // 1. 立即停止脈衝計時器並清空導引目標
     if (this.beaconTimer) {
       clearTimeout(this.beaconTimer);
       this.beaconTimer = null;
     }
     this.activeBeaconTarget = null;
+    this.activeGuidance = null;
 
-    // 隱藏首頁控制條
+    // 2. 隱藏頂部徽章與下方導引條
+    const topPill = document.getElementById("guidance-status-pill");
+    if (topPill) topPill.style.display = "none";
+
     const activeBar = document.getElementById("active-guidance-bar");
     if (activeBar) activeBar.style.display = "none";
 
-    // 播放勝利抵達慶祝音
+    // 3. 播放清脆華麗的抵達勝利慶祝和弦 (Arrival Fanfare)
     if (this.audio) this.audio.playArrival();
 
-    // 觸發震動反饋
+    // 4. 觸發專屬抵達長震動反饋
     if (window.AndroidBridge && window.AndroidBridge.vibrate) {
       try {
         window.AndroidBridge.vibrate("[0, 250, 100, 250, 100, 500]");
       } catch (e) {}
     }
 
-    // 語音播報
-    this.updateLiveLog(`🎉 已順利抵達目的地：【${target.name}】！導引聲音已自動關閉。`, false, true);
+    // 5. 語音主動提示抵達（強制插播，確保第一時間聽見）
+    this.updateLiveLog(`🎉 順利抵達目的地：【${target.name}】！導引聲音已自動關閉。`, false, true);
 
-    // 彈出抵達對話框 (Arrival Modal)
+    // 6. 彈出抵達對話框 (Arrival Modal)
     const arrivalBody = document.getElementById("arrival-modal-body");
     if (arrivalBody) {
       arrivalBody.textContent = `您已順利抵達【${target.name}】（距離約 ${Math.round(distM)} 公尺）。導引聲音已自動為您關閉。`;
@@ -3588,9 +3650,14 @@ class NmapWebApp {
     if (this.audio) this.audio.playArrival();
 
     switch (actionId) {
-      case "guide": // 🎯 開啟 3D 空間聲音導引
-        this.recordInteraction("執行滑桿動作", `開啟 3D 空間導引：${poiName}`);
-        this.startBeaconToTarget(poi);
+      case "guide": // 🎯 開啟或關閉 3D 空間聲音導引 (依狀態智慧切換)
+        if (this.activeBeaconTarget && (this.activeBeaconTarget.name === poiName || this.activeBeaconTarget.name === poi.name)) {
+          this.recordInteraction("執行滑桿動作", `關閉 3D 空間導引：${poiName}`);
+          this.stopBeaconGuidance(false);
+        } else {
+          this.recordInteraction("執行滑桿動作", `開啟 3D 空間導引：${poiName}`);
+          this.startBeaconToTarget(poi);
+        }
         break;
 
       case "detail": // ℹ️ 查詢詳細資訊
@@ -3623,8 +3690,11 @@ class NmapWebApp {
   // 🎛️ 建立可上下滑動切換動作之無障礙滑桿卡片 (Actionable Slider POI Card)
   // 依使用者規範：每一項都是滑桿，可用單指上下滑動選不同動作 (3D導引 / 查資訊 / Google導航 / 朗讀方位)
   createActionablePoiCard(poi, customDescription = null) {
+    const isCurrentGuiding = !!(this.activeBeaconTarget && (this.activeBeaconTarget.name === poi.name));
     const actions = [
-      { id: "guide", icon: "🎯", label: "開啟 3D 導引" },
+      isCurrentGuiding 
+        ? { id: "guide", icon: "🛑", label: "關閉 3D 導引" }
+        : { id: "guide", icon: "🎯", label: "開啟 3D 導引" },
       { id: "detail", icon: "ℹ️", label: "查詢詳細資訊" },
       { id: "gmaps", icon: "🗺️", label: "Google 導航" },
       { id: "speak", icon: "📢", label: "朗讀方位門牌" }
@@ -4824,33 +4894,6 @@ class NmapWebApp {
     if (modal) this.closeModal(modal);
   }
 
-  startBeaconToTarget() {
-    if (!this.selectedPoiForNav) return;
-    const target = this.selectedPoiForNav;
-    this.closePoiModal();
-
-    this.activeGuidance = {
-      targetName: target.name,
-      targetLat: target.lat,
-      targetLon: target.lon,
-      lastDistanceM: target.distance_m || 50
-    };
-
-    const card = document.getElementById("active-guidance-card");
-    const targetDesc = document.getElementById("guidance-target-desc");
-    const distPill = document.getElementById("guidance-dist-pill");
-
-    if (card) card.style.display = "block";
-    if (targetDesc) targetDesc.textContent = `導引目標：${target.name}`;
-    if (distPill) distPill.textContent = `剩餘約 ${Math.round(target.distance_m || 0)}m`;
-
-    if (this.audio && this.audio.playBeaconAnchorTone) {
-      this.audio.playBeaconAnchorTone();
-    }
-
-    this.updateLiveLog(`🎯 已開啟 3D 空間聲音導引前往【${target.name}】。請戴上耳機，朝著聲音方向前進，越接近目標聲音越急促。`, false, true);
-  }
-
   launchGoogleMapsNavigation() {
     if (!this.selectedPoiForNav) return;
     const target = this.selectedPoiForNav;
@@ -4863,22 +4906,6 @@ class NmapWebApp {
     } else {
       window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`, "_blank");
     }
-  }
-
-  stopBeaconGuidance(silent = false) {
-    this.activeGuidance = null;
-    const card = document.getElementById("active-guidance-card");
-    if (card) card.style.display = "none";
-
-    if (!silent) {
-      this.updateLiveLog("🛑 已停止 3D 空間聲音導引。", false, true);
-    }
-  }
-
-  closeArrivalModal() {
-    this.stopBeaconGuidance(true);
-    const modal = document.getElementById("arrival-modal");
-    if (modal) this.closeModal(modal);
   }
 }
 

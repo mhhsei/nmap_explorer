@@ -96,7 +96,27 @@ class TestStatusPillsAccessibility(unittest.TestCase):
         self.assertIn("now - lastLeft > 40000 && now - lastRight > 40000", self.js_content, "雙側走廊冷卻必須為 40000ms")
         self.assertIn("now - lastTime > 40000", self.js_content, "單店走廊冷卻必須為 40000ms")
 
+    def test_guidance_status_pill_in_html_and_js(self):
+        """驗證頂部狀態徽章列具備可直接點擊關閉導引的 guidance-status-pill 按鈕"""
+        self.assertIn('id="guidance-status-pill"', self.html_content, "index.html 必須包含 guidance-status-pill")
+        self.assertIn('guidanceStatusPill.addEventListener("click"', self.js_content, "app.js 必須綁定點擊關閉事件")
+
+    def test_no_duplicate_beacon_methods_in_app_js(self):
+        """驗證 app.js 中無重複宣告的 startBeaconToTarget 類別方法，杜絕致命方法覆蓋與無聲 Bug"""
+        matches = re.findall(r'^\s*startBeaconToTarget\s*\([^)]*\)\s*\{', self.js_content, re.MULTILINE)
+        self.assertEqual(len(matches), 1, f"startBeaconToTarget 類別方法定義必須只宣告 1 次，實際找到 {len(matches)} 次")
+        
+        stop_matches = re.findall(r'^\s*stopBeaconGuidance\s*\([^)]*\)\s*\{', self.js_content, re.MULTILINE)
+        self.assertEqual(len(stop_matches), 1, f"stopBeaconGuidance 類別方法定義必須只宣告 1 次，實際找到 {len(stop_matches)} 次")
+
+    def test_play_beacon_sound_design_scaling(self):
+        """驗證 3D 空間導引聲音設計：遠處微弱柔和、近處響亮清脆，小於 8 米觸發雙音"""
+        self.assertIn("distM <= 4.0) volume = 0.95;", self.js_content, "近身 4 米內音量必須達到 0.95")
+        self.assertIn("distM <= 8.0", self.js_content, "8 米內必須觸發 Double-pip 急迫副音")
+        self.assertIn("distM <= 3.8", self.js_content, "3.8 米抵達門檻必須自動觸發 handleArrivalAtTarget")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
