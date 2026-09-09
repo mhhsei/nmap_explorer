@@ -1601,7 +1601,7 @@ class NmapWebApp {
           if (this.pendingStreamCards.length > 25) {
             this.pendingStreamCards.shift();
           }
-          this.scheduleStreamFlush();
+          this.checkAndFlushStream();
         } else {
           // 平常非瀏覽狀態：即時排入最頂端
           streamList.prepend(newCard);
