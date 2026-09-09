@@ -54,6 +54,22 @@ class TestStatusPillsAccessibility(unittest.TestCase):
         self.assertIn("vertical-status-pill", self.js_content)
         self.assertIn("bindPillSpeak", self.js_content, "app.js 必須綁定手動點擊/雙擊報讀邏輯")
 
+    def test_stream_focus_lock_2s_configured(self):
+        """驗證依使用者明確指示：焦點鎖定保護期嚴格設定為 2.0 秒 (2000ms)"""
+        self.assertIn("this.streamFocusLockMs = 2000;", self.js_content, "焦點鎖定保護期必須設定為 2000ms")
+        self.assertIn("markStreamInteraction", self.js_content, "必須有標記互動的 markStreamInteraction 方法")
+        self.assertIn("isUserBrowsingStreamList", self.js_content, "必須有判定正在瀏覽清單的 isUserBrowsingStreamList 方法")
+        self.assertIn("flushPendingStreamCards", self.js_content, "必須有平滑批次注入的 flushPendingStreamCards 方法")
+
+    def test_stream_in_place_reconciliation(self):
+        """驗證同店家原地更新架構 (In-Place Reconciliation)，絕不位移 DOM 節點導致 TalkBack 卡住"""
+        self.assertIn("data-poi-key", self.js_content, "卡片必須標記唯一 data-poi-key 供比對")
+        self.assertIn("_updatePoiData", self.js_content, "卡片必須支援原地資料更新 _updatePoiData")
+
+    def test_horizontal_swipe_protection(self):
+        """驗證水平左右滑動保護：防止 TalkBack 換項手勢被誤判為垂直滑桿手勢"""
+        self.assertIn("Math.abs(dx) > Math.abs(dy)", self.js_content, "必須過濾水平換項手勢，絕不干擾 TalkBack 左右滑動")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -654,6 +654,13 @@ class NmapWebApp {
     this.lastSpokenDoor = "";
     this.lastSpokenIntersection = "";
 
+    // 🎛️ 設施與行進播報清單無障礙焦點鎖定保護 (Focus Lock Protection)
+    // 依使用者指示：設定為 2.0 秒 (2000ms)，保障 TalkBack 單指左右滑動絕不卡住
+    this.streamFocusLockMs = 2000;
+    this.lastStreamInteractionTime = 0;
+    this.pendingStreamCards = [];
+    this.streamFlushTimer = null;
+
     this.initSettings();
     this.initElements();
     this.bindEvents();
@@ -949,10 +956,21 @@ class NmapWebApp {
 
 
 
+    const streamList = document.getElementById("activity-stream-list");
+    if (streamList) {
+      const onStreamTouch = () => {
+        this.markStreamInteraction();
+      };
+      streamList.addEventListener("focusin", onStreamTouch);
+      streamList.addEventListener("touchstart", onStreamTouch, { passive: true });
+      streamList.addEventListener("keydown", onStreamTouch);
+    }
+
     const streamClearBtn = document.getElementById("stream-clear-btn") || document.getElementById("search-results-clear-btn");
     if (streamClearBtn) {
         streamClearBtn.addEventListener("click", () => {
             this.recordInteraction("點擊按鈕", "清空清單");
+            if (this.pendingStreamCards) this.pendingStreamCards = [];
             const streamList = document.getElementById("activity-stream-list");
             if (streamList) streamList.innerHTML = "";
             const summaryEl = document.getElementById("stream-summary-text");
@@ -1369,6 +1387,65 @@ class NmapWebApp {
     });
   }
 
+  // ========== 🎛️ 設施清單無障礙焦點鎖定保護 (A11y Stream Focus Lock) ==========
+
+  /**
+   * 標記使用者正在與下方清單互動（觸摸、焦點滑入或按鍵操作）
+   * 每次互動立即重置 2 秒計時器（依使用者明確指示：2.0 秒保護期）
+   */
+  markStreamInteraction() {
+    this.lastStreamInteractionTime = Date.now();
+    if (this.streamFlushTimer) {
+      clearTimeout(this.streamFlushTimer);
+    }
+    this.streamFlushTimer = setTimeout(() => {
+      this.checkAndFlushStream();
+    }, this.streamFocusLockMs + 50);
+  }
+
+  /**
+   * 判定使用者當前是否正在瀏覽下方清單（過去 2 秒內有互動）
+   */
+  isUserBrowsingStreamList() {
+    return (Date.now() - (this.lastStreamInteractionTime || 0)) < this.streamFocusLockMs;
+  }
+
+  /**
+   * 檢查 2 秒保護期是否已過，若已超過則釋放待命卡片
+   */
+  checkAndFlushStream() {
+    const elapsed = Date.now() - (this.lastStreamInteractionTime || 0);
+    if (elapsed >= this.streamFocusLockMs) {
+      this.flushPendingStreamCards();
+    } else {
+      const remaining = this.streamFocusLockMs - elapsed + 50;
+      if (this.streamFlushTimer) clearTimeout(this.streamFlushTimer);
+      this.streamFlushTimer = setTimeout(() => {
+        this.checkAndFlushStream();
+      }, remaining);
+    }
+  }
+
+  /**
+   * 將待命緩衝區中的新卡片以 DocumentFragment 一次性平滑注入最頂端
+   * 消滅單個 prepend 造成的 DOM 索引位移風暴
+   */
+  flushPendingStreamCards() {
+    if (!this.pendingStreamCards || this.pendingStreamCards.length === 0) return;
+    const streamList = document.getElementById("activity-stream-list");
+    if (!streamList) return;
+
+    const frag = document.createDocumentFragment();
+    while (this.pendingStreamCards.length > 0) {
+      frag.appendChild(this.pendingStreamCards.shift());
+    }
+    streamList.prepend(frag);
+
+    while (streamList.children.length > 25) {
+      streamList.removeChild(streamList.lastChild);
+    }
+  }
+
   updateLiveLog(text, isError = false, isForce = false) {
     if (!text || (text === this.lastSpokenText && !isError && !isForce)) {
       return;
@@ -1467,16 +1544,36 @@ class NmapWebApp {
           }
         }
 
+        const poiKey = matchedPoi ? (matchedPoi.name || cleanPart) : cleanPart;
+
+        // 🔍 【同店家原地更新檢查 (In-Place Reconciliation)】
+        // 查找清單中是否已經有該店家的卡片：若有，直接原地更新內容，絕不插入新節點位移 DOM！
+        let existingCard = null;
+        const currentCards = streamList.querySelectorAll(".actionable-poi-card");
+        for (let i = 0; i < currentCards.length; i++) {
+          if (currentCards[i].getAttribute("data-poi-key") === poiKey) {
+            existingCard = currentCards[i];
+            break;
+          }
+        }
+
+        if (existingCard) {
+          if (existingCard._updatePoiData) {
+            existingCard._updatePoiData(matchedPoi, cleanPart);
+          }
+          return;
+        }
+
+        // 建立新卡片
+        let newCard = null;
         if (matchedPoi && this.createActionablePoiCard) {
-          // 🚀 依使用者需求：走路播報之店家設施轉為可上下滑選動作之滑桿卡片 (3D導引 / 查資訊 / Google導航)
-          const card = this.createActionablePoiCard(matchedPoi, cleanPart);
-          streamList.prepend(card);
+          newCard = this.createActionablePoiCard(matchedPoi, cleanPart);
         } else if (cleanPart.length > 3 && !cleanPart.includes("歡迎使用")) {
-          // 一般行進/路口提示卡片 (點擊可重聽)
           const statusCard = document.createElement("li");
           statusCard.className = "actionable-poi-card";
           statusCard.setAttribute("tabindex", "0");
           statusCard.setAttribute("role", "button");
+          statusCard.setAttribute("data-poi-key", cleanPart);
           statusCard.setAttribute("aria-label", `${cleanPart}。點擊或按 Enter 可重新朗讀`);
           statusCard.style.cssText = "background: #1e293b; border: 1px solid #475569; border-radius: 10px; padding: 12px 14px; font-size: 1.2em; color: #f8fafc; cursor: pointer;";
           statusCard.innerHTML = `<span style="color:#38bdf8; font-weight:bold;">📍 </span>${cleanPart} <small style="color:#94a3b8; margin-left:6px;">(點擊重聽)</small>`;
@@ -1489,11 +1586,28 @@ class NmapWebApp {
               this.updateLiveLog(cleanPart, false, true);
             }
           };
-          streamList.prepend(statusCard);
+          statusCard.addEventListener("focus", () => this.markStreamInteraction());
+          statusCard.addEventListener("touchstart", () => this.markStreamInteraction(), { passive: true });
+          newCard = statusCard;
         }
 
-        while (streamList.children.length > 25) {
-          streamList.removeChild(streamList.lastChild);
+        if (!newCard) return;
+
+        // 🛡️ 【2 秒焦點鎖定保護 (2s Focus Lock Guard)】
+        // 若使用者在過去 2 秒內正在瀏覽/觸摸清單，延遲推入待命緩衝區，絕不在游標前方插入！
+        if (this.isUserBrowsingStreamList()) {
+          if (!this.pendingStreamCards) this.pendingStreamCards = [];
+          this.pendingStreamCards.push(newCard);
+          if (this.pendingStreamCards.length > 25) {
+            this.pendingStreamCards.shift();
+          }
+          this.scheduleStreamFlush();
+        } else {
+          // 平常非瀏覽狀態：即時排入最頂端
+          streamList.prepend(newCard);
+          while (streamList.children.length > 25) {
+            streamList.removeChild(streamList.lastChild);
+          }
         }
       });
     }
@@ -3531,18 +3645,21 @@ class NmapWebApp {
     li.style.cssText = "background: #0f172a; border: 2px solid #0284c7; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; user-select: none;";
 
     const poiName = poi.name || "設施";
+    li.setAttribute("data-poi-key", poiName);
+    li.style.cssText = "background: #0f172a; border: 2px solid #0284c7; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; user-select: none;";
+
     const clock = poi.clock_position || poi.clock_direction || "前方";
     const distStr = poi.distance_m !== undefined ? `${Math.round(poi.distance_m)}米` : "";
     const door = poi.door_number ? ` (${poi.door_number})` : "";
     const cat = poi.category ? this.translateCategory(poi.category) : "";
-    const fullDesc = customDescription || `${poiName}${door}，${clock} ${distStr}${cat ? ` (${cat})` : ''}`;
+    let currentPoiDesc = customDescription || `${poiName}${door}，${clock} ${distStr}${cat ? ` (${cat})` : ''}`;
 
     const updateActionDisplay = (announceSpeech = false) => {
       const act = actions[currentActionIdx];
       li.setAttribute("aria-valuenow", currentActionIdx.toString());
       li.setAttribute("aria-valuetext", act.label);
       // 修正 H-08：移除單指上下滑動衝突說明，清晰引導
-      li.setAttribute("aria-label", `${fullDesc}。動作：${act.label}。滑桿可切換動作，雙擊或按 Enter 立即執行`);
+      li.setAttribute("aria-label", `${currentPoiDesc}。動作：${act.label}。滑桿可切換動作，雙擊或按 Enter 立即執行`);
 
       const badge = li.querySelector(".poi-action-badge");
       if (badge) {
@@ -3575,22 +3692,50 @@ class NmapWebApp {
     row.appendChild(badge);
     li.appendChild(row);
 
+    // 🔄 【同店家原地更新函式 (In-Place Reconciliation)】
+    // 若該店家已有卡片，只更新數據與文字，絕不變更 DOM 順序與索引，TalkBack 游標絕不卡死
+    li._updatePoiData = (updatedPoi, newDesc = null) => {
+      if (updatedPoi) Object.assign(poi, updatedPoi);
+      const uName = poi.name || poiName;
+      const uClock = poi.clock_position || poi.clock_direction || "前方";
+      const uDistStr = poi.distance_m !== undefined ? `${Math.round(poi.distance_m)}米` : "";
+      const uDoor = poi.door_number ? ` (${poi.door_number})` : "";
+      const uCat = poi.category ? this.translateCategory(poi.category) : "";
+      currentPoiDesc = newDesc || `${uName}${uDoor}，${uClock} ${uDistStr}${uCat ? ` (${uCat})` : ''}`;
+
+      info.innerHTML = `
+        <div style="font-size: 1.35em; font-weight: bold; color: #38bdf8; line-height: 1.3;">${uName}${uDoor}</div>
+        <div style="font-size: 1.15em; color: #cbd5e1; margin-top: 4px; font-weight: 500;">🧭 ${uClock} ${uDistStr} ${uCat ? `· ${uCat}` : ''}</div>
+      `;
+      updateActionDisplay(false);
+    };
+
+    // 焦點通知：記錄 2 秒互動鎖定
+    li.addEventListener("focus", () => this.markStreamInteraction());
+
     // Gestures: Touch swipe up / down (比照 ui-btn-around 的滑輪手勢)
     let touchStartY = 0;
+    let touchStartX = 0;
     let isTouching = false;
     let hasMoved = false;
 
     li.addEventListener("touchstart", (e) => {
       touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
       isTouching = true;
       hasMoved = false;
+      this.markStreamInteraction();
     }, { passive: true });
 
     li.addEventListener("touchmove", (e) => {
       if (!isTouching) return;
       const dy = e.touches[0].clientY - touchStartY;
+      const dx = e.touches[0].clientX - touchStartX;
+      // 若水平滑動距離大於垂直滑動距離，判定為 TalkBack 左右換項手勢，絕不觸發垂直滑桿動作！
+      if (Math.abs(dx) > Math.abs(dy)) return;
       if (Math.abs(dy) > 28) {
         hasMoved = true;
+        this.markStreamInteraction();
         if (dy < 0) {
           currentActionIdx = (currentActionIdx + 1) % actions.length;
         } else {
@@ -3607,6 +3752,7 @@ class NmapWebApp {
 
     // Keyboard ArrowUp / ArrowDown (NVDA 與外接鍵盤支援)
     li.addEventListener("keydown", (e) => {
+      this.markStreamInteraction();
       if (e.key === "ArrowUp" || e.key === "PageUp") {
         e.preventDefault();
         currentActionIdx = (currentActionIdx + 1) % actions.length;
@@ -3622,6 +3768,7 @@ class NmapWebApp {
     });
 
     li.addEventListener("click", (e) => {
+      this.markStreamInteraction();
       if (hasMoved) {
         hasMoved = false;
         return;
@@ -3655,6 +3802,7 @@ class NmapWebApp {
     }
 
     if (streamList && pois && Array.isArray(pois) && pois.length > 0) {
+      if (this.pendingStreamCards) this.pendingStreamCards = [];
       streamList.innerHTML = "";
       pois.slice(0, 30).forEach((poi) => {
         const card = this.createActionablePoiCard(poi);
