@@ -155,6 +155,32 @@ class WebAudioEngine {
     } catch (e) {}
   }
 
+  playBuildingEntrySound() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      // 進入建築物：向上兩音階 (溫和室內回聲叮咚音: 440Hz -> 659Hz)
+      this.playSpatialTone(440, 'sine', 0, 0, -1, 0.08, 0, 0.25);
+      setTimeout(() => {
+        this.playSpatialTone(659.25, 'sine', 0, 0, -1, 0.15, 0, 0.25);
+      }, 80);
+    } catch (e) {}
+  }
+
+  playBuildingExitSound() {
+    if (!this.enabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+    try {
+      // 走出建築物：向下兩音階 (走出戶外開闊音: 659Hz -> 440Hz)
+      this.playSpatialTone(659.25, 'sine', 0, 0, -1, 0.08, 0, 0.25);
+      setTimeout(() => {
+        this.playSpatialTone(440, 'sine', 0, 0, -1, 0.15, 0, 0.25);
+      }, 80);
+    } catch (e) {}
+  }
+
   /**
    * 掃描前方店家雙耳立體聲掃描音效 (Scan Sweep Tone)
    */
@@ -3007,6 +3033,55 @@ class NmapWebApp {
     if (!this.arrivedPoiCooldown) this.arrivedPoiCooldown = new Map();
     if (!this.passedJunctionCooldown) this.passedJunctionCooldown = new Map();
     if (!this.approachedJunctionCooldown) this.approachedJunctionCooldown = new Map();
+
+    // =========================================================================
+    // 【0. 實體建築物進出雙態狀態機 (Building Ingress / Egress State Machine)】
+    // 設計意圖：
+    // 當視障者踏入某棟大樓（如淡江大學驚聲紀念大樓）的幾何多邊形內部時，
+    // 立即以專屬 Earcon 音效與語音通知：「🏢 進入【驚聲紀念大樓】(1F)」，
+    // 並自動標記 this.isInsideBuilding = true，抑制戶外路口過度喧囂的播報。
+    // 當走出大樓多邊形時，即時提醒：「🚶 走出【驚聲紀念大樓】，回到【英專路】」。
+    // =========================================================================
+    const curBldg = data.current_building;
+    const curBldgId = curBldg ? curBldg.id : null;
+    const currentRoadName = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路" && data.road_info.street_name !== "1F") ? data.road_info.street_name : "周遭道路";
+
+    if (curBldgId !== this.activeInsideBuildingId) {
+      const prevBldgName = this.activeInsideBuildingName;
+      if (curBldgId) {
+        this.activeInsideBuildingId = curBldgId;
+        this.activeInsideBuildingName = curBldg.name || "建築物";
+        this.isInsideBuilding = true;
+        const bldgFloor = data.floor || "1F";
+        const msg = `🏢 進入【${this.activeInsideBuildingName}】(${bldgFloor})。`;
+        if (this.audio && this.audio.playBuildingEntrySound) {
+          this.audio.playBuildingEntrySound();
+        }
+        this.speak(msg, true);
+        if (this.recordTrace) {
+          this.recordTrace("BUILDING_INGRESS", {
+            building_id: curBldgId,
+            building_name: this.activeInsideBuildingName,
+            floor: bldgFloor
+          });
+        }
+      } else if (prevBldgName) {
+        this.activeInsideBuildingId = null;
+        this.activeInsideBuildingName = null;
+        this.isInsideBuilding = false;
+        const msg = `🚶 走出【${prevBldgName}】，回到【${currentRoadName}】。`;
+        if (this.audio && this.audio.playBuildingExitSound) {
+          this.audio.playBuildingExitSound();
+        }
+        this.speak(msg, true);
+        if (this.recordTrace) {
+          this.recordTrace("BUILDING_EGRESS", {
+            previous_building: prevBldgName,
+            current_road: currentRoadName
+          });
+        }
+      }
+    }
 
     // =========================================================================
     // 【1. 路口生命週期三態狀態機 (Junction Life-Cycle Machine) - 導航生命線第一優先】

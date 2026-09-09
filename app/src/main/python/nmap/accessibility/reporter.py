@@ -25,6 +25,8 @@ class NVDAReporter:
         self.last_vertical_level = "GROUND"
         self.last_floor = "1F"
         self.last_beacon_id = ""
+        self.last_building_id = None
+        self.last_building_name = ""
 
     def generate_concise_report(
         self,
@@ -74,6 +76,19 @@ class NVDAReporter:
             parts.append(VerticalLevelManager.format_transition_speech(self.last_vertical_level, vertical_level, altitude_m, floor_str=target_floor))
             self.last_vertical_level = vertical_level
             self.last_floor = target_floor
+
+        # 0.2 實體建築物多邊形進出提醒 (Point-in-Building)
+        cur_bldg = kwargs.get("current_building")
+        cur_bldg_id = cur_bldg.get("id") if cur_bldg else None
+        if cur_bldg_id != getattr(self, "last_building_id", None):
+            if cur_bldg:
+                b_name = cur_bldg.get("name", "建築物")
+                b_floor = floor or "1F"
+                parts.append(f"進入【{b_name}】({b_floor})。")
+            elif getattr(self, "last_building_name", ""):
+                parts.append(f"走出【{self.last_building_name}】，回到【{street_name}】。")
+            self.last_building_id = cur_bldg_id
+            self.last_building_name = cur_bldg.get("name", "") if cur_bldg else ""
 
         # 1. 道路變更提醒（走進新路時報讀）
         if street_name != self.last_street:

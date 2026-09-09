@@ -95,6 +95,7 @@ def build_status_dict(
     agent.current_ground_elevation = ground_elev if ground_elev is not None else 0.0
 
     road_info = agent.world_model.get_road_info(cur_lat, cur_lon, cur_head)
+    current_building = agent.world_model.get_containing_building(cur_lat, cur_lon)
     pois = agent.world_model.get_nearby_pois(cur_lat, cur_lon, cur_head, radius_m=150.0, target_floor=floor)
     buildings = agent.world_model.get_nearby_buildings(cur_lat, cur_lon, cur_head, radius_m=50.0)
     intersection = agent.intersection_analyzer.analyze(cur_lat, cur_lon, cur_head, agent.world_model, curr_road_info=road_info)
@@ -109,7 +110,8 @@ def build_status_dict(
         vertical_level=vertical_level,
         altitude_m=altitude_m,
         floor=floor,
-        beacon_anchor=beacon_anchor
+        beacon_anchor=beacon_anchor,
+        current_building=current_building
     )
     street_scene = street_analyzer.analyze_scene(cur_lat, cur_lon, cur_head, agent.world_model, road_info=road_info, pois=pois, buildings=buildings)
 
@@ -140,6 +142,7 @@ def build_status_dict(
             altitude_m=altitude_m,
             floor=floor,
             beacon_anchor=beacon_anchor,
+            current_building=current_building,
             ground_elevation_m=ground_elev if ground_elev is not None else 0.0
         )
     else:
@@ -159,6 +162,7 @@ def build_status_dict(
         "beacon_anchor": beacon_anchor,
         "step_count": agent.step_count,
         "road_info": road_info,
+        "current_building": current_building,
         "pois": pois,
         "buildings": buildings,
         "intersection": intersection,

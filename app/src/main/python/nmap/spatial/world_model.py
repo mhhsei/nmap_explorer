@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import networkx as nx
 import threading
 from nmap.spatial.grid_index import GridSpatialIndex
-from nmap.spatial.pure_geometry import find_closest_point_on_line, get_line_bounds
+from nmap.spatial.pure_geometry import find_closest_point_on_line, get_line_bounds, is_point_in_polygon
 from nmap.spatial.geometry import (
     haversine_distance,
     calculate_bearing,
@@ -995,6 +995,58 @@ class WorldModel:
                 return "校園步道"
             if p_tags.get("leisure") in ["park", "garden"] or "公園" in p_name:
                 return "公園步道"
+
+        return None
+
+    def get_containing_building(self, lat: float, lon: float, search_radius_m: float = 120.0) -> Optional[Dict[str, Any]]:
+        """
+        【檢測當前座標是否身處某棟建築物內部 (Point-in-Building Detection)】
+        
+        作用：
+        利用空間網格索引快速過濾周遭 120 公尺內的建築物多邊形，
+        再以純幾何射線法 (Ray Casting) 精確比對使用者是否身處建築地基輪廓之內。
+        
+        回傳：
+        若身處建築內部，回傳該大樓字典（含 name, building_type, levels, center_lat, center_lon 等）；
+        若人在室外道路/人行道上，回傳 None。
+        """
+        if not self.buildings and (not hasattr(self.building_rtree, 'grid') or not self.building_rtree.grid):
+            return None
+
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_deg_lon = search_radius_m / (111139.0 * cos_lat)
+        r_deg_lat = search_radius_m / 111139.0
+        bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
+
+        for item in self.building_rtree.intersection(bounds, objects=True):
+            b = item.object
+            geom = b.get("geometry", [])
+            if len(geom) >= 3:
+                if is_point_in_polygon(lat, lon, geom):
+                    b_name = b.get("name", "")
+                    tags = b.get("tags", {})
+                    # 若為無名建築但有名稱標籤，嘗試解析
+                    if not b_name or b_name in ("建築物", "無名大樓", "yes"):
+                        b_name = tags.get("name") or tags.get("name:zh") or tags.get("description") or ""
+                        if not b_name:
+                            street = tags.get("addr:street") or ""
+                            hn = tags.get("addr:housenumber") or ""
+                            if street and hn:
+                                b_name = f"{street}{hn}號 (大樓)"
+                            elif hn:
+                                b_name = f"{hn}號 (大樓)"
+                            else:
+                                b_name = "建築物"
+
+                    return {
+                        "id": b.get("id"),
+                        "name": b_name,
+                        "building_type": b.get("building_type", "yes"),
+                        "levels": b.get("levels", tags.get("building:levels", "")),
+                        "height": b.get("height", tags.get("height", "")),
+                        "center_lat": b.get("center_lat", lat),
+                        "center_lon": b.get("center_lon", lon)
+                    }
 
         return None
 
