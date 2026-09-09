@@ -47,7 +47,47 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.10 - 2026-09-09] - 第一階段無障礙與安全防護修復：路口日誌變數修正、消除障礙物死代碼、走廊聚類同側判定優化與 40 秒冷卻校正
+
+#### 🎯 修復問題與視障實戰意圖
+1. **修復路口狀態轉換日誌 4 處 `jDist` 變數未定義致命筆誤**：
+   - **實體痛點**：路口狀態轉換（PASSING, LEAVING, APPROACHING, IDLE）時，診斷追蹤日誌 `this.recordTrace` 誤寫為 `jDist`，但函式宣告名稱為 `juncDist`。一旦使用者開啟日誌追蹤，會在路口直接拋出 `ReferenceError: jDist is not defined` 導致前端 JavaScript 主執行緒中斷，讓視障者在踏入路口最危險時瞬間失去所有語音導航！
+   - **修復**：全面修正為合法作用域變數 `juncDist`。
+2. **清理步行模式 Priority 1 人行道安全防撞殘留死代碼**：
+   - **實體痛點**：先前版本在步行模式 L2854 重複保留了一整段與頂部 L2676 相同的障礙物檢查。因為該區段位於 1800ms 防剪音節流閥之後，極易讓後續維護者誤解「步行障礙物會被節流閥靜音」。
+   - **修復**：清理 L2854 的重複死代碼，並在頂部 L2676 確立 Priority 1（變電箱、消防栓、施工窄頸 $\le 8.0$m）在進入 1800ms 節流閥之前絕對最高優先權執行的鐵律。
+3. **優化緊鄰相鄰店家同側聚類打包判定 (POI Cluster Grouping)**：
+   - **實體痛點**：先前同側判斷使用 `b1 * b2 > 0`（符號二分）。若一家店在 $+15^\circ$（右前方）、另一家在 $-5^\circ$（左前方），角度差只有 $20^\circ \le 28^\circ$，同在行進走廊正前方，卻因一正一負被判定為「不同側」，導致前方店家無法合併，被拆成兩句碎裂播報，大幅增加盲杖行進時的聽覺負擔。
+   - **修復**：計算兩店家在真北坐標系下的最小角度差（考慮 $180^\circ$ 環繞），並擴充同側與正前方同走廊判定（`isSameSideOrFront`：同號同側、或兩者皆在正前方 $|b| \le 25^\circ$ 視野、或相同鐘點），確保同走廊相鄰店家完美合併為單一精準語音。
+4. **走廊店家冷卻時間嚴格校正為 40 秒 (40000ms)**：
+   - **實體痛點**：原先走廊店家播報冷卻設定為 35 秒（35000ms），違反 GEMINI.md Section 1.3 的 40 秒防重複冷卻規範。
+   - **修復**：全面將雙側打包、聚類打包與單店走廊冷卻時間校正為 `40000ms`（40秒）。
+5. **門牌號碼提取增設 `address` 正則 Fallback**：
+   - **實體痛點**：圖資中若未將門牌號單獨拆至 `housenumber` 欄位，店家門牌定錨無法顯示。
+   - **修復**：若 `housenumber` 為空，自動由 `address` 正則提取門牌（如「民生路205號」->「(205號)」）。
+6. **路口接近冷卻時間校正**：
+   - 將 L3012 路口接近防抖冷卻從過長的 65 秒調降為規範標準的 45 秒（`45000ms`）。
+
+#### ✅ 修復檔案清單
+| 檔案 | 修改行數/區段 | 說明 |
+|------|--------------|------|
+| `app/src/main/python/web/app.js` | L2965, L2995, L3023, L3062 | 修正 4 處 `jDist` 為 `juncDist` |
+| `app/src/main/python/web/app.js` | L2852~L2868 | 清理重複殘留死代碼，確保 Priority 1 唯一最高執行 |
+| `app/src/main/python/web/app.js` | L3116~L3125 | `formatPoiWithDoor` 增設 address 正則 fallback |
+| `app/src/main/python/web/app.js` | L3183, L3210, L3253 | 走廊 POI 冷卻時間由 35s 調為 40s (40000ms) |
+| `app/src/main/python/web/app.js` | L3205~L3226 | 聚類打包支援正前方同走廊 `isSameSideOrFront` 判定 |
+| `app/src/main/python/web/app.js` | L3012 | 路口接近防抖冷卻調為 45 秒 (45000ms) |
+| `app/src/main/python/test_status_pills_accessibility.py` | 全文末端 | 新增 4 項無障礙與空間回歸測試 |
+| `app/build.gradle.kts` | L15-16 | 版本號升級至 1.0.17.10 (VersionCode 55) |
+
+#### 🧪 測試與驗證閉環
+- `python -m unittest app/src/main/python/test_status_pills_accessibility.py`：10 項無障礙與空間回歸測試 100% 通過。
+- `python -m unittest discover -s app/src/main/python -p 'test_*.py'`：全套 54 項單元測試 100% 通過。
+
+---
+
 ### [v1.0.17.9 - 2026-09-09] - 修復焦點鎖定保護未呼叫排清方法的 Bug
+
 
 #### 🐛 Bug 根因
 - **問題**：`app.js` L1604 呼叫 `this.scheduleStreamFlush()`，但此方法根本不存在於類別中。

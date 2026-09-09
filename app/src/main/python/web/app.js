@@ -2849,23 +2849,9 @@ class NmapWebApp {
     // 【模式 B：步行模式 (Pedestrian Mode) - 無障礙安全第一原則】
     // =========================================================================
 
-    // 0.1 【Scheme 3 人行道安全防撞雷達 (變電箱/消防栓/施工窄頸)】- 第一優先碰撞警戒！
-    // 【安全規範】：下限必須為 0.0 公尺！絕不可在即將撞上的最後 1.5 公尺內突然安靜。
-    if (data.sidewalk_hazards && data.sidewalk_hazards.length > 0) {
-      const h = data.sidewalk_hazards[0];
-      const lastHzTime = this.announcedHazardCooldown.get(h.id) || 0;
-      if (h.distance_m <= 8.0 && h.distance_m >= 0.0 && (now - lastHzTime > 25000)) {
-        this.announcedHazardCooldown.set(h.id, now);
-        const urgentPrompt = h.distance_m < 1.5 ? `⚠️ 注意正前方 ${h.name}，請立即停步探測！` : h.speech_prompt;
-        this.announceObject({
-          name: h.name,
-          category: "warning",
-          distance_m: h.distance_m,
-          relative_bearing_deg: (h.lateral_offset_m || 0) > 0 ? 15 : -15
-        }, urgentPrompt, true);
-        return;
-      }
-    }
+    // 0.1 【Scheme 3 人行道安全防撞雷達 (Priority 1)】
+    // 【生命安全第一鐵律】：本項目具備絕對最高發話權，已於上方 L2673~L2690 在節流閥之前
+    // 優先執行並以緊急插播方式播報，此處無需且嚴禁二次執行。
 
     // 0.2 【Scheme 1 交通部視障有聲號誌 (APS)】- 實體號誌優先導引
     // 【安全規範】：下限延伸至 0.0 公尺，走到號誌桿旁時提示已抵達
@@ -2962,7 +2948,7 @@ class NmapWebApp {
                 from: prevState,
                 to: "PASSING",
                 junction: juncName,
-                distance_m: Math.round(jDist * 10) / 10,
+                distance_m: Math.round(juncDist * 10) / 10,
                 trigger: isPassingByInflexion ? "INFLECTION" : "GEOMETRY"
               });
             }
@@ -2992,7 +2978,7 @@ class NmapWebApp {
               from: prevState,
               to: "LEAVING",
               junction: juncName,
-              distance_m: Math.round(jDist * 10) / 10,
+              distance_m: Math.round(juncDist * 10) / 10,
               current_road: currentRoad
             });
           }
@@ -3009,7 +2995,7 @@ class NmapWebApp {
           const curSpeed = (data.speed_mps !== null && data.speed_mps !== undefined) ? data.speed_mps : 1.0;
           const isUserMoving = curSpeed >= 0.35;
 
-          if (this.currentJunctionState !== "APPROACHING" && this.currentJunctionState !== "PASSING" && this.currentJunctionState !== "LEAVING" && (now - lastAppTime > 65000) && globalAppGap >= 6000 && isUserMoving) {
+          if (this.currentJunctionState !== "APPROACHING" && this.currentJunctionState !== "PASSING" && this.currentJunctionState !== "LEAVING" && (now - lastAppTime > 45000) && globalAppGap >= 6000 && isUserMoving) {
             const prevState = this.currentJunctionState;
             this.currentJunctionState = "APPROACHING";
             this.activeJunctionTargetName = juncName;
@@ -3020,7 +3006,7 @@ class NmapWebApp {
                 from: prevState,
                 to: "APPROACHING",
                 junction: juncName,
-                distance_m: Math.round(jDist * 10) / 10,
+                distance_m: Math.round(juncDist * 10) / 10,
                 has_signal: isSignalized,
                 has_aps: hasAps
               });
@@ -3059,7 +3045,7 @@ class NmapWebApp {
             this.recordTrace("JUNCTION_STATE_TRANSITION", {
               from: prevState,
               to: "IDLE",
-              distance_m: Math.round(jDist * 10) / 10
+              distance_m: Math.round(juncDist * 10) / 10
             });
           }
         }
@@ -3132,6 +3118,12 @@ class NmapWebApp {
         if (hn) {
           doorTag = hn.endsWith("號") ? ` (${hn})` : ` (${hn}號)`;
         }
+      } else if (p.address) {
+        // Fallback：若 housenumber 未單獨拆出，自完整地址提取門牌（如「民生路205號」->「205號」）
+        const match = String(p.address).match(/(\d+(?:之\d+)?號)/);
+        if (match) {
+          doorTag = ` (${match[1]})`;
+        }
       }
       return `${cleanedName}${floorTag}${doorTag}`;
     };
@@ -3188,7 +3180,7 @@ class NmapWebApp {
             const lastLeft = this.announcedPoiCooldown.get(leftKey) || 0;
             const lastRight = this.announcedPoiCooldown.get(rightKey) || 0;
 
-            if (now - lastLeft > 35000 && now - lastRight > 35000) {
+            if (now - lastLeft > 40000 && now - lastRight > 40000) {
               this.announcedPoiCooldown.set(leftKey, now);
               this.announcedPoiCooldown.set(rightKey, now);
               this.lastPoiBroadcastTime = now;
@@ -3203,11 +3195,11 @@ class NmapWebApp {
           }
 
           // 2. 同側/緊鄰相鄰店家合併打包 (Cluster Grouping):
-          // 若同一側有 2~3 家店位於相近方向 (角度差 <= 28° 或相同鐘點) 且距離差 <= 6.0m
+          // 若同一側或正前方走廊有 2~3 家店位於相近方向 (角度差 <= 28° 或相同鐘點) 且距離差 <= 6.0m
           if (!didBroadcast) {
             const unannouncedPois = corridorPois.filter(p => {
               const k = p.id || (p.lat && p.lon ? `${this.cleanPoiName(p.name)}_${p.lat.toFixed(4)}_${p.lon.toFixed(4)}` : this.cleanPoiName(p.name));
-              return (now - (this.announcedPoiCooldown.get(k) || 0) > 35000);
+              return (now - (this.announcedPoiCooldown.get(k) || 0) > 40000);
             });
 
             if (unannouncedPois.length >= 2) {
@@ -3215,12 +3207,20 @@ class NmapWebApp {
               const cluster = unannouncedPois.filter(p => {
                 const b1 = p1.relative_bearing_deg || 0;
                 const b2 = p.relative_bearing_deg || 0;
-                // 修正 H-05：同側檢查（GEMINI.md Section 1.3「緊鄰同側店家聚類打包」）
-                // 兩店必須同在右側 (bearing > 0) 或同在左側 (bearing < 0)，或均在正前方 (<= 8°)
-                const isSameSide = (b1 * b2 > 0) || (Math.abs(b1) <= 8 && Math.abs(b2) <= 8);
-                if (!isSameSide) return false;
+                
+                // 計算兩店家在行進真北坐標系下的最小角度差 (考慮 180° 環繞)
+                let angleDiff = Math.abs(b2 - b1);
+                if (angleDiff > 180) angleDiff = 360 - angleDiff;
 
-                const angleDiff = Math.abs(b2 - b1);
+                // 同側或前方同走廊判定 (GEMINI.md Section 1.3)：
+                // A. 同在右側 (b1 > 0 && b2 > 0) 或 同在左側 (b1 < 0 && b2 < 0)
+                // B. 或兩者都在正前方走廊視野內 (|b1| <= 25° 且 |b2| <= 25°)
+                // C. 或兩者的鐘點走向相同 (如皆為 12點鐘 或 皆為 1點鐘)
+                const isSameSideOrFront = (b1 * b2 > 0) || 
+                                          (Math.abs(b1) <= 25 && Math.abs(b2) <= 25) || 
+                                          (p.clock_position && p.clock_position === p1.clock_position);
+                if (!isSameSideOrFront) return false;
+
                 const distDiff = Math.abs(p.distance_m - p1.distance_m);
                 return (angleDiff <= 28 || (p.clock_position && p.clock_position === p1.clock_position)) && distDiff <= 6.0;
               });
@@ -3250,7 +3250,7 @@ class NmapWebApp {
             for (const poi of candidates) {
               const poiKey = poi.id || (poi.lat && poi.lon ? `${this.cleanPoiName(poi.name)}_${poi.lat.toFixed(4)}_${poi.lon.toFixed(4)}` : this.cleanPoiName(poi.name));
               const lastTime = this.announcedPoiCooldown.get(poiKey) || 0;
-              if (now - lastTime > 35000) {
+              if (now - lastTime > 40000) {
                 this.announcedPoiCooldown.set(poiKey, now);
                 this.lastPoiBroadcastTime = now;
 

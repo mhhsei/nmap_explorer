@@ -70,6 +70,33 @@ class TestStatusPillsAccessibility(unittest.TestCase):
         """驗證水平左右滑動保護：防止 TalkBack 換項手勢被誤判為垂直滑桿手勢"""
         self.assertIn("Math.abs(dx) > Math.abs(dy)", self.js_content, "必須過濾水平換項手勢，絕不干擾 TalkBack 左右滑動")
 
+    def test_no_undefined_jdist_in_junction_state_machine(self):
+        """驗證路口狀態機中已將 4 處筆誤 jDist 改為合法變數 juncDist，徹底消滅 ReferenceError"""
+        # 步行模式下的路口狀態機中，不得在無宣告 jDist 的區塊引用 jDist
+        matches = re.findall(r'JUNCTION_STATE_TRANSITION.*?distance_m:\s*Math\.round\((\w+)\s*\*\s*10\)', self.js_content, re.DOTALL)
+        self.assertTrue(len(matches) >= 3, "必須找到至少 3 處路口狀態轉換日誌記錄")
+        for var_name in matches:
+            self.assertEqual(var_name, "juncDist", f"路口狀態日誌中距離變數必須為 juncDist 而非 {var_name}")
+
+    def test_hazard_priority_before_throttle(self):
+        """驗證 Priority 1 人行道障礙物在 1800ms 防剪音節流閥之前執行，確保生命安全絕對最高優先"""
+        hazard_idx = self.js_content.find("data.sidewalk_hazards && data.sidewalk_hazards.length > 0")
+        throttle_idx = self.js_content.find("if (now - (this.lastSpeechTime || 0) < 1800) return;")
+        self.assertNotEqual(hazard_idx, -1, "必須包含人行道障礙物檢查")
+        self.assertNotEqual(throttle_idx, -1, "必須包含 1800ms 防剪音節流閥")
+        self.assertLess(hazard_idx, throttle_idx, "Priority 1 人行道障礙物檢查必須嚴格位於 1800ms 節流閥之前")
+
+    def test_poi_cluster_same_side_and_front_corridor(self):
+        """驗證同側與正前方走廊店家聚類打包邏輯，不單純依賴符號二分，允許正前方相鄰店家合併"""
+        self.assertIn("isSameSideOrFront", self.js_content, "必須採用包含正前方同走廊的聚類判定")
+        self.assertIn("Math.abs(b1) <= 25 && Math.abs(b2) <= 25", self.js_content, "必須支援正前方走廊視野相鄰打包")
+
+    def test_corridor_poi_cooldown_40s(self):
+        """驗證走廊店家播報冷卻時間依據 GEMINI.md 規範嚴格設定為 40 秒 (40000ms)"""
+        self.assertIn("now - lastLeft > 40000 && now - lastRight > 40000", self.js_content, "雙側走廊冷卻必須為 40000ms")
+        self.assertIn("now - lastTime > 40000", self.js_content, "單店走廊冷卻必須為 40000ms")
+
 
 if __name__ == "__main__":
     unittest.main()
+
