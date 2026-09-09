@@ -2469,20 +2469,42 @@ class NmapWebApp {
         const headingDeg = (data.heading_deg !== undefined && data.heading_deg !== null) ? data.heading_deg : (curHead || 0);
         const dirStr = this.getCardinalDirection(headingDeg);
         const exactDeg = Math.round(((headingDeg % 360.0) + 360.0) % 360.0);
-        // 修正 M-01：省話原則（GEMINI.md Section 1.2），口播移除長達 4~5 秒的經緯度小數點，達成 1 秒俐落播報
-        const txt = doorStr 
-          ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。`
-          : `走在【${street}】。面向${dirStr} (${exactDeg}°)。`;
+        // 【視障友善核心感知：判定使用者是否身處實體建築物內部】
+        // 國中生白話解釋：如果視障朋友走進了超商、商場或大樓，點擊「目前位置」時，
+        // 系統要像一個貼心的嚮導，直接告訴他「你在這棟大樓裡面」，而不是傻傻地報外面的馬路或人行道！
+        // 但如果人在室外道路或騎樓，完全維持原本的「走在【某某路】」播報，不造成任何干擾。
+        const bldg = data.current_building;
+        const isInside = !!(bldg && bldg.name && bldg.name.trim());
+        
+        let txt = "";
+        if (isInside) {
+          const bldgName = bldg.name.trim();
+          const floorStr = (data.floor && data.floor !== "1F") ? `(${data.floor}) ` : (bldg.levels ? `(1F) ` : "");
+          const nearRoad = (street && street !== "未知道路" && street !== "目前道路") ? `，鄰近【${street}】` : "";
+          const doorInfo = doorStr ? `，${doorStr}` : "";
+          txt = `在【${bldgName}】${floorStr}內${nearRoad}${doorInfo}。面向${dirStr} (${exactDeg}°)。`;
+        } else {
+          // 室外道路、人行步道或騎樓：完全維持原有行為
+          txt = doorStr 
+            ? `走在【${street}】，${doorStr}。面向${dirStr} (${exactDeg}°)。`
+            : `走在【${street}】。面向${dirStr} (${exactDeg}°)。`;
+        }
 
         const isEarconOn = !this.settings || this.settings.earconEnabled !== false;
         if (isEarconOn && this.audio) {
-          this.audio.playRoadTone(0, -0.8);
+          if (isInside && this.audio.playBuildingEntrySound) {
+            // 在室內建築點擊時，播放輕快清脆的建築物空間音階
+            this.audio.playBuildingEntrySound();
+          } else {
+            this.audio.playRoadTone(0, -0.8);
+          }
         } else if (this.audio) {
           this.audio.playSpatialTone(480, 'triangle', 0, 0, -0.8, 0.12);
         }
         setTimeout(() => {
           this.updateLiveLog(`【目前位置】\n${txt}`, false, true);
         }, isEarconOn ? 180 : 0);
+
       })
       .catch(() => {
         this.updateLiveLog("【目前位置】無法取得最新資訊。", true, true);
@@ -3789,13 +3811,19 @@ class NmapWebApp {
       const road = data.road_info ? data.road_info.street_name : "";
       const door = (data.road_info && data.road_info.door_numbers) ? `，${data.road_info.door_numbers}` : "";
       const head = (data.heading_deg !== undefined && data.heading_deg !== null) ? ` (朝向 ${Math.round(data.heading_deg)}°)` : "";
-      if (road && road !== "未知道路") {
+      const bldg = data.current_building;
+      if (bldg && bldg.name && bldg.name.trim()) {
+        const floorStr = (data.floor && data.floor !== "1F") ? `(${data.floor})` : (bldg.levels ? `(1F)` : "");
+        const nearRoad = (road && road !== "未知道路" && road !== "目前道路") ? `，鄰近${road}` : "";
+        locEl.textContent = `🧭 目前位置：【${bldg.name.trim()}】${floorStr}${nearRoad}${door}${head}`;
+      } else if (road && road !== "未知道路") {
         locEl.textContent = `🧭 目前位置：${road}${door}${head}`;
       } else if (data.location_label && !data.location_label.includes("未初始化")) {
         locEl.textContent = `🧭 目前位置：${data.location_label}${head}`;
       }
     }
   }
+
 
   // 🎯 執行設施動作 (3D 導引 / 查詳情 / Google 導航 / 朗讀方位)
   executePoiAction(poi, actionId, cardElement = null) {

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 單元測試：建築物多邊形判定與進出狀態機 (test_building_containment.py)
 
@@ -20,6 +20,11 @@ from nmap.accessibility.reporter import NVDAReporter
 from nmap.spatial.grid_index import GridSpatialIndex
 
 
+class MockStreetSceneEngine:
+    def analyze_scene(self, lat, lon, heading, wm, road_info=None):
+        return {"full_description": "街景平整", "scene_summary": "街景"}
+
+
 class MockAgent:
     """模擬導航 Agent 用於測試報讀器"""
     def __init__(self, lat=25.0335, lon=121.5645, heading=0.0, world_model=None):
@@ -30,6 +35,12 @@ class MockAgent:
         self.world_model = world_model or WorldModel()
         from nmap.spatial.intersection import IntersectionAnalyzer
         self.intersection_analyzer = IntersectionAnalyzer()
+        self.street_scene_engine = MockStreetSceneEngine()
+        self.location_label = "人行步道"
+
+    def get_navigation_status(self):
+        return ""
+
 
 
 class TestPointInPolygon(unittest.TestCase):
@@ -218,6 +229,37 @@ class TestReporterBuildingSpeech(unittest.TestCase):
         self.assertIn("走出【台北 101 大樓】", report_exit)
         self.assertIn("回到【信義路五段】", report_exit)
 
+    def test_full_report_current_location_building(self):
+        """驗證【目前位置】在建築內與室外/騎樓的精確區分"""
+        bldg_101 = {
+            "id": "bldg_101",
+            "name": "台北 101 大樓",
+            "levels": 101,
+            "building_type": "commercial"
+        }
+        road_walkway = {"street_name": "人行步道"}
+
+        # 情況 A：人在建築物內（點擊目前位置）
+        full_report_inside = self.reporter.generate_full_report(
+            self.agent,
+            road_info=road_walkway,
+            current_building=bldg_101,
+            floor="1F"
+        )
+        self.assertIn("【目前位置】在【台北 101 大樓】(1F) 內，鄰近【人行步道】", full_report_inside)
+
+        # 情況 B：人在室外人行步道或騎樓（current_building 為 None）
+        full_report_outside = self.reporter.generate_full_report(
+            self.agent,
+            road_info=road_walkway,
+            current_building=None,
+            floor="1F"
+        )
+        # 室外或騎樓時不受影響，維持原有位置標籤
+        self.assertIn(f"【目前位置】{self.agent.location_label}", full_report_outside)
+        self.assertNotIn("在【台北 101 大樓】", full_report_outside)
+
 
 if __name__ == "__main__":
     unittest.main()
+

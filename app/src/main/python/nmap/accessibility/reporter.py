@@ -228,7 +228,15 @@ class NVDAReporter:
             lines.append("")
 
         # Section 1: Current State
-        lines.append(f"【目前位置】{agent.location_label}")
+        cur_bldg = kwargs.get("current_building")
+        if cur_bldg and cur_bldg.get("name"):
+            b_name = cur_bldg.get("name")
+            target_fl = floor or "1F"
+            st_name = road_info.get("street_name", "") if road_info else ""
+            near_str = f"，鄰近【{st_name}】" if st_name and st_name != "未知道路" else ""
+            lines.append(f"【目前位置】在【{b_name}】({target_fl}) 內{near_str}")
+        else:
+            lines.append(f"【目前位置】{agent.location_label}")
         lines.append(f"• GPS座標：({round(agent.lat, 5)}, {round(agent.lon, 5)})")
         lines.append(f"• 朝向：面向{bearing_to_cardinal(agent.heading_deg)} (方位角 {int(agent.heading_deg)}°)")
 
