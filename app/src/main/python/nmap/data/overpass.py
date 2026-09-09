@@ -7,6 +7,7 @@ OpenStreetMap 與 Overpass API 即時空間圖資下載客戶端 (Overpass Clien
 3. 將 XML/JSON 原始資料解析為結構化地圖元素（道路網、POI、過馬路設施、建物拓撲）。
 """
 import requests
+import re
 from typing import Optional, Dict, Any, List, Tuple
 from nmap.data.cache import CacheManager
 from nmap.spatial.geometry import haversine_distance
@@ -360,16 +361,83 @@ class OverpassClient:
                 avg_lon = sum(p[1] for p in geom) / len(geom)
 
                 if "highway" in tags:
+                    hw_type = tags["highway"]
+                    fw_type = tags.get("footway", "")
+                    srv_type = tags.get("service", "")
+                    surface_raw = tags.get("surface", "unknown")
+
+                    # 1. 提取真實道路名稱（消除 1F、2F、B1 等室內樓層標籤被誤認作路名的臭蟲）
+                    raw_name = tags.get("name") or tags.get("name:zh") or tags.get("alt_name") or ""
+                    ref_tag = tags.get("ref", "")
+                    
+                    # 判斷是否為樓層標籤 (例如 "1F", "2F", "B1", "level 1")
+                    is_raw_floor = bool(re.match(r'^(?:level\s*)?[Bb\d]+[Ff樓層]?$', str(raw_name).strip(), re.IGNORECASE))
+                    if is_raw_floor:
+                        raw_name = ""
+                    
+                    is_ref_floor = bool(re.match(r'^(?:level\s*)?[Bb\d]+[Ff樓層]?$', str(ref_tag).strip(), re.IGNORECASE))
+                    if is_ref_floor:
+                        ref_tag = ""
+
+                    final_road_name = raw_name or (ref_tag if (ref_tag and not is_ref_floor) else "")
+
+                    # 2. 若無正式道路名稱，依據 OSM 道路分類 DNA 賦予空間有意義的實體名稱
+                    if not final_road_name or final_road_name in ["無名路", "未命名道路", "1F"]:
+                        if hw_type == "steps":
+                            final_road_name = "人行階梯"
+                        elif hw_type == "footway":
+                            if fw_type == "sidewalk":
+                                final_road_name = "路側人行道"
+                            elif fw_type == "crossing":
+                                final_road_name = "行人穿越道"
+                            else:
+                                final_road_name = "人行步道"
+                        elif hw_type == "pedestrian":
+                            final_road_name = "人行專用道"
+                        elif hw_type == "path":
+                            final_road_name = "人行小徑"
+                        elif hw_type == "corridor" or tags.get("indoor") == "corridor":
+                            final_road_name = "穿堂連通道"
+                        elif hw_type == "cycleway":
+                            final_road_name = "人車分道自行車道"
+                        elif hw_type == "service":
+                            if srv_type == "alley":
+                                final_road_name = "無名巷弄"
+                            elif srv_type in ["driveway", "parking_aisle"]:
+                                final_road_name = "內部通路"
+                            else:
+                                final_road_name = "巷弄通道"
+                        elif hw_type in ["living_street", "residential"]:
+                            final_road_name = "無名巷弄"
+                        elif hw_type in ["track"]:
+                            final_road_name = "泥石小徑"
+                        else:
+                            final_road_name = "人行步道"
+
+                    # 3. 轉譯地面鋪面材質（白手杖的觸覺情報）
+                    surface_map = {
+                        "paving_stones": "紅磚/連鎖磚鋪面",
+                        "asphalt": "柏油路面",
+                        "concrete": "水泥路面",
+                        "paved": "硬質鋪面",
+                        "unpaved": "泥土碎石路面",
+                        "gravel": "碎石鋪面",
+                        "tiles": "地磚鋪面",
+                        "wood": "木棧道鋪面"
+                    }
+                    friendly_surface = surface_map.get(surface_raw, surface_raw if surface_raw != "unknown" else "未知路面")
+
                     roads.append({
                         "id": way_id,
-                        "name": tags.get("name") or tags.get("name:zh") or tags.get("alt_name") or tags.get("ref") or "無名路",
-                        "highway_type": tags["highway"],
+                        "name": final_road_name,
+                        "highway_type": hw_type,
                         "geometry": geom,
                         "node_ids": node_ids,
                         "sidewalk": tags.get("sidewalk", "none"),
                         "lanes": tags.get("lanes", "1"),
                         "oneway": tags.get("oneway", "no"),
-                        "surface": tags.get("surface", "unknown"),
+                        "surface": friendly_surface,
+                        "raw_surface": surface_raw,
                         "tags": tags
                     })
 

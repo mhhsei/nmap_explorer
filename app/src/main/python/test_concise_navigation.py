@@ -10,6 +10,7 @@ from nmap.spatial.geometry import (
 )
 from nmap.spatial.intersection import IntersectionAnalyzer
 from nmap.accessibility.reporter import NVDAReporter
+from nmap.spatial.world_model import WorldModel
 
 class MockWorldModel:
     def __init__(self):
@@ -438,6 +439,102 @@ class TestConciseNavigation(unittest.TestCase):
         analysis = analyzer.analyze(25.1800, 121.4500, 0.0, wm)
         self.assertIn("surrounding_junctions", analysis)
         self.assertIsNotNone(analysis["surrounding_junctions"])
+
+    def test_overpass_road_parsing_and_floor_tag_elimination(self):
+        """驗證 overpass.py 道路解析成功濾除 1F/B1 樓層標籤並正確提取人行步道與連鎖磚鋪面"""
+        from nmap.data.overpass import OverpassClient
+        client = OverpassClient()
+
+        raw_data = {
+            "elements": [
+                {"type": "node", "id": 101, "lat": 25.1766, "lon": 121.4503, "tags": {}},
+                {"type": "node", "id": 102, "lat": 25.1767, "lon": 121.4504, "tags": {}},
+                # 測試 1：way 標記了 ref=1F，應自動過濾 1F 並識別為人行步道
+                {
+                    "type": "way",
+                    "id": 201,
+                    "nodes": [101, 102],
+                    "tags": {"highway": "footway", "ref": "1F", "surface": "paving_stones"}
+                },
+                # 測試 2：路側人行道
+                {
+                    "type": "way",
+                    "id": 202,
+                    "nodes": [101, 102],
+                    "tags": {"highway": "footway", "footway": "sidewalk", "surface": "asphalt"}
+                }
+            ]
+        }
+
+        parsed = client.parse_elements(raw_data, 25.1766, 121.4503)
+        roads = parsed["roads"]
+        self.assertEqual(len(roads), 2)
+
+        # 斷言 1：絕不可出現 "1F" 作為路名
+        self.assertNotEqual(roads[0]["name"], "1F")
+        self.assertEqual(roads[0]["name"], "人行步道")
+        self.assertEqual(roads[0]["surface"], "紅磚/連鎖磚鋪面")
+
+        # 斷言 2：路側人行道
+        self.assertEqual(roads[1]["name"], "路側人行道")
+        self.assertEqual(roads[1]["surface"], "柏油路面")
+
+    def test_campus_context_detection_and_road_info(self):
+        """驗證 world_model.py 在大學校園周邊時，能自動將步道命名為校園步道"""
+        wm = WorldModel()
+        # 建立淡江大學驚聲大樓建築物
+        wm.building_rtree.insert(1, (121.4500, 25.1760, 121.4506, 25.1766), obj={
+            "id": 999,
+            "name": "淡江大學驚聲紀念大樓",
+            "center_lat": 25.1763,
+            "center_lon": 121.4503
+        })
+
+        # 建立一條無名步道
+        wm.roads = [{
+            "id": 301,
+            "name": "人行步道",
+            "highway_type": "footway",
+            "geometry": [(25.1763, 121.4502), (25.1763, 121.4504)],
+            "sidewalk": "none",
+            "surface": "紅磚/連鎖磚鋪面"
+        }]
+        bounds = (121.4502, 25.1763, 121.4504, 25.1763)
+        wm.road_rtree.insert(1, bounds, obj=wm.roads[0])
+
+        info = wm.get_road_info(25.1763, 121.4503, 0.0)
+        # 斷言：身在淡江大學周圍，步道自動晉級為「淡大校園步道」或「校園步道」
+        self.assertIn("校園步道", info["street_name"])
+        self.assertNotEqual(info["street_name"], "無名路")
+        self.assertNotEqual(info["street_name"], "1F")
+
+    def test_intersection_stutter_elimination(self):
+        """驗證 intersection.py 當路口沒有具名分支時，絕不出現口吃『接近路口，路口』"""
+        wm = WorldModel()
+        analyzer = IntersectionAnalyzer()
+
+        j_lat, j_lon = 25.1800, 121.4500
+        # 建立無名交叉節點
+        wm.road_graph.add_node("n1", lat=j_lat, lon=j_lon)
+        wm.road_graph.add_node("n2", lat=j_lat + 0.0003, lon=j_lon)
+        wm.road_graph.add_node("n3", lat=j_lat, lon=j_lon + 0.0003)
+        wm.road_graph.add_node("n4", lat=j_lat - 0.0003, lon=j_lon)
+
+        # 邊緣皆為無名巷弄
+        wm.road_graph.add_edge("n1", "n2", name="無名巷弄")
+        wm.road_graph.add_edge("n1", "n3", name="無名巷弄")
+        wm.road_graph.add_edge("n1", "n4", name="無名巷弄")
+
+        wm.junction_rtree.insert(1, (j_lon, j_lat, j_lon, j_lat), obj=("n1", 3, j_lat, j_lon, {}))
+
+        user_lat = j_lat - 0.0001
+        user_lon = j_lon
+        res = analyzer.analyze(user_lat, user_lon, 0.0, wm, max_distance_m=30.0)
+
+        # 斷言：絕不可出現「接近路口，路口」疊字口吃
+        approaching = res["concise_approaching_prompt"]
+        self.assertNotIn("接近路口，路口", approaching)
+        self.assertIn("前方交會", approaching)
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestConciseNavigation)

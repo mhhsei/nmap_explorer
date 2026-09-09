@@ -52,6 +52,10 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     private var lastTtsDirectTimeMs: Long = 0L
     private var lastSpeechPriority: Int = 4
 
+    // ChaQuopy Python 模組單例快取（消除高頻垃圾回收導致 FinalizerWatchdogDaemon 10 秒逾時崩潰）
+    private var cachedServerModule: com.chaquo.python.PyObject? = null
+    private var cachedJsonModule: com.chaquo.python.PyObject? = null
+
     init {
         try {
             // 初始化 Android 原生 TTS 語音引擎（優先設定台灣中文，並提升語速至 1.25x 達成極速響應）
@@ -59,12 +63,14 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 if (status == TextToSpeech.SUCCESS) {
                     val result = tts?.setLanguage(Locale.TAIWAN)
                     if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        Log.w(tag, "Locale.TAIWAN not supported, fallback to CHINESE")
                         tts?.setLanguage(Locale.CHINESE)
                     }
-                    tts?.setSpeechRate(1.25f) // 俐落敏捷，縮短單字唸讀時間
-                    tts?.setPitch(1.02f)
+                    tts?.setSpeechRate(1.25f)
                     isTtsReady = true
-                    Log.i(tag, "Google/Android Native TextToSpeech initialized successfully.")
+                    Log.i(tag, "TextToSpeech initialized successfully")
+                } else {
+                    Log.e(tag, "TextToSpeech initialization failed with status: $status")
                 }
             }
         } catch (e: Exception) {
@@ -90,18 +96,36 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     ): String {
         return try {
             val py = com.chaquo.python.Python.getInstance()
-            val serverMod = py.getModule("server")
-            val beaconDict = if (!beaconAnchorJson.isNullOrEmpty() && beaconAnchorJson != "null") {
-                val pyJson = py.getModule("json")
-                pyJson.callAttr("loads", beaconAnchorJson)
-            } else null
+            if (cachedServerModule == null) {
+                cachedServerModule = py.getModule("server")
+            }
+            if (cachedJsonModule == null) {
+                cachedJsonModule = py.getModule("json")
+            }
+
+            var beaconDict: com.chaquo.python.PyObject? = null
+            if (!beaconAnchorJson.isNullOrEmpty() && beaconAnchorJson != "null") {
+                beaconDict = cachedJsonModule?.callAttr("loads", beaconAnchorJson)
+            }
 
             val safeFloor = if (floor.isNullOrEmpty()) "1F" else floor
-            val result = serverMod.callAttr(
+            val result = cachedServerModule?.callAttr(
                 "update_gps_direct",
                 lat, lon, heading, accuracy, verticalLevel, altitudeM, safeFloor, beaconDict
             )
-            result.toString()
+
+            // 即時在當前執行緒釋放 JNI 原生指標，防止留給 GC FinalizerWatchdogDaemon 奪取 GIL 逾時閃退
+            beaconDict?.close()
+
+            if (result != null) {
+                try {
+                    result.toString()
+                } finally {
+                    result.close()
+                }
+            } else {
+                ""
+            }
         } catch (e: Throwable) {
             Log.e(tag, "Direct IPC updateGpsDirect error: ${e.message}")
             ""

@@ -47,6 +47,39 @@
 
 ## 📝 變更日誌 (Changelog)
 
+### [v1.0.17.13 - 2026-09-09] - 真機街頭實測診斷重大修復：ChaQuopy Finalizer 崩潰阻斷、OSM 步道標籤基因解構（消除 1F 假路名與無名路痛點）、校園/公園場域定錨、消滅路口口吃與戶外爬坡樓層鎖定
+
+#### 🎯 修復問題與視障實戰意圖
+1. **修復 ChaQuopy JNI 物件洩漏導致 10 秒逾時閃退 (`FinalizerWatchdogDaemon`)**：
+   - **實體痛點**：App 在真機測試期間隨機被 Android 系統強制處死閃退。
+   - **根本原因**：`LocationSensorBridge.kt` 與 `WebAppInterface.kt` 每 500ms 高頻調用 `Python.getInstance().getModule(...)` 與 `callAttr`，生成大量 Java `PyObject`。垃圾回收時 `PyObject.finalize()` 在背景 Finalizer 執行緒奪取 Python GIL 鎖死超過 10 秒，觸發系統強制閃退。
+   - **修復**：對 `serverMod`、`srtmMod`、`jsonMod` 實施單例快取，並對所有暫存 `PyObject` (`result`, `beaconDict`) 在當前執行緒主動呼叫 `.close()` 閉環釋放 native 指標，杜絕 GC 逾時。
+
+2. **深入解構 OSM 道路基因標籤，賦予「無名路」真實空間身分，徹底消滅「10點鐘方向 1F」**：
+   - **實體痛點**：在淡江大學周邊步行時，語音頻繁報讀荒謬的「10點鐘方向 1F」或跳針「沿著無名路繼續前進」。
+   - **根本原因**：OSM 步道 `ref` 標籤常被填入樓層代號（如 `ref=1F`），解析器未過濾樓層，直接組合成 `1F口`；無名步道未解構 `highway` 與 `footway` 標籤，粗暴退回「無名路」。
+   - **修復**：
+     - `overpass.py`：以正則表達式 `^(?:level\s*)?[Bb\d]+[Ff樓層]?$` 徹底過濾假路名。解構 `highway=footway/pedestrian/path/steps/service`，自動賦予「路側人行道」、「人行步道」、「人行專用道」、「人行階梯」、「巷弄通道」等真實空間語意。
+     - `world_model.py`：新增 `_detect_campus_or_park_context` 空間識別器，當步道鄰近大學校園（淡江大學）或公園綠地時，自然加權定錨為「淡大校園步道」或「公園步道」。
+     - 提取 `surface` 標籤（如 `paving_stones` 轉為「紅磚/連鎖磚鋪面」），提供白手杖觸覺情報。
+
+3. **消滅無名路口「接近路口，路口」口吃疊字贅詞**：
+   - **實體痛點**：遇到無名交叉路口時，語音產生結巴「📍 接近路口，路口。」。
+   - **根本原因**：`intersection.py` 當分支為空時退回 `junction_display_name`（剛好也是「路口」），前端 `app.js` 拼接 `接近路口，${branchPart}` 產生疊字。
+   - **修復**：在 `intersection.py` 嚴格過濾通用名詞，當無具名分支時統一優化為「前方交會」，消除疊字口吃。
+
+4. **消除戶外走山坡路誤判為登上天橋或爬到 5 樓 (`VerticalMotionNeuralClassifier`)**：
+   - **實體痛點**：走在淡大英專路/驚聲路等戶外斜坡時，氣壓計隨地勢上升下降，語音播報「進入【2F】」，日誌跳至「5F」。
+   - **根本原因**：垂直運動神經分類器在戶外時只看氣壓下降與步伐振動，誤判定為大樓樓梯 `WALKING_STAIRS_UP`。
+   - **修復**：在 `feedSample` 引入 `isGpsWeak` 戶外地面保護門控。當處於戶外良好定位狀態時，強制鎖定為地面層 `1F` (`HORIZONTAL_CORRIDOR`)，地形高程變化不觸發室內樓層跳轉。
+
+#### 🧪 測試驗證
+- **全套單元測試**：全套 61 項 Python 單元測試（包含新增的樓層消除、校園上下文識別、路口結巴消除測試）100% 通過。
+- **Kotlin 原生編譯**：`./gradlew compileDebugKotlin` 100% 編譯成功。
+- **版本號晉級**：升級為 `v1.0.17.13` (VersionCode: 58)。
+
+---
+
 ### [v1.0.17.12 - 2026-09-09] - 3D 空間導引聲音重大修復：消除 Fallback POI 0米原地抵達自滅 Bug、Web Audio HRTF 雙重衰減破除、2.5秒定錨保護與滑桿動作音效解耦
 
 #### 🎯 修復問題與視障實戰意圖

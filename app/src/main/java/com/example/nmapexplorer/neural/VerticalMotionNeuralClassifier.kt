@@ -72,7 +72,8 @@ class VerticalMotionNeuralClassifier(
         pressureHpa: Float,
         verticalAcc: Float,
         isStepRecently: Boolean,
-        filteredAltM: Float? = null
+        filteredAltM: Float? = null,
+        isGpsWeak: Boolean = false
     ) {
         if (!isBaselineCalibrated) {
             baselinePressureHpa = pressureHpa
@@ -96,7 +97,6 @@ class VerticalMotionNeuralClassifier(
         val dPdt = dP / dtSec
 
         // 換算等效垂直高度變化 (台灣海平面 1 hPa 約等於 8.43 公尺高度差)
-        // 氣壓下降 (dP < 0) 代表往上爬升；氣壓上升 (dP > 0) 代表往下下降
         val altitudeDelta = -(dP * 8.43f)
         if (filteredAltM != null) {
             accumulatedRelativeAltitudeM = filteredAltM
@@ -117,11 +117,10 @@ class VerticalMotionNeuralClassifier(
         val verticalEnergy = accVar / verticalAccHistory.size
 
         // 3. 多特徵神經推論分類
-        val newMotion: VerticalMotionType
+        var newMotion: VerticalMotionType
         val floorStepHeightM = 3.2f // 台灣標準建築一樓層約 3.0 ~ 3.5 米
 
         // A. 爬樓梯特徵：氣壓有持續人體生理合理變化 (0.035 <= |dPdt| <= 0.18 hPa/s) 且 垂直震動能量活躍 (accVar > 0.25) 且 伴隨步伐
-        // 超過 0.18 hPa/s (約 > 1.5 m/s 垂直速度) 超越人類肉身爬梯極限，判定為空調風切或電梯
         if (dPdt in -0.18f..-0.035f && isStepRecently && verticalEnergy > 0.25f) {
             newMotion = VerticalMotionType.WALKING_STAIRS_UP
         } else if (dPdt in 0.035f..0.18f && isStepRecently && verticalEnergy > 0.25f) {
@@ -137,12 +136,16 @@ class VerticalMotionNeuralClassifier(
         }
 
         // 4. 樓層推算與防抖鎖定
-        // 【核心無障礙鐵律】：在 HORIZONTAL_CORRIDOR 狀態下，樓層強制鎖定，嚴禁因氣壓風切亂跳樓層！
+        // 【核心無障礙鐵律】：若在戶外實體道路/校園步道 (isGpsWeak == false)，強制鎖定為地面層 1F！
+        // 杜絕使用者走在山坡路（如淡大英專路/驚聲路）時因自然地形高程上升被誤判為爬大樓 5 樓！
         var targetFloor = currentFloorIndex
         val currentFloorBaseAlt = (currentFloorIndex - 1) * floorStepHeightM
         val diffFromFloorBase = accumulatedRelativeAltitudeM - currentFloorBaseAlt
 
-        if (newMotion == VerticalMotionType.WALKING_STAIRS_UP) {
+        if (!isGpsWeak) {
+            newMotion = VerticalMotionType.HORIZONTAL_CORRIDOR
+            targetFloor = 1
+        } else if (newMotion == VerticalMotionType.WALKING_STAIRS_UP) {
             // 樓梯爬升：相對當前樓層基準上升超過 2.4 米才晉升一層
             if (diffFromFloorBase > 2.4f) {
                 targetFloor = currentFloorIndex + 1

@@ -713,6 +713,7 @@ class LocationSensorBridge(private val context: Context, private val webView: We
     private var lastDemLon: Double = 0.0
     private var cachedDemGroundElev: Float = 0.0f
     private var hasCachedDem: Boolean = false
+    private var cachedSrtmModule: com.chaquo.python.PyObject? = null
 
     // 【三大非視覺神經網路導航引擎】
     val learnedStepEstimator = LearnedStepVelocityEstimator()
@@ -1268,8 +1269,8 @@ class LocationSensorBridge(private val context: Context, private val webView: We
                             rotationMatrix[7] * accelerometerReading[1] +
                             rotationMatrix[8] * accelerometerReading[2] - 9.80665f
 
-            // 【項目 4：垂直運動神經分類器】即時更新，並傳入平滑高度與世界座標系垂直加速度
-            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, worldAccZ, isWalking, filteredAltM)
+            // 【項目 4：垂直運動神經分類器】即時更新，並傳入平滑高度、世界座標系垂直加速度與戶外 GPS 狀態
+            verticalMotionClassifier.feedSample(SystemClock.uptimeMillis(), pressureHpa, worldAccZ, isWalking, filteredAltM, isGpsWeak)
             return
         }
 
@@ -1369,15 +1370,24 @@ class LocationSensorBridge(private val context: Context, private val webView: We
         try {
             if (com.chaquo.python.Python.isStarted()) {
                 val py = com.chaquo.python.Python.getInstance()
-                val srtmMod = py.getModule("nmap.spatial.srtm_reader")
-                val res = srtmMod.callAttr("get_elevation", lat, lon)
-                if (res != null && res.toString() != "None") {
-                    val elev = res.toDouble().toFloat()
-                    cachedDemGroundElev = elev
-                    lastDemLat = lat
-                    lastDemLon = lon
-                    hasCachedDem = true
-                    return elev
+                if (cachedSrtmModule == null) {
+                    cachedSrtmModule = py.getModule("nmap.spatial.srtm_reader")
+                }
+                val res = cachedSrtmModule?.callAttr("get_elevation", lat, lon)
+                if (res != null) {
+                    try {
+                        val resStr = res.toString()
+                        if (resStr != "None") {
+                            val elev = resStr.toDoubleOrNull()?.toFloat() ?: cachedDemGroundElev
+                            cachedDemGroundElev = elev
+                            lastDemLat = lat
+                            lastDemLon = lon
+                            hasCachedDem = true
+                            return elev
+                        }
+                    } finally {
+                        res.close()
+                    }
                 }
             }
         } catch (e: Exception) {

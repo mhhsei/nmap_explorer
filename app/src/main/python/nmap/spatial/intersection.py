@@ -9,6 +9,7 @@
 3. 分支走向導覽：精確指出例如「2點鐘方向往北新路一段」、「9點鐘方向往中正路」。
 """
 import math
+import re
 import logging
 from typing import List, Dict, Any, Optional
 from nmap.spatial.geometry import (
@@ -56,16 +57,21 @@ class IntersectionAnalyzer:
                 edge_data = list(world_model.road_graph[v][n_id].values())[0]
 
             raw_name = edge_data.get("name", "") if edge_data else ""
-            if not raw_name or raw_name == "未命名道路":
+            is_floor = bool(re.match(r'^(?:level\s*)?[Bb\d]+[Ff樓層]?$', str(raw_name).strip(), re.IGNORECASE))
+            if not raw_name or raw_name in ["未命名道路", "無名路", "1F"] or is_floor:
                 highway_type = edge_data.get("road", {}).get("highway", "") if edge_data else ""
                 if highway_type in ["footway", "pedestrian", "path", "steps"]:
-                    road_name = "人行通道"
+                    # 依據周遭校園/公園場域動態賦予有溫度的真實名稱
+                    ctx_name = getattr(world_model, "_detect_campus_or_park_context", lambda lt, ln: None)(n_lt, n_ln)
+                    road_name = ctx_name or "人行步道"
                 else:
                     road_name = "無名巷弄"
             else:
                 road_name = raw_name
 
-            if road_name and road_name != curr_street and not road_name.startswith("無名") and road_name != "人行通道":
+            # 只有具實體路域名稱 (非步道/巷弄通用代稱) 才納入路口命名候選
+            if (road_name and road_name != curr_street and not road_name.startswith("無名") 
+                    and road_name not in ["人行通道", "人行步道", "校園步道", "淡大校園步道", "公園步道", "穿堂連通道"]):
                 int_roads.add(road_name)
 
             v_data = world_model.road_graph.nodes[v]
@@ -421,14 +427,18 @@ class IntersectionAnalyzer:
 
         # 組合親切易懂的路口專屬名稱 (例如「北新路與大忠街口」或「大忠街口」)
         junction_display_name = junction_type
-        sorted_intersecting_roads = sorted(intersecting_roads)
+        sorted_intersecting_roads = [
+            r for r in sorted(intersecting_roads)
+            if r and not re.match(r'^(?:level\s*)?[Bb\d]+[Ff樓層]?$', str(r).strip(), re.IGNORECASE)
+            and r not in ["無名路", "未命名道路", "1F", "人行通道"]
+        ]
         if signal_name:
             junction_display_name = signal_name
         elif sorted_intersecting_roads:
             cross_first = sorted_intersecting_roads[0]
             junction_display_name = f"{cross_first}口" if not cross_first.endswith("口") else cross_first
         elif junction_type != "直行道路":
-            junction_display_name = "路口"
+            junction_display_name = "前方路口"
 
         # 構建視障極簡「鐘點走向」動態分支導引 (Dynamic Clock-Position Branches)
         valid_branches = [
@@ -483,8 +493,10 @@ class IntersectionAnalyzer:
                     concise_branches_parts.append(f"{r_dir} {r_name}")
 
             concise_branches_str = "，".join(concise_branches_parts)
-            if not concise_branches_str:
-                concise_branches_str = junction_display_name if junction_display_name not in ["十字路口", "T字/岔路口", "直行道路"] else "前方交會"
+            if not concise_branches_str or concise_branches_str in ["路口", "前方路口", "十字路口", "T字/岔路口", "直行道路", "行人穿越路口"]:
+                concise_branches_str = junction_display_name if junction_display_name not in ["十字路口", "T字/岔路口", "直行道路", "路口", "前方路口", "行人穿越路口"] else "前方交會"
+            if concise_branches_str in ["路口", "前方路口", "十字路口", "T字/岔路口", "直行道路", "行人穿越路口"]:
+                concise_branches_str = "前方交會"
 
             # 尋找對向直行接續路段 (Opposite straight forward branch: abs(relative_angle) <= 35)
             for b in branches_info:

@@ -337,6 +337,11 @@ class WorldModel:
 
             # 將道路折線頂點加到 NetworkX 有向拓撲圖中
             node_ids = road.get("node_ids", [])
+            raw_road_name = road.get("name", "")
+            if not raw_road_name or re.match(r'^(?:level\s*)?[Bb\d]+[Ff樓層]?$', str(raw_road_name).strip(), re.IGNORECASE):
+                raw_road_name = "人行步道" if road.get("highway_type") in ["footway", "pedestrian", "path", "steps"] else "無名巷弄"
+                road["name"] = raw_road_name
+
             for i in range(len(geom) - 1):
                 u_lat, u_lon = geom[i]
                 v_lat, v_lon = geom[i+1]
@@ -348,12 +353,12 @@ class WorldModel:
 
                 self.road_graph.add_node(u_id, lat=u_lat, lon=u_lon)
                 self.road_graph.add_node(v_id, lat=v_lat, lon=v_lon)
-                self.road_graph.add_edge(u_id, v_id, weight=dist, name=road["name"], bearing=brng, road=road)
+                self.road_graph.add_edge(u_id, v_id, weight=dist, name=raw_road_name, bearing=brng, road=road)
                 
                 # 若非單行道，加入反向邊
                 if road.get("oneway") != "yes":
                     rev_brng = (brng + 180.0) % 360.0
-                    self.road_graph.add_edge(v_id, u_id, weight=dist, name=road["name"], bearing=rev_brng, road=road)
+                    self.road_graph.add_edge(v_id, u_id, weight=dist, name=raw_road_name, bearing=rev_brng, road=road)
 
         # 1. 率先構建交通號誌空間索引 (供路口智能關聯，全面融合 OSM 現場號誌與全台 5.6 萬座號誌)
         ts_idx = 0
@@ -956,9 +961,45 @@ class WorldModel:
         results.sort(key=lambda x: x["distance_m"])
         return results
 
+    def _detect_campus_or_park_context(self, lat: float, lon: float, radius_m: float = 80.0) -> Optional[str]:
+        """
+        【檢測當前位置是否處於大學校園、學校或公園綠地之場域環境】
+        作用：透過空間網格檢視周遭 80 公尺內的建築物與 POI，自動識別所屬校園或公園名稱，
+        將生硬冷冰的「無名路 / 人行步道」自然晉級為「淡大校園步道」或「公園步道」。
+        """
+        cos_lat = max(math.cos(math.radians(lat)), 0.1)
+        r_deg_lon = radius_m / (111139.0 * cos_lat)
+        r_deg_lat = radius_m / 111139.0
+        bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
+
+        # 1. 檢視鄰近建築物名稱 (淡大驚聲大樓、圖書館、活動中心等)
+        for item in self.building_rtree.intersection(bounds, objects=True):
+            b = item.object
+            b_name = b.get("name", "")
+            if any(k in b_name for k in ["大學", "學院", "校區", "大樓", "紀念館", "活動中心", "展示廳", "黑天鵝", "工學館", "商管", "學生活動", "游泳館"]):
+                if "淡江" in b_name or "淡大" in b_name:
+                    return "淡大校園步道"
+                return "校園步道"
+            if "公園" in b_name:
+                return "公園步道"
+
+        # 2. 檢視鄰近 POI 設施標籤
+        for item in self.poi_rtree.intersection(bounds, objects=True):
+            p = item.object
+            p_name = getattr(p, "name", "")
+            p_tags = getattr(p, "tags", {})
+            if "淡江" in p_name or "淡大" in p_name:
+                return "淡大校園步道"
+            if p_tags.get("amenity") in ["university", "college", "school"]:
+                return "校園步道"
+            if p_tags.get("leisure") in ["park", "garden"] or "公園" in p_name:
+                return "公園步道"
+
+        return None
+
     def get_road_info(self, lat: float, lon: float, heading_deg: float) -> Dict[str, Any]:
         """
-        【分析當前腳下道路屬性（路名、車道數、單行道、人行道狀況）】
+        【分析當前腳下道路屬性（路名、車道數、單行道、人行道狀況、地面鋪面）】
         """
 
         road, dist_m = self.find_nearest_road(lat, lon)
@@ -984,8 +1025,19 @@ class WorldModel:
         raw_sw = road.get("sidewalk", "none")
         sw_desc = sidewalk_map.get(raw_sw, f"人行道標示：{raw_sw}")
 
+        raw_name = road.get("name", "人行步道")
+        # 若道路名為步道、通道或無名，嘗試進行校園/公園場域自然加權識別
+        if raw_name in ["人行步道", "人行小徑", "無名路", "未命名道路", "內部通路", "1F", "巷弄通道"] or re.match(r'^(?:level\s*)?[Bb\d]+[Ff樓層]?$', str(raw_name).strip(), re.IGNORECASE):
+            ctx_name = self._detect_campus_or_park_context(lat, lon)
+            if ctx_name:
+                street_name = ctx_name
+            else:
+                street_name = "人行步道" if road.get("highway_type") in ["footway", "pedestrian", "path"] else "無名巷弄"
+        else:
+            street_name = raw_name
+
         return {
-            "street_name": road.get("name", "無名路"),
+            "street_name": street_name,
             "distance_to_road_m": round(dist_m, 1),
             "highway_type": road.get("highway_type", "residential"),
             "sidewalk": raw_sw,
