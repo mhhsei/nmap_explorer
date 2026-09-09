@@ -2469,15 +2469,39 @@ class NmapWebApp {
         const headingDeg = (data.heading_deg !== undefined && data.heading_deg !== null) ? data.heading_deg : (curHead || 0);
         const dirStr = this.getCardinalDirection(headingDeg);
         const exactDeg = Math.round(((headingDeg % 360.0) + 360.0) % 360.0);
-        // 【視障友善核心感知：判定使用者是否身處實體建築物內部】
-        // 國中生白話解釋：如果視障朋友走進了超商、商場或大樓，點擊「目前位置」時，
-        // 系統要像一個貼心的嚮導，直接告訴他「你在這棟大樓裡面」，而不是傻傻地報外面的馬路或人行道！
+        // 【視障友善核心感知：判定使用者是否身處實體建築物或大型場域內部】
+        // 國中生白話解釋：如果視障朋友走進了超商、商場、大樓、校園、公園或社區聚落，
+        // 點擊「目前位置」時，系統要像一個貼心的嚮導，直接告訴他「你在這棟大樓/校園/社區裡面」，
+        // 而不是傻傻地報外面的無名馬路或人行道！
         // 但如果人在室外道路或騎樓，完全維持原本的「走在【某某路】」播報，不造成任何干擾。
+        const spCtx = data.spatial_context;
         const bldg = data.current_building;
-        const isInside = !!(bldg && bldg.name && bldg.name.trim());
+        const isInside = (spCtx && spCtx.is_inside) || !!(bldg && bldg.name && bldg.name.trim());
         
         let txt = "";
-        if (isInside) {
+        if (spCtx && spCtx.is_inside) {
+          const ctxName = spCtx.name ? spCtx.name.trim() : "場域";
+          const ctxType = spCtx.context_type;
+          const floorStr = (ctxType === "building" && data.floor && data.floor !== "1F") 
+            ? `(${data.floor}) ` 
+            : (ctxType === "building" && spCtx.levels ? `(1F) ` : "");
+          const nearRoad = (street && street !== "未知道路" && street !== "目前道路") ? `，鄰近【${street}】` : "";
+          const doorInfo = (spCtx.door_anchor && !ctxName.includes(spCtx.door_anchor))
+            ? ` (${spCtx.door_anchor})`
+            : (doorStr ? `，${doorStr}` : "");
+
+          if (ctxType === "campus") {
+            txt = `在【${ctxName}】校園內${nearRoad}${doorInfo}。面向${dirStr} (${exactDeg}°)。`;
+          } else if (ctxType === "park") {
+            txt = `在【${ctxName}】內${nearRoad}${doorInfo}。面向${dirStr} (${exactDeg}°)。`;
+          } else if (ctxType === "hospital") {
+            txt = `在【${ctxName}】院區內${nearRoad}${doorInfo}。面向${dirStr} (${exactDeg}°)。`;
+          } else if (ctxType === "residential") {
+            txt = `在【${ctxName}】${doorInfo}內${nearRoad}。面向${dirStr} (${exactDeg}°)。`;
+          } else {
+            txt = `在【${ctxName}】${floorStr}內${nearRoad}${doorInfo}。面向${dirStr} (${exactDeg}°)。`;
+          }
+        } else if (bldg && bldg.name && bldg.name.trim()) {
           const bldgName = bldg.name.trim();
           const floorStr = (data.floor && data.floor !== "1F") ? `(${data.floor}) ` : (bldg.levels ? `(1F) ` : "");
           const nearRoad = (street && street !== "未知道路" && street !== "目前道路") ? `，鄰近【${street}】` : "";
@@ -3057,25 +3081,53 @@ class NmapWebApp {
     if (!this.approachedJunctionCooldown) this.approachedJunctionCooldown = new Map();
 
     // =========================================================================
-    // 【0. 實體建築物進出雙態狀態機 (Building Ingress / Egress State Machine)】
+    // 【0. 實體建築物與大型場域進出雙態狀態機 (Building & Area Ingress / Egress State Machine)】
     // 設計意圖：
-    // 當視障者踏入某棟大樓（如淡江大學驚聲紀念大樓）的幾何多邊形內部時，
-    // 立即以專屬 Earcon 音效與語音通知：「🏢 進入【驚聲紀念大樓】(1F)」，
+    // 當視障者踏入某棟大樓（如淡江大學驚聲紀念大樓）或大型場域（校園、公園、社區聚落）時，
+    // 立即以專屬 Earcon 音效與語音通知：「🏢 進入【驚聲紀念大樓】(1F)」或「🏫 進入【淡江大學】校園」，
     // 並自動標記 this.isInsideBuilding = true，抑制戶外路口過度喧囂的播報。
-    // 當走出大樓多邊形時，即時提醒：「🚶 走出【驚聲紀念大樓】，回到【英專路】」。
+    // 當走出大樓/場域時，即時提醒：「🚶 走出【驚聲紀念大樓】，回到【英專路】」。
     // =========================================================================
+    const spCtx = data.spatial_context;
     const curBldg = data.current_building;
-    const curBldgId = curBldg ? curBldg.id : null;
+    
+    let curBldgId = null;
+    let curBldgName = "";
+    let curCtxType = "building";
+
+    if (spCtx && spCtx.is_inside) {
+      curBldgId = spCtx.id || (spCtx.building && spCtx.building.id) || (spCtx.area && spCtx.area.id) || spCtx.name;
+      curBldgName = spCtx.name || "場域";
+      curCtxType = spCtx.context_type || "building";
+    } else if (curBldg && curBldg.name) {
+      curBldgId = curBldg.id || curBldg.name;
+      curBldgName = curBldg.name;
+      curCtxType = curBldg.building_type || "building";
+    }
+
     const currentRoadName = (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路" && data.road_info.street_name !== "1F") ? data.road_info.street_name : "周遭道路";
 
     if (curBldgId !== this.activeInsideBuildingId) {
       const prevBldgName = this.activeInsideBuildingName;
       if (curBldgId) {
         this.activeInsideBuildingId = curBldgId;
-        this.activeInsideBuildingName = curBldg.name || "建築物";
+        this.activeInsideBuildingName = curBldgName;
         this.isInsideBuilding = true;
-        const bldgFloor = data.floor || "1F";
-        const msg = `🏢 進入【${this.activeInsideBuildingName}】(${bldgFloor})。`;
+        
+        let msg = "";
+        if (curCtxType === "campus") {
+          msg = `🏫 進入【${curBldgName}】。`;
+        } else if (curCtxType === "park") {
+          msg = `🌳 進入【${curBldgName}】。`;
+        } else if (curCtxType === "residential") {
+          msg = `🏡 進入【${curBldgName}】。`;
+        } else if (curCtxType === "hospital") {
+          msg = `🏥 進入【${curBldgName}】。`;
+        } else {
+          const bldgFloor = data.floor || "1F";
+          msg = `🏢 進入【${curBldgName}】(${bldgFloor})。`;
+        }
+
         if (this.audio && this.audio.playBuildingEntrySound) {
           this.audio.playBuildingEntrySound();
         }
@@ -3083,8 +3135,8 @@ class NmapWebApp {
         if (this.recordTrace) {
           this.recordTrace("BUILDING_INGRESS", {
             building_id: curBldgId,
-            building_name: this.activeInsideBuildingName,
-            floor: bldgFloor
+            building_name: curBldgName,
+            context_type: curCtxType
           });
         }
       } else if (prevBldgName) {
@@ -3811,8 +3863,14 @@ class NmapWebApp {
       const road = data.road_info ? data.road_info.street_name : "";
       const door = (data.road_info && data.road_info.door_numbers) ? `，${data.road_info.door_numbers}` : "";
       const head = (data.heading_deg !== undefined && data.heading_deg !== null) ? ` (朝向 ${Math.round(data.heading_deg)}°)` : "";
+      const spCtx = data.spatial_context;
       const bldg = data.current_building;
-      if (bldg && bldg.name && bldg.name.trim()) {
+      if (spCtx && spCtx.is_inside) {
+        const floorStr = (spCtx.context_type === "building" && data.floor && data.floor !== "1F") ? `(${data.floor})` : "";
+        const nearRoad = (road && road !== "未知道路" && road !== "目前道路") ? `，鄰近${road}` : "";
+        const doorInfo = (spCtx.door_anchor && !spCtx.name.includes(spCtx.door_anchor)) ? ` (${spCtx.door_anchor})` : "";
+        locEl.textContent = `🧭 目前位置：【${spCtx.name.trim()}】${floorStr}${doorInfo}${nearRoad}${door}${head}`;
+      } else if (bldg && bldg.name && bldg.name.trim()) {
         const floorStr = (data.floor && data.floor !== "1F") ? `(${data.floor})` : (bldg.levels ? `(1F)` : "");
         const nearRoad = (road && road !== "未知道路" && road !== "目前道路") ? `，鄰近${road}` : "";
         locEl.textContent = `🧭 目前位置：【${bldg.name.trim()}】${floorStr}${nearRoad}${door}${head}`;

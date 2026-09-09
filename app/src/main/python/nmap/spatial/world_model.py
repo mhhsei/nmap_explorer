@@ -165,12 +165,14 @@ class WorldModel:
         self.traffic_signals: List[Dict[str, Any]] = []
         self.transit_stops: List[Dict[str, Any]] = []
         self.buildings: List[Dict[str, Any]] = []
+        self.enclosing_areas: List[Dict[str, Any]] = []
         self.house_numbers: List[Dict[str, Any]] = []
         
         # Spatial Grid indices
         self.poi_rtree = GridSpatialIndex(cell_size_deg=0.001)
         self.road_rtree = GridSpatialIndex(cell_size_deg=0.001)
         self.building_rtree = GridSpatialIndex(cell_size_deg=0.001)
+        self.area_rtree = GridSpatialIndex(cell_size_deg=0.002)
         self.crossing_rtree = GridSpatialIndex(cell_size_deg=0.001)
         self.traffic_signal_rtree = GridSpatialIndex(cell_size_deg=0.001)
         self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
@@ -253,6 +255,7 @@ class WorldModel:
             self.poi_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.road_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.building_rtree = GridSpatialIndex(cell_size_deg=0.001)
+            self.area_rtree = GridSpatialIndex(cell_size_deg=0.002)
             self.crossing_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.traffic_signal_rtree = GridSpatialIndex(cell_size_deg=0.001)
             self.junction_rtree = GridSpatialIndex(cell_size_deg=0.001)
@@ -269,6 +272,7 @@ class WorldModel:
         self.traffic_signals = parsed_data.get("traffic_signals", [])
         self.transit_stops = parsed_data.get("transit_stops", [])
         self.buildings = parsed_data.get("buildings", [])
+        self.enclosing_areas = parsed_data.get("enclosing_areas", [])
         self.house_numbers = parsed_data.get("house_numbers", [])
         self.barriers = parsed_data.get("barriers", [])
         self.entrances = parsed_data.get("entrances", [])
@@ -517,13 +521,35 @@ class WorldModel:
                 self.junction_rtree.insert(j_idx, (n_lon, n_lat, n_lon, n_lat), obj=(node_id, physical_degree, n_lat, n_lon, junction_meta))
                 j_idx += 1
 
-        # 4. 構建大樓輪廓空間索引
+        # 4. 構建大樓輪廓空間索引 (使用多邊形外接矩形以支援快速點包含快篩)
         b_idx = 0
         for b in self.buildings:
-            c_lat = b["center_lat"]
-            c_lon = b["center_lon"]
-            self.building_rtree.insert(b_idx, (c_lon, c_lat, c_lon, c_lat), obj=b)
+            geom = b.get("geometry", [])
+            if len(geom) >= 3:
+                min_lat = min(p[0] for p in geom)
+                max_lat = max(p[0] for p in geom)
+                min_lon = min(p[1] for p in geom)
+                max_lon = max(p[1] for p in geom)
+                bounds = (min_lon, min_lat, max_lon, max_lat)
+            else:
+                c_lat = b.get("center_lat", 0.0)
+                c_lon = b.get("center_lon", 0.0)
+                bounds = (c_lon, c_lat, c_lon, c_lat)
+            self.building_rtree.insert(b_idx, bounds, obj=b)
             b_idx += 1
+
+        # 4.1 構建大型封閉場域 (公園/校園/醫院/社區大樓聚落) 空間索引
+        a_idx = 0
+        for a in self.enclosing_areas:
+            geom = a.get("geometry", [])
+            if len(geom) >= 3:
+                min_lat = min(p[0] for p in geom)
+                max_lat = max(p[0] for p in geom)
+                min_lon = min(p[1] for p in geom)
+                max_lon = max(p[1] for p in geom)
+                bounds = (min_lon, min_lat, max_lon, max_lat)
+                self.area_rtree.insert(a_idx, bounds, obj=a)
+                a_idx += 1
 
         # 5. 構建門牌空間索引
         hn_idx = 0
@@ -964,16 +990,33 @@ class WorldModel:
 
     def _detect_campus_or_park_context(self, lat: float, lon: float, radius_m: float = 80.0) -> Optional[str]:
         """
-        【檢測當前位置是否處於大學校園、學校或公園綠地之場域環境】
-        作用：透過空間網格檢視周遭 80 公尺內的建築物與 POI，自動識別所屬校園或公園名稱，
-        將生硬冷冰的「無名路 / 人行步道」自然晉級為「淡大校園步道」或「公園步道」。
+        【檢測當前位置是否處於大學校園、學校、公園綠地或社區內部之步道通道】
+        作用：透過空間網格檢視使用者多邊形場域歸屬與周遭設施，自動識別所屬校園、公園或社區名稱，
+        將生硬冷冰的「無名路 / 人行步道」自然晉級為「淡江大學校園步道」、「大安森林公園步道」或「淡水情歌社區步道」。
         """
+        # 1. 優先精確檢查使用者是否落在大型封閉場域多邊形內
+        if hasattr(self, "area_rtree") and self.area_rtree.grid:
+            for item in self.area_rtree.intersection((lon, lat, lon, lat), objects=True):
+                a = item.object
+                geom = a.get("geometry", [])
+                if len(geom) >= 3 and is_point_in_polygon(lat, lon, geom):
+                    a_name = a.get("name", "")
+                    a_type = a.get("area_type", "")
+                    if a_type == "campus":
+                        return f"{a_name}校園步道" if a_name else "校園步道"
+                    elif a_type == "park":
+                        return f"{a_name}步道" if a_name else "公園步道"
+                    elif a_type == "residential":
+                        return f"{a_name}社區步道" if a_name else "社區步道"
+                    elif a_type == "hospital":
+                        return f"{a_name}院區通道" if a_name else "院區通道"
+
         cos_lat = max(math.cos(math.radians(lat)), 0.1)
         r_deg_lon = radius_m / (111139.0 * cos_lat)
         r_deg_lat = radius_m / 111139.0
         bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
 
-        # 1. 檢視鄰近建築物名稱 (淡大驚聲大樓、圖書館、活動中心等)
+        # 2. 檢視鄰近建築物名稱 (淡大驚聲大樓、圖書館、活動中心等)
         for item in self.building_rtree.intersection(bounds, objects=True):
             b = item.object
             b_name = b.get("name", "")
@@ -984,7 +1027,7 @@ class WorldModel:
             if "公園" in b_name:
                 return "公園步道"
 
-        # 2. 檢視鄰近 POI 設施標籤
+        # 3. 檢視鄰近 POI 設施標籤
         for item in self.poi_rtree.intersection(bounds, objects=True):
             p = item.object
             p_name = getattr(p, "name", "")
@@ -998,55 +1041,261 @@ class WorldModel:
 
         return None
 
-    def get_containing_building(self, lat: float, lon: float, search_radius_m: float = 120.0) -> Optional[Dict[str, Any]]:
+    def get_spatial_context(self, lat: float, lon: float, search_radius_m: float = 120.0) -> Dict[str, Any]:
         """
-        【檢測當前座標是否身處某棟建築物內部 (Point-in-Building Detection)】
+        【三層分層空間場域判定引擎 (Spatial Hierarchy Containment & Grounding Engine)】
         
-        作用：
-        利用空間網格索引快速過濾周遭 120 公尺內的建築物多邊形，
-        再以純幾何射線法 (Ray Casting) 精確比對使用者是否身處建築地基輪廓之內。
+        國中生白話解釋：
+        視障朋友走在路上或進到建築物時，系統像一位貼心導盲志工，清楚回答：
+        「我現在是在哪棟大樓？哪個大學校園？哪座公園？還是哪個社區聚落內？」
         
-        回傳：
-        若身處建築內部，回傳該大樓字典（含 name, building_type, levels, center_lat, center_lon 等）；
-        若人在室外道路/人行道上，回傳 None。
+        四層分級判定邏輯：
+        Layer 1 (實體建築多邊形)：精確判定是否身處大樓輪廓內部 (Ray Casting Point-in-Polygon)
+        Layer 2 (大型封閉場域)：判定是否身處大學校園、森林公園、醫療院區或住宅社區多邊形內
+        Layer 3 (台灣特有門牌與聚落錨定)：結合鄰近門牌點（如淡金路二段121號）與社區名稱（淡水情歌）進行空間錨定
+        Layer 4 (室外道路回退)：若在正常街道或人行道上，維持原有道路名稱與門牌區間播報，完全不受干擾
         """
-        if not self.buildings and (not hasattr(self.building_rtree, 'grid') or not self.building_rtree.grid):
-            return None
-
         cos_lat = max(math.cos(math.radians(lat)), 0.1)
         r_deg_lon = search_radius_m / (111139.0 * cos_lat)
         r_deg_lat = search_radius_m / 111139.0
         bounds = (lon - r_deg_lon, lat - r_deg_lat, lon + r_deg_lon, lat + r_deg_lat)
 
-        for item in self.building_rtree.intersection(bounds, objects=True):
-            b = item.object
-            geom = b.get("geometry", [])
-            if len(geom) >= 3:
-                if is_point_in_polygon(lat, lon, geom):
-                    b_name = b.get("name", "")
-                    tags = b.get("tags", {})
-                    # 若為無名建築但有名稱標籤，嘗試解析
-                    if not b_name or b_name in ("建築物", "無名大樓", "yes"):
-                        b_name = tags.get("name") or tags.get("name:zh") or tags.get("description") or ""
-                        if not b_name:
-                            street = tags.get("addr:street") or ""
-                            hn = tags.get("addr:housenumber") or ""
-                            if street and hn:
-                                b_name = f"{street}{hn}號 (大樓)"
-                            elif hn:
-                                b_name = f"{hn}號 (大樓)"
-                            else:
-                                b_name = "建築物"
+        # ----------------------------------------------------
+        # Layer 1: 實體建築物多邊形判定 (Physical Building Polygon)
+        # ----------------------------------------------------
+        found_building = None
+        if hasattr(self, "building_rtree") and self.building_rtree.grid:
+            for item in self.building_rtree.intersection(bounds, objects=True):
+                b = item.object
+                geom = b.get("geometry", [])
+                if len(geom) >= 3:
+                    if is_point_in_polygon(lat, lon, geom):
+                        b_name = b.get("name", "")
+                        tags = b.get("tags", {})
+                        if not b_name or b_name in ("建築物", "無名大樓", "yes"):
+                            b_name = tags.get("name") or tags.get("name:zh") or tags.get("description") or ""
+                            if not b_name:
+                                street = tags.get("addr:street") or ""
+                                hn = tags.get("addr:housenumber") or ""
+                                if street and hn:
+                                    b_name = f"{street}{hn}號 (大樓)"
+                                elif hn:
+                                    b_name = f"{hn}號 (大樓)"
+                                else:
+                                    b_name = "建築物"
+                        found_building = {
+                            "id": b.get("id"),
+                            "name": b_name,
+                            "building_type": b.get("building_type", "yes"),
+                            "levels": b.get("levels", tags.get("building:levels", "")),
+                            "height": b.get("height", tags.get("height", "")),
+                            "center_lat": b.get("center_lat", lat),
+                            "center_lon": b.get("center_lon", lon),
+                            "geometry": geom,
+                            "tags": tags
+                        }
+                        break
 
-                    return {
-                        "id": b.get("id"),
-                        "name": b_name,
-                        "building_type": b.get("building_type", "yes"),
-                        "levels": b.get("levels", tags.get("building:levels", "")),
-                        "height": b.get("height", tags.get("height", "")),
-                        "center_lat": b.get("center_lat", lat),
-                        "center_lon": b.get("center_lon", lon)
-                    }
+        # ----------------------------------------------------
+        # Layer 2: 大型封閉場域判定 (Campus, Park, Hospital, Residential Complex)
+        # ----------------------------------------------------
+        found_area = None
+        matched_areas = []
+        if hasattr(self, "area_rtree") and self.area_rtree.grid:
+            # 點包含查詢快篩外接矩形
+            for item in self.area_rtree.intersection((lon, lat, lon, lat), objects=True):
+                area = item.object
+                geom = area.get("geometry", [])
+                if len(geom) >= 3 and is_point_in_polygon(lat, lon, geom):
+                    matched_areas.append(area)
+
+        if matched_areas:
+            priority_map = {
+                "campus": 1,
+                "hospital": 1,
+                "park": 2,
+                "sports": 2,
+                "residential": 3,
+                "commercial": 4
+            }
+            def area_sort_key(a):
+                prio = priority_map.get(a.get("area_type"), 9)
+                geom = a.get("geometry", [])
+                min_lat = min(p[0] for p in geom)
+                max_lat = max(p[0] for p in geom)
+                min_lon = min(p[1] for p in geom)
+                max_lon = max(p[1] for p in geom)
+                approx_area = (max_lat - min_lat) * (max_lon - min_lon)
+                return (prio, approx_area)
+
+            matched_areas.sort(key=area_sort_key)
+            found_area = matched_areas[0]
+
+        # ----------------------------------------------------
+        # Layer 3: 尋找鄰近 35 米內超近門牌點 (Nearest House Number Grounding)
+        # ----------------------------------------------------
+        nearest_hn = None
+        min_hn_dist = 999.0
+        if hasattr(self, "house_number_rtree") and self.house_number_rtree.grid:
+            hn_r_deg_lon = 35.0 / (111139.0 * cos_lat)
+            hn_r_deg_lat = 35.0 / 111139.0
+            hn_bounds = (lon - hn_r_deg_lon, lat - hn_r_deg_lat, lon + hn_r_deg_lon, lat + hn_r_deg_lat)
+            for item in self.house_number_rtree.intersection(hn_bounds, objects=True):
+                hn_obj = item.object
+                d = haversine_distance(lat, lon, hn_obj["lat"], hn_obj["lon"])
+                if d < min_hn_dist:
+                    min_hn_dist = d
+                    nearest_hn = hn_obj
+
+        door_anchor = ""
+        if nearest_hn and min_hn_dist <= 32.0:
+            st = nearest_hn.get("street", "")
+            hn = nearest_hn.get("housenumber", "")
+            if st and hn:
+                door_anchor = f"{st}{hn}號" if not str(hn).endswith("號") else f"{st}{hn}"
+            elif hn:
+                door_anchor = f"{hn}號" if not str(hn).endswith("號") else hn
+
+        # ----------------------------------------------------
+        # Layer 4: 階層決策與結構化組裝 (Hierarchical Decision)
+        # ----------------------------------------------------
+        # 情況 A：使用者身處實體建築物多邊形內部
+        if found_building:
+            b_name = found_building["name"]
+            parent_name = found_area.get("name") if found_area else ""
+            if parent_name and parent_name not in b_name:
+                sub_type = found_area.get("sub_type", "園區")
+                full_label = f"在【{parent_name} {sub_type}】的【{b_name}】內"
+            else:
+                full_label = f"在【{b_name}】內"
+
+            return {
+                "is_inside": True,
+                "context_type": "building",
+                "name": b_name,
+                "full_label": full_label,
+                "building": found_building,
+                "area": found_area,
+                "door_anchor": door_anchor,
+                "id": found_building.get("id"),
+                "levels": found_building.get("levels", "")
+            }
+
+        # 情況 B：使用者身處封閉場域（校園、公園、醫院、社區聚落）
+        if found_area:
+            area_type = found_area.get("area_type", "residential")
+            area_name = found_area.get("name", "園區")
+            sub_type = found_area.get("sub_type", "")
+
+            if area_type == "residential":
+                disp_name = f"{area_name} {sub_type}".strip() if sub_type and not area_name.endswith(sub_type) else area_name
+                if door_anchor and door_anchor not in disp_name:
+                    full_label = f"在【{disp_name}】({door_anchor}) 內"
+                else:
+                    full_label = f"在【{disp_name}】內"
+                
+                return {
+                    "is_inside": True,
+                    "context_type": "residential",
+                    "name": disp_name,
+                    "full_label": full_label,
+                    "building": None,
+                    "area": found_area,
+                    "door_anchor": door_anchor,
+                    "id": found_area.get("id")
+                }
+
+            elif area_type == "campus":
+                disp_name = f"{area_name} {sub_type}".strip() if sub_type and not area_name.endswith(sub_type) else area_name
+                full_label = f"在【{disp_name}】內"
+                return {
+                    "is_inside": True,
+                    "context_type": "campus",
+                    "name": disp_name,
+                    "full_label": full_label,
+                    "building": None,
+                    "area": found_area,
+                    "door_anchor": door_anchor,
+                    "id": found_area.get("id")
+                }
+
+            elif area_type == "park":
+                full_label = f"在【{area_name}】內"
+                return {
+                    "is_inside": True,
+                    "context_type": "park",
+                    "name": area_name,
+                    "full_label": full_label,
+                    "building": None,
+                    "area": found_area,
+                    "door_anchor": door_anchor,
+                    "id": found_area.get("id")
+                }
+
+            elif area_type == "hospital":
+                disp_name = f"{area_name} {sub_type}".strip() if sub_type and not area_name.endswith(sub_type) else area_name
+                full_label = f"在【{disp_name}】內"
+                return {
+                    "is_inside": True,
+                    "context_type": "hospital",
+                    "name": disp_name,
+                    "full_label": full_label,
+                    "building": None,
+                    "area": found_area,
+                    "door_anchor": door_anchor,
+                    "id": found_area.get("id")
+                }
+
+            else:
+                full_label = f"在【{area_name}】內"
+                return {
+                    "is_inside": True,
+                    "context_type": area_type,
+                    "name": area_name,
+                    "full_label": full_label,
+                    "building": None,
+                    "area": found_area,
+                    "door_anchor": door_anchor,
+                    "id": found_area.get("id")
+                }
+
+        # 情況 C：室外道路、騎樓、人行道 (Outdoor Street / Sidewalk / Arcade)
+        return {
+            "is_inside": False,
+            "context_type": "outdoor",
+            "name": "",
+            "full_label": "",
+            "building": None,
+            "area": None,
+            "door_anchor": door_anchor,
+            "id": None
+        }
+
+    def get_containing_building(self, lat: float, lon: float, search_radius_m: float = 120.0) -> Optional[Dict[str, Any]]:
+        """
+        【取得當前所在建築物或場域（向後相容介面）】
+        作用：調用 get_spatial_context，若身處實體大樓或封閉場域，包裝為建築物結構回傳；
+        若身處室外道路/人行道，回傳 None。
+        """
+        ctx = self.get_spatial_context(lat, lon, search_radius_m=search_radius_m)
+        if ctx.get("is_inside"):
+            bldg = ctx.get("building")
+            area = ctx.get("area")
+            b_id = ctx.get("id") or (bldg.get("id") if bldg else None) or (area.get("id") if area else None)
+            c_lat = (bldg or {}).get("center_lat") or (area or {}).get("center_lat") or lat
+            c_lon = (bldg or {}).get("center_lon") or (area or {}).get("center_lon") or lon
+            return {
+                "id": b_id,
+                "name": ctx.get("name", "建築物"),
+                "full_label": ctx.get("full_label", ""),
+                "building_type": ctx.get("context_type", "building"),
+                "levels": (bldg or {}).get("levels", ""),
+                "height": (bldg or {}).get("height", ""),
+                "center_lat": c_lat,
+                "center_lon": c_lon,
+                "context_type": ctx.get("context_type", "building"),
+                "parent_area": (area.get("name") if area else None)
+            }
 
         return None
 

@@ -51,14 +51,20 @@ class OverpassClient:
           node["craft"](around:{r},{lat},{lon});
           node["tourism"](around:{r},{lat},{lon});
           node["leisure"](around:{r},{lat},{lon});
+          way["leisure"](around:{r},{lat},{lon});
+          relation["leisure"](around:{r},{lat},{lon});
+          way["landuse"](around:{r},{lat},{lon});
+          relation["landuse"](around:{r},{lat},{lon});
           node["healthcare"](around:{r},{lat},{lon});
           way["healthcare"](around:{r},{lat},{lon});
+          relation["amenity"](around:{r},{lat},{lon});
           node["service"](around:{r},{lat},{lon});
           node["name"](around:{r},{lat},{lon});
           way["name"](around:{r},{lat},{lon});
           node["public_transport"](around:{r},{lat},{lon});
           node["railway"](around:{r},{lat},{lon});
           way["building"](around:{r},{lat},{lon});
+          relation["building"](around:{r},{lat},{lon});
           node["barrier"](around:{r},{lat},{lon});
           way["barrier"](around:{r},{lat},{lon});
           node["entrance"](around:{r},{lat},{lon});
@@ -112,6 +118,18 @@ class OverpassClient:
                     nodes = [int(nd.attrib["ref"]) for nd in way.findall("nd")]
                     tags = {t.attrib["k"]: t.attrib["v"] for t in way.findall("tag")}
                     elements.append({"type": "way", "id": w_id, "nodes": nodes, "tags": tags})
+
+                for rel in root.findall("relation"):
+                    r_id = int(rel.attrib["id"])
+                    members = []
+                    for mem in rel.findall("member"):
+                        members.append({
+                            "type": mem.attrib.get("type"),
+                            "ref": int(mem.attrib.get("ref", 0)),
+                            "role": mem.attrib.get("role", "")
+                        })
+                    tags = {t.attrib["k"]: t.attrib["v"] for t in rel.findall("tag")}
+                    elements.append({"type": "relation", "id": r_id, "members": members, "tags": tags})
 
                 res = {"elements": elements}
                 if len(elements) > 0:
@@ -180,6 +198,7 @@ class OverpassClient:
         entrances = []
         steps = []
         micro_amenities = []
+        enclosing_areas = []
 
         # Parse nodes for standalone POIs, crossings, transit, and house numbers
         for node_id, (lat, lon, tags) in nodes_dict.items():
@@ -341,6 +360,7 @@ class OverpassClient:
                 })
 
         # Parse ways for roads, buildings, way POIs
+        way_geometries = {}
         for elem in elements:
             if elem.get("type") == "way":
                 way_id = elem["id"]
@@ -355,6 +375,7 @@ class OverpassClient:
 
                 if not geom:
                     continue
+                way_geometries[way_id] = geom
 
                 # Center lat/lon for way
                 avg_lat = sum(p[0] for p in geom) / len(geom)
@@ -486,6 +507,60 @@ class OverpassClient:
                         "tags": tags
                     })
 
+                # 【大型場域與園區解析 (Enclosing Areas: 公園/校園/醫院/社區大樓聚落)】
+                # 國中生白話：不只看單棟大樓，整座公園、整所大學、整座社區大樓群都是一個大場域。
+                # 只要使用者落在多邊形內，系統就能親切回報「你在某某公園或校園內」。
+                if len(geom) >= 3:
+                    area_name = tags.get("name") or tags.get("name:zh") or ""
+                    area_type = None
+                    sub_type = None
+
+                    leisure_val = tags.get("leisure", "")
+                    amenity_val = tags.get("amenity", "")
+                    landuse_val = tags.get("landuse", "")
+
+                    if leisure_val in ("park", "garden", "recreation_ground"):
+                        area_type = "park"
+                        sub_type = "公園"
+                        if not area_name:
+                            area_name = "公園綠地"
+                    elif leisure_val in ("sports_centre", "stadium", "pitch"):
+                        area_type = "sports"
+                        sub_type = "運動園區"
+                        if not area_name:
+                            area_name = "體育運動園區"
+                    elif amenity_val in ("university", "college", "school", "kindergarten") or landuse_val == "education":
+                        area_type = "campus"
+                        sub_type = "校園"
+                        if not area_name:
+                            area_name = "學校校園"
+                    elif amenity_val == "hospital" or tags.get("healthcare") == "hospital":
+                        area_type = "hospital"
+                        sub_type = "醫院"
+                        if not area_name:
+                            area_name = "醫療院區"
+                    elif landuse_val == "residential" and (area_name or tags.get("residential") == "apartments"):
+                        area_type = "residential"
+                        sub_type = "社區"
+                        if not area_name:
+                            area_name = "社區住宅區"
+                    elif landuse_val in ("commercial", "retail") and area_name:
+                        area_type = "commercial"
+                        sub_type = "商場園區"
+
+                    if area_type:
+                        enclosing_areas.append({
+                            "id": way_id,
+                            "name": area_name,
+                            "area_type": area_type,
+                            "sub_type": sub_type,
+                            "center_lat": avg_lat,
+                            "center_lon": avg_lon,
+                            "geometry": geom,
+                            "tags": tags
+                        })
+
+
                 # 【方案 A 核心】：解析多邊形建築物上的真實門牌與街名
                 # 台灣大量著名大樓（如壽德大樓、大創、新光三越）在 OSM 中是以 way 呈現，必須提取其幾何質心與門牌
                 if "addr:housenumber" in tags or "addr:street" in tags:
@@ -528,6 +603,90 @@ class OverpassClient:
                         "tags": tags
                     })
 
+        # 【大型關係場域與複合物件解析 (Relation Enclosing Areas & Buildings)】
+        # 很多大學校園（如淡江大學、台灣大學）、大型森林公園或大型社區大樓群在 OSM 中是以 relation (multipolygon) 呈現
+        for elem in elements:
+            if elem.get("type") == "relation":
+                rel_id = elem["id"]
+                tags = elem.get("tags", {})
+                members = elem.get("members", [])
+
+                area_name = tags.get("name") or tags.get("name:zh") or ""
+                area_type = None
+                sub_type = None
+
+                leisure_val = tags.get("leisure", "")
+                amenity_val = tags.get("amenity", "")
+                landuse_val = tags.get("landuse", "")
+
+                if leisure_val in ("park", "garden", "recreation_ground"):
+                    area_type = "park"
+                    sub_type = "公園"
+                    if not area_name:
+                        area_name = "公園綠地"
+                elif leisure_val in ("sports_centre", "stadium", "pitch"):
+                    area_type = "sports"
+                    sub_type = "運動園區"
+                    if not area_name:
+                        area_name = "體育運動園區"
+                elif amenity_val in ("university", "college", "school", "kindergarten") or landuse_val == "education":
+                    area_type = "campus"
+                    sub_type = "校園"
+                    if not area_name:
+                        area_name = "學校校園"
+                elif amenity_val == "hospital" or tags.get("healthcare") == "hospital":
+                    area_type = "hospital"
+                    sub_type = "醫院"
+                    if not area_name:
+                        area_name = "醫療院區"
+                elif landuse_val == "residential" and (area_name or tags.get("residential") == "apartments"):
+                    area_type = "residential"
+                    sub_type = "社區"
+                    if not area_name:
+                        area_name = "社區住宅區"
+                elif landuse_val in ("commercial", "retail") and area_name:
+                    area_type = "commercial"
+                    sub_type = "商場園區"
+
+                is_bldg = "building" in tags
+
+                if area_type or is_bldg:
+                    outer_pts = []
+                    for m in members:
+                        if m.get("type") == "way" and m.get("role") in ("outer", ""):
+                            w_pts = way_geometries.get(m.get("ref"))
+                            if w_pts:
+                                outer_pts.extend(w_pts)
+
+                    if len(outer_pts) >= 3:
+                        avg_lat = sum(p[0] for p in outer_pts) / len(outer_pts)
+                        avg_lon = sum(p[1] for p in outer_pts) / len(outer_pts)
+
+                        if area_type:
+                            enclosing_areas.append({
+                                "id": rel_id,
+                                "name": area_name,
+                                "area_type": area_type,
+                                "sub_type": sub_type,
+                                "center_lat": avg_lat,
+                                "center_lon": avg_lon,
+                                "geometry": outer_pts,
+                                "tags": tags
+                            })
+                        if is_bldg:
+                            b_name = tags.get("name") or tags.get("name:zh") or "建築物"
+                            buildings.append({
+                                "id": rel_id,
+                                "name": b_name,
+                                "building_type": tags.get("building", "yes"),
+                                "levels": tags.get("building:levels", ""),
+                                "height": tags.get("height", ""),
+                                "center_lat": avg_lat,
+                                "center_lon": avg_lon,
+                                "geometry": outer_pts,
+                                "tags": tags
+                            })
+
         # Post-process: Infer unnamed roads from nearby house numbers
         for road in roads:
             if road["name"] == "無名路":
@@ -560,8 +719,10 @@ class OverpassClient:
             "barriers": barriers,
             "entrances": entrances,
             "steps": steps,
-            "micro_amenities": micro_amenities
+            "micro_amenities": micro_amenities,
+            "enclosing_areas": enclosing_areas
         }
+
 
     def _extract_poi_category(self, tags: Dict[str, str]) -> Optional[str]:
         if "amenity" in tags:

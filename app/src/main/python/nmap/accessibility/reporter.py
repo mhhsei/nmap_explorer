@@ -77,18 +77,34 @@ class NVDAReporter:
             self.last_vertical_level = vertical_level
             self.last_floor = target_floor
 
-        # 0.2 實體建築物多邊形進出提醒 (Point-in-Building)
+        # 0.2 實體建築物與大型場域進出提醒 (Point-in-Building / Spatial Context Ingress)
+        sp_ctx = kwargs.get("spatial_context")
         cur_bldg = kwargs.get("current_building")
-        cur_bldg_id = cur_bldg.get("id") if cur_bldg else None
-        if cur_bldg_id != getattr(self, "last_building_id", None):
-            if cur_bldg:
-                b_name = cur_bldg.get("name", "建築物")
-                b_floor = floor or "1F"
-                parts.append(f"進入【{b_name}】({b_floor})。")
+        
+        ctx_id = None
+        ctx_name = ""
+        ctx_type = "outdoor"
+        
+        if sp_ctx and sp_ctx.get("is_inside"):
+            ctx_id = sp_ctx.get("id") or (sp_ctx.get("building") or {}).get("id") or (sp_ctx.get("area") or {}).get("id") or sp_ctx.get("name")
+            ctx_name = sp_ctx.get("name", "")
+            ctx_type = sp_ctx.get("context_type", "building")
+        elif cur_bldg:
+            ctx_id = cur_bldg.get("id") or cur_bldg.get("name")
+            ctx_name = cur_bldg.get("name", "建築物")
+            ctx_type = cur_bldg.get("context_type", "building")
+
+        if ctx_id != getattr(self, "last_building_id", None):
+            if ctx_id:
+                if ctx_type in ("campus", "hospital", "park", "residential", "sports", "commercial"):
+                    parts.append(f"進入【{ctx_name}】。")
+                else:
+                    b_floor = floor or "1F"
+                    parts.append(f"進入【{ctx_name}】({b_floor})。")
             elif getattr(self, "last_building_name", ""):
                 parts.append(f"走出【{self.last_building_name}】，回到【{street_name}】。")
-            self.last_building_id = cur_bldg_id
-            self.last_building_name = cur_bldg.get("name", "") if cur_bldg else ""
+            self.last_building_id = ctx_id
+            self.last_building_name = ctx_name
 
         # 1. 道路變更提醒（走進新路時報讀）
         if street_name != self.last_street:
@@ -228,8 +244,18 @@ class NVDAReporter:
             lines.append("")
 
         # Section 1: Current State
+        sp_ctx = kwargs.get("spatial_context")
         cur_bldg = kwargs.get("current_building")
-        if cur_bldg and cur_bldg.get("name"):
+        if sp_ctx and sp_ctx.get("is_inside"):
+            loc_label = sp_ctx.get("full_label") or f"在【{sp_ctx.get('name')}】內"
+            target_fl = floor or "1F"
+            st_name = road_info.get("street_name", "") if road_info else ""
+            near_str = f"，鄰近【{st_name}】" if st_name and st_name != "未知道路" else ""
+            if sp_ctx.get("context_type") == "building" and target_fl != "1F" and f"({target_fl})" not in loc_label:
+                lines.append(f"【目前位置】{loc_label} ({target_fl}){near_str}")
+            else:
+                lines.append(f"【目前位置】{loc_label}{near_str}")
+        elif cur_bldg and cur_bldg.get("name"):
             b_name = cur_bldg.get("name")
             target_fl = floor or "1F"
             st_name = road_info.get("street_name", "") if road_info else ""
