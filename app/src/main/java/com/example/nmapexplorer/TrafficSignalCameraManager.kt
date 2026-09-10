@@ -144,6 +144,9 @@ class TrafficSignalCameraManager(
     private var lastAnnounceTimeMs = 0L
     private val RED_REMINDER_INTERVAL_MS = 8000L // 紅燈等候中每 8 秒提醒一次
 
+    // 失敗診斷快照一次性旗標：每次 startCamera 重置，確保每次開鏡最多存一張失敗快照
+    private var hasFailureSnapshotSaved = false
+
     // 時序滑動窗口 (連續 3 幀確認才採納，杜絕瞬間反光誤判)
     private val recentStates = ArrayDeque<SignalState>()
     private val TEMPORAL_WINDOW_SIZE = 4
@@ -232,6 +235,7 @@ class TrafficSignalCameraManager(
         this.targetClockPosition = clockPosition
         recentStates.clear()
         greenHistory.clear()
+        hasFailureSnapshotSaved = false  // 每次重新開鏡，允許存一張新的失敗診斷快照
         val now = SystemClock.uptimeMillis()
         cameraStartTimeMs = now
         lastSearchPromptTimeMs = now
@@ -366,28 +370,52 @@ class TrafficSignalCameraManager(
         // 0. 行人過街保護期判定：綠燈確認後 18 秒內，全面抑制姿態與搜尋微調催促，保障視障者專心聆聽過馬路！
         val isCrossingProtected = now < crossingProtectionUntilMs
 
-        // 1. 空間仰角導引 (俯仰角朝向地面 Pitch > 25°，提示稍抬起手機)
-        // 【重要坐標系說明】：在 Android SensorManager.getOrientation 中，
-        // pitch = asin(-R[7])。當手機頂部朝向天空 (斜向上對準對街號誌) 時，
-        // R[7] > 0，因此 Pitch 數值為負值 (-15° ~ -75°)！
-        // 反之，當手機頂部朝向地面/雙腳時，R[7] < 0，Pitch 數值為正值 (+25° ~ +90°)。
-        // 過去錯誤寫成 `currentPitch < -32.0` 導致視障者斜向上瞄準紅綠燈時被反向誤判為朝下並被丟棄幀！
+        // 1. 空間仰角導引：根據俯仰角分三種情況給出語音引導
+        // 【坐標系說明】：Android SensorManager.getOrientation 中，
+        // - Pitch > +25° → 手機頂端朝地面（對著腳拍），應提示抬起
+        // - Pitch 在 -15° ~ +25° → 手機幾乎水平（平拿），看不到對街號誌，應提示斜向上
+        // - Pitch 在 -15° ~ -80° → 正確仰角（舉高手機斜向上拍的姿態），繼續辨識
         val currentPitch = LocationSensorBridge.currentPitchDeg.toDouble()
-        if (currentPitch > 25.0) {
-            if (!isCrossingProtected && (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS)) {
-                lastDirectionPromptTimeMs = now
-                webAppInterface.speakTtsDirect("手機朝下，請稍抬起", interrupt = false)
-                recordCameraEvent("[CAMERA_GUIDE] 手機朝向地面 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，語音提示稍抬起")
+        when {
+            currentPitch > 25.0 -> {
+                // 手機頂端朝地面：Pitch 正值代表手機朝下對著腳拍
+                if (!isCrossingProtected && (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS)) {
+                    lastDirectionPromptTimeMs = now
+                    webAppInterface.speakTtsDirect("手機朝下，請稍抬起對向號誌", interrupt = false)
+                    recordCameraEvent("[CAMERA_GUIDE] 手機朝向地面 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，語音提示稍抬起")
+                }
+                imageProxy.close()
+                return
             }
-            imageProxy.close()
-            return
+            currentPitch > -15.0 -> {
+                // 手機幾乎水平放：平拿時相機朝向遠處水平，拍不到頭頂號誌
+                // 不丟棄幀（近距離路口仍有機會辨識），但語音提示調整姿勢
+                if (!isCrossingProtected && (now - lastDirectionPromptTimeMs > DIRECTION_PROMPT_COOLDOWN_MS)) {
+                    lastDirectionPromptTimeMs = now
+                    webAppInterface.speakTtsDirect("請將手機斜向上對準號誌", interrupt = false)
+                    recordCameraEvent("[CAMERA_GUIDE] 手機幾乎水平 (Pitch: ${String.format(Locale.US, "%.1f", currentPitch)}°)，提示斜向上")
+                }
+                // 不 return，繼續嘗試辨識
+            }
+            // currentPitch <= -15.0：手機斜向上仰拍，是視障者舉高手機的正確姿態，無須提示
         }
 
         // 2. 階段性搜尋進度提示：若開鏡超過 3.5 秒仍未捕捉到確定號誌
+        // 根據目標號誌方位角與手機目前真北朝向的差值，給出「往左/右轉」的具體方向指令，
+        // 取代原本無意義的「請左右微調」（視障者根本不知道哪邊是左、哪邊是右）
         if (!isCrossingProtected && lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && now - lastSearchPromptTimeMs > SEARCH_PROMPT_COOLDOWN_MS) {
             lastSearchPromptTimeMs = now
-            webAppInterface.speakTtsDirect("未見號誌，請左右微調", interrupt = false)
-            recordCameraEvent("[CAMERA_SEARCH] 搜尋號誌逾 3.5 秒仍未定錨，提示左右微調")
+            // 計算水平方位偏差：目標號誌方位 - 手機目前真北朝向
+            // angleDiff > 0 → 號誌在右邊；< 0 → 號誌在左邊；範圍壓在 -180 ~ +180
+            val currentHeading = LocationSensorBridge.currentHeadingDeg.toDouble()
+            val angleDiff = ((targetBearingDeg - currentHeading + 540.0) % 360.0) - 180.0
+            val turnHint = when {
+                angleDiff > 30  -> "號誌偏右，請稍向右轉"
+                angleDiff < -30 -> "號誌偏左，請稍向左轉"
+                else            -> "方位正確，請保持手機穩定，繼續搜尋"
+            }
+            webAppInterface.speakTtsDirect(turnHint, interrupt = false)
+            recordCameraEvent("[CAMERA_SEARCH] 搜尋號誌逾 3.5 秒仍未定錨，方位偏差 ${String.format(Locale.US, "%.1f", angleDiff)}°，提示：$turnHint")
         }
 
         // 3. 轉換為 Bitmap
@@ -437,6 +465,15 @@ class TrafficSignalCameraManager(
 
         // 6. 時序防抖確認、語音播報、震動回饋與【自動截圖存證】
         updateTemporalState(detectedState, now, bitmap, opticalResult.details)
+
+        // 7. 【失敗診斷快照】：若搜尋超過 3.5 秒仍 UNKNOWN，存一張原始畫面供工程師事後查閱。
+        // 正常辨識成功時已由 updateTemporalState 內的 saveSnapshot 存圖，這裡只補失敗路徑的真值。
+        // 用 cameraStartTimeMs + 一次性旗標控制，每次開鏡最多存一張失敗快照，不重複觸發。
+        if (lastAnnouncedState == SignalState.UNKNOWN && now - cameraStartTimeMs > 3500L && !hasFailureSnapshotSaved) {
+            hasFailureSnapshotSaved = true
+            saveSnapshot(bitmap, SignalState.UNKNOWN, "搜尋逾時診斷快照_Pitch${String.format(Locale.US, "%.0f", currentPitch)}")
+        }
+
         bitmap.recycle()
     }
 
@@ -619,8 +656,22 @@ class TrafficSignalCameraManager(
             val coreBri = cluster.cells.map { cellBrightness[it.first][it.second] }.average()
             val contrast = coreBri - avgSurroundBri
 
-            // 號誌必須具備高亮發光核心 (coreBri >= 120)，且與深色外框遮光罩具備清晰反差 (contrast >= 25.0 或倍數 >= 1.8)
-            return coreBri >= 120.0 && (contrast >= 25.0 || (coreBri / avgSurroundBri.coerceAtLeast(15)) >= 1.8)
+            // 白天場景判斷：周圍平均亮度 > 130 代表強光環境（白天戶外）
+            // 白天時天空、牆面亮度高，號誌周圍的 avgSurroundBri 可能達 150~200，
+            // 即使真正的燈光發亮，絕對差值 (contrast) 也可能只有 10~20，低於 25 門檻被誤殺。
+            // 解法：白天改用「相對倍率」判斷——只要燈核心比周圍亮 1.3 倍以上就接受。
+            val isDaytimeBrightScene = avgSurroundBri > 130
+            val contrastPassesDaytimeCheck = if (isDaytimeBrightScene) {
+                // 白天放寬：相對倍率門檻從 1.8 降至 1.3（周圍本來就亮，號誌還能再亮 30% 就夠了）
+                (coreBri / avgSurroundBri.coerceAtLeast(15)) >= 1.3
+            } else {
+                // 夜間/室內維持嚴格門檻：絕對差值 >= 25，或相對倍率 >= 1.8
+                // 夜間背景暗，假陽性風險更高，不能輕易放寬
+                contrast >= 25.0 || (coreBri / avgSurroundBri.coerceAtLeast(15)) >= 1.8
+            }
+            // coreBri 最低門檻白天從 120 降至 100（陽光稀釋效應：燈光被背景光「沖淡」，絕對亮度會比夜間低）
+            val minCoreBri = if (isDaytimeBrightScene) 100.0 else 120.0
+            return coreBri >= minCoreBri && contrastPassesDaytimeCheck
         }
 
         val redScore = bestRed?.totalScore ?: 0
