@@ -3357,13 +3357,29 @@ class NmapWebApp {
     }
 
     // =========================================================================
-    // 【2. 轉彎進入新路名防抖播報 (至少連續 2 筆 GPS 穩定判定，且 20 秒冷卻)】
+    // 【2. 轉彎進入新路名防抖播報 (P3 遲滯防抖 + P4 路口過街凍結)】
     // =========================================================================
-    if (data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
+    // 【P4 修復：路口過街期間凍結道路切換廣播 (Crossing Junction Freeze)】
+    // 當使用者正接近 (APPROACHING) 或正通過 (PASSING) 路口時，使用者正在筆直穿過交會巷口，
+    // 嚴禁將側向交會之橫向巷弄誤報為「進入【某某巷】」！
+    const isJunctionCrossingActive = (this.currentJunctionState === "APPROACHING" || this.currentJunctionState === "PASSING");
+
+    if (!isJunctionCrossingActive && data.road_info && data.road_info.street_name && data.road_info.street_name !== "未知道路") {
       const st = data.road_info.street_name;
       if (this.currentStreetName === null) {
         this.currentStreetName = st;
       } else if (st !== this.currentStreetName) {
+        // 【P4 補強】：若新道路 candidate 是當前路口的交會分支（如北新路190巷），使用者並未轉向離開路口，不予切換
+        const intersectingRoads = (data.intersection && data.intersection.intersecting_roads) || [];
+        const isBranchOfCurrentJunction = intersectingRoads.includes(st);
+
+        // 【P3 修復：路名吸附遲滯防抖 (Hysteresis Buffer)】
+        // 門檻提升：一般換路至少需連續 5 次 GPS 穩定確認 (~5秒)，杜絕瞬間漂移
+        // 若當前為主幹道，而候選路為無名步道/人行步道/社區步道，門檻提高至 8 次且冷卻 30 秒，消滅人行道邊緣乒乓震盪
+        const isGenericPath = /^(?:青山社區步道|人行步道|人行小徑|步道|通道|無名巷弄)$/.test(st);
+        const requiredCount = isBranchOfCurrentJunction ? 7 : (isGenericPath ? 8 : 5);
+        const roadCooldown = isGenericPath ? 30000 : 20000;
+
         if (this.consecutiveRoadCandidate === st) {
           this.consecutiveRoadCount = (this.consecutiveRoadCount || 0) + 1;
         } else {
@@ -3371,11 +3387,11 @@ class NmapWebApp {
           this.consecutiveRoadCount = 1;
         }
 
-        // 連續 2 次 GPS 確認換路，避免經過巷口瞬切抖動
-        if (this.consecutiveRoadCount >= 2 && (now - (this.lastRoadAnnouncementTime || 0) >= 20000)) {
+        if (this.consecutiveRoadCount >= requiredCount && (now - (this.lastRoadAnnouncementTime || 0) >= roadCooldown)) {
           this.currentStreetName = st;
           this.consecutiveRoadCandidate = null;
           this.consecutiveRoadCount = 0;
+          this.lastRoadAnnouncementTime = now;
           this.announceRoad(`進入【${this.currentStreetName}】`, true);
           return;
         }
@@ -3418,11 +3434,27 @@ class NmapWebApp {
       return `${cleanedName}${floorTag}${doorTag}`;
     };
 
-    if (realtimePois && realtimePois.length > 0 && !isJunctionHandled) {
-      // A. 近身抵達感知 (距離 <= 3.8 公尺，宣告抵達店家)
+    // 【P1 修復：路口過街關鍵聆聽期 POI 靜默保護 (Junction Crossing POI Suppression)】
+    // 當處於路口接近 (APPROACHING)、正通過 (PASSING) 或距離路口中心 <= 16.0 公尺時，
+    // 視障者處於最高警戒期，需專心聆聽車流起步聲、轉彎車與有聲號誌鳥鳴，
+    // 全面禁止播報一般商業店家 (超商、涼麵、便當等)，除非是使用者主動設定之導航終點！
+    const isCrossingCriticalListeningPhase = (this.currentJunctionState === "APPROACHING" || this.currentJunctionState === "PASSING") ||
+      (data.intersection && data.intersection.distance_m !== null && data.intersection.distance_m !== undefined && data.intersection.distance_m <= 16.0);
+
+    if (realtimePois && realtimePois.length > 0 && !isJunctionHandled && !isCrossingCriticalListeningPhase) {
+      // 【P2 修復：取消非目的地的「🎉 抵達」語音轟炸 (Destination-Only Arrival)】
+      // 只有當使用者「主動設定該店家為導航目標」時，近身 <= 3.8m 才宣告抵達；
+      // 一般沿街自由步行探索時，路過店家直接由走廊聚類打包或自然門牌安靜呈現，絕不每隔 2 秒就狂噴「🎉 抵達」！
+      const isNavTarget = (p) => {
+        if (!p) return false;
+        if (this.activeBeaconTarget && (this.activeBeaconTarget.name === p.name || (this.activeBeaconTarget.id && this.activeBeaconTarget.id === p.id))) return true;
+        if (this.activePoiTarget && (this.activePoiTarget.name === p.name || (this.activePoiTarget.id && this.activePoiTarget.id === p.id))) return true;
+        return false;
+      };
+
       const arrivalCandidate = realtimePois.find((p) => {
         if (this.isIgnoredPoi(p.name, p.category)) return false;
-        return p.distance_m <= 3.8;
+        return p.distance_m <= 3.8 && isNavTarget(p);
       });
 
       if (arrivalCandidate) {

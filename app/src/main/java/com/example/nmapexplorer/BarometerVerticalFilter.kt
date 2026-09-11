@@ -240,6 +240,9 @@ class BarometerVerticalFilter(
 
         if (isGpsWeak) {
             // 室內商場絕對樓層模式 (每層樓約 3.2 ~ 3.5 公尺)
+            // 【P5 修復：防禦微氣候氣壓漂移誤判 B1/2F】
+            // 台灣實體建築地下室 (B1) 深度至少 -3.6 公尺以上，2樓高度至少 +3.2 公尺以上。
+            // 過去門檻僅設 -2.0m，導致戶外微氣候氣壓微升 0.24 hPa 就在平地誤判進入 B1！
             rawTargetLevel = when {
                 altM >= 28.8f -> VerticalLevel.INDOOR_10F
                 altM >= 25.6f -> VerticalLevel.INDOOR_9F
@@ -249,12 +252,12 @@ class BarometerVerticalFilter(
                 altM >= 12.8f -> VerticalLevel.INDOOR_5F
                 altM >= 9.6f -> VerticalLevel.INDOOR_4F
                 altM >= 6.4f -> VerticalLevel.INDOOR_3F
-                altM >= 2.0f -> VerticalLevel.INDOOR_2F
+                altM >= 3.2f -> VerticalLevel.INDOOR_2F
                 altM <= -16.0f -> VerticalLevel.INDOOR_B5
                 altM <= -12.8f -> VerticalLevel.INDOOR_B4
                 altM <= -9.6f -> VerticalLevel.INDOOR_B3
                 altM <= -6.4f -> VerticalLevel.INDOOR_B2
-                altM <= -2.0f -> VerticalLevel.INDOOR_B1
+                altM <= -3.6f -> VerticalLevel.INDOOR_B1
                 else -> VerticalLevel.GROUND
             }
         } else {
@@ -288,6 +291,14 @@ class BarometerVerticalFilter(
             }
         }
 
+        // 【P5 防禦】：由地面切入 B1 時，實體人行必須具有向下垂直位移趨勢
+        // 若使用者全程處於水平步行或靜止，且深度未達 -4.8m 極限，視為環境靜態氣壓漂移，維持 GROUND
+        if (oldLevel == VerticalLevel.GROUND && (rawTargetLevel == VerticalLevel.INDOOR_B1 || rawTargetLevel == VerticalLevel.UNDERGROUND)) {
+            if (stateVelocityMps >= 0.0f && altM > -4.8f) {
+                rawTargetLevel = VerticalLevel.GROUND
+            }
+        }
+
         if (rawTargetLevel == oldLevel) {
             sustainedCandidateLevel = null
             sustainedStartTimeMs = 0L
@@ -299,8 +310,14 @@ class BarometerVerticalFilter(
             return
         }
 
-        // 持續時間檢驗 (室內樓層切換較快 2 秒，戶外天橋需 4.5 秒)
-        val requiredDuration = if (isGpsWeak) 2000L else SUSTAINED_DURATION_MS
+        // 持續時間檢驗 (進入地下室至少需連續維持 6.0 秒，天橋 4.5 秒，其他室內樓層 4.0 秒)
+        val requiredDuration = if (rawTargetLevel == VerticalLevel.INDOOR_B1 || rawTargetLevel == VerticalLevel.UNDERGROUND) {
+            6000L
+        } else if (isGpsWeak) {
+            4000L
+        } else {
+            SUSTAINED_DURATION_MS
+        }
 
         if (sustainedCandidateLevel != rawTargetLevel) {
             sustainedCandidateLevel = rawTargetLevel

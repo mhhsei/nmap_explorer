@@ -742,16 +742,26 @@ class WorldModel:
                 axis_diff = min(diff, 180.0 - diff) # 0°=平行, 90°=垂直
 
                 r_name = road.get("name", "")
+                r_hw = road.get("highway_type", "")
+                is_path_type = r_hw in ["footway", "pedestrian", "path", "steps"] or any(k in r_name for k in ["步道", "小徑", "通道", "巷弄通道"])
+
                 if axis_diff > 55.0:
                     # 與前進方向垂直的橫向小巷，施加距離懲罰，杜絕側吸
-                    cost = dist * 2.2 + 3.0
+                    cost = dist * 2.5 + 4.0
                 elif axis_diff < 35.0:
                     # 與前進方向平行的道路給予加分優先吸附
                     cost = dist * 0.85
 
-                # 同名道路慣性維持（已在該道路上，除非偏離極遠否則優先維持）
-                if current_road_name and r_name == current_road_name and dist <= 18.0:
-                    cost *= 0.75
+                # 【P3 修復：主幹道慣性維持與平行人行步道防側吸】
+                # 當前已在具名道路（如北新路）上時：
+                if current_road_name:
+                    if r_name == current_road_name and dist <= 20.0:
+                        # 既有幹道賦予強慣性，大幅降低切換抖動
+                        cost *= 0.50
+                    elif is_path_type and dist <= 18.0 and not any(k in current_road_name for k in ["步道", "小徑", "通道"]):
+                        # 候選路為平行人行步道/社區步道，但使用者已在實體幹道上行走（如走在北新路人行道）：
+                        # 施加側向加權懲罰，防止步道因離路側近一公尺就搶奪主幹道路名！
+                        cost *= 1.85
 
             if cost < min_cost:
                 min_cost = cost
